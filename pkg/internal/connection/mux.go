@@ -308,6 +308,7 @@ type VPNMuxClient struct {
 	control        io.ReadWriteCloser
 	controlMu      sync.Mutex
 	lastPing       atomic.Int64 // last PING received from server
+	lastPingSent   atomic.Int64 // last PING sent to server
 	lastPong       atomic.Int64 // last PONG received from server
 	pingCtx        context.Context
 	pingCancel     context.CancelFunc
@@ -345,6 +346,7 @@ func NewVPNMuxClient(transport io.ReadWriteCloser) (*VPNMuxClient, error) {
 	}
 	now := time.Now().UnixNano()
 	client.lastPing.Store(now)
+	client.lastPingSent.Store(now)
 	client.lastPong.Store(now)
 
 	// Client ping sender: sends PINGs to server and checks for PONG timeout.
@@ -356,12 +358,17 @@ func NewVPNMuxClient(transport io.ReadWriteCloser) (*VPNMuxClient, error) {
 			case <-pingCtx.Done():
 				return
 			case <-ticker.C:
-				if time.Since(time.Unix(0, client.lastPong.Load())) > vpnMuxPingTimeout {
+				sent := client.lastPingSent.Load()
+				pong := client.lastPong.Load()
+				// Only declare a timeout if there is an outstanding unanswered PING.
+				if pong < sent && time.Since(time.Unix(0, sent)) > vpnMuxPingTimeout {
 					slog.Warn("vpnmux client pong timeout, closing session")
 					pingCancel()
 					_ = session.Close()
 					return
 				}
+				now := time.Now().UnixNano()
+				client.lastPingSent.Store(now)
 				client.controlMu.Lock()
 				_ = VPNMuxWriteControlMessage(controlStream, VPNMuxControlMessage{Type: vpnMuxControlTypePing})
 				client.controlMu.Unlock()
