@@ -2,11 +2,9 @@ package platform
 
 import (
 	"context"
-	"crypto/tls"
 	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
-	"net/url"
 	"sort"
 	"strconv"
 	"sync"
@@ -244,7 +242,7 @@ func (V *VKHandler) ensureInitLocked() {
 		return
 	}
 	jar, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
-	proxyURL, _ := url.Parse("http://127.0.0.1:8080")
+	//proxyURL, _ := url.Parse("http://127.0.0.1:8080")
 	V.httpClient = &http.Client{
 		Timeout: 20 * time.Second,
 		Jar:     jar,
@@ -252,10 +250,10 @@ func (V *VKHandler) ensureInitLocked() {
 			MaxIdleConns:        32,
 			MaxIdleConnsPerHost: 8,
 			IdleConnTimeout:     90 * time.Second,
-			Proxy:               http.ProxyURL(proxyURL),
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
+			//Proxy:               http.ProxyURL(proxyURL),
+			//TLSClientConfig: &tls.Config{
+			//	InsecureSkipVerify: true,
+			//},
 		},
 	}
 	V.profile = common.RandomBrowserProfile()
