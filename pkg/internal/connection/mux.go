@@ -490,7 +490,8 @@ type VPNMuxServer struct {
 	lastPing      atomic.Int64 // last PING received from client
 	activeStreams sync.Map     // uint32 → *vpnMuxServerStream
 	sessionUUID   string
-	done          chan struct{} // closed on clean client disconnect
+	doneOnce      sync.Once
+	done          chan struct{} // closed when control loop exits for any reason
 }
 
 // SetSessionUUID sets the session UUID used in log messages.
@@ -665,6 +666,7 @@ func (s *VPNMuxServer) AcceptChannels(ctx context.Context) <-chan VPNMuxChannel 
 
 func (s *VPNMuxServer) controlLoop(out chan<- VPNMuxControlMessage, errCh chan<- error) {
 	defer close(out)
+	defer s.doneOnce.Do(func() { close(s.done) })
 	for {
 		msg, err := VPNMuxReadControlMessage(s.control)
 		if err != nil {
@@ -682,7 +684,6 @@ func (s *VPNMuxServer) controlLoop(out chan<- VPNMuxControlMessage, errCh chan<-
 			continue
 		case vpnMuxControlTypeDisconnect:
 			slog.Info("vpnmux server received disconnect from client, closing session", "session_uuid", s.sessionUUID)
-			close(s.done)
 			_ = s.Close()
 			errCh <- io.EOF
 			return
