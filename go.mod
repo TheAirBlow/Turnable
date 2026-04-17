@@ -10,7 +10,6 @@ require (
 	github.com/pion/sctp v1.9.4
 	github.com/pion/sdp/v3 v3.0.18
 	github.com/pion/turn/v5 v5.0.3
-	github.com/spaolacci/murmur3 v1.1.0
 	github.com/spf13/cobra v1.10.2
 	github.com/xtaci/kcp-go/v5 v5.6.72
 	github.com/xtaci/smux v1.5.57

@@ -24,20 +24,21 @@ import (
 	"sync"
 	"time"
 
-	"github.com/spaolacci/murmur3"
 	"github.com/theairblow/turnable/pkg/common"
 )
 
 var (
-	deviceInfoJSON = `{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1080,"innerWidth":1920,"innerHeight":540,"devicePixelRatio":1,"language":"ru-RU","languages":["ru-RU","ru"],"webdriver":false,"hardwareConcurrency":8,"notificationsPermission":"denied"}`
-
 	reCaptchaPowInput   = regexp.MustCompile(`const\s+powInput\s*=\s*"([^"]+)"`)             // Extracts PoW input from captcha HTML
 	reCaptchaDifficulty = regexp.MustCompile(`const\s+difficulty\s*=\s*(\d+)`)               // Extracts PoW difficulty from captcha HTML
 	reCaptchaWindowInit = regexp.MustCompile(`(?s)window\.init\s*=\s*(\{.*?})\s*;`)          // Extracts captcha settings bootstrap JSON
 	reCaptchaScriptSrc  = regexp.MustCompile(`src="(https://[^"]+not_robot_captcha[^"]+)"`)  // Finds captcha JS bundle URL
 	reCaptchaDebugInfo  = regexp.MustCompile(`debug_info:(?:[^"]*\|\|)?"([a-fA-F0-9]{64})"`) // Extracts hardcoded debug_info constant from captcha JS
+	reCaptchaVersion    = regexp.MustCompile(`vkid/([0-9.]*)/not_robot_captcha\.js`)         // Extracts version of the captcha script
 
 	errCaptchaRateLimit = errors.New("captcha session rate limit reached") // Marks exhausted captcha sessions
+
+	captchaAPIVersion    = "5.131"    // last known version of the captcha API
+	captchaScriptVersion = "1.1.1321" // last known version of the captcha script
 )
 
 // captchaInit represents window.init JSON object with captcha initialization data
@@ -167,8 +168,19 @@ func (V *VKHandler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string
 
 	slog.Info("vk captcha settings received", "show_type", page.Init.Data.ShowCaptchaType)
 
-	h1, h2 := murmur3.Sum128([]byte(apiErr.SessionToken))
-	browserFP := fmt.Sprintf("%016x%016x", h1, h2)
+	r := rand.New(rand.NewSource(rand.Int63()))
+	b := make([]byte, 16)
+	for i := range b {
+		b[i] = byte(r.Intn(256))
+	}
+
+	browserFP := hex.EncodeToString(b)
+
+	if m := reCaptchaVersion.FindSubmatch([]byte(page.ScriptURL)); len(m) > 1 {
+		if string(m[1]) != captchaScriptVersion {
+			slog.Warn("vk captcha script version changed", "last_known", captchaScriptVersion, "latest", string(m[1]))
+		}
+	}
 
 	debugInfo, err := V.fetchDebugInfo(ctx, page.ScriptURL)
 	if err != nil {
@@ -272,14 +284,37 @@ func parseCaptchaPage(html string) (*captchaPage, error) {
 
 // captchaRequest performs captcha API requests
 func (V *VKHandler) captchaRequest(ctx context.Context, method string, form *common.Values) (map[string]any, error) {
-	return V.postVKForm(ctx, vkAPIEndpoint+"/"+method+"?v=5.131", form, map[string]string{
+	return V.postVKForm(ctx, vkAPIEndpoint+"/"+method+"?v="+captchaAPIVersion, form, map[string]string{
 		"Origin":   "https://id.vk.com",
 		"Referer":  "https://id.vk.com/",
 		"Priority": "u=1, i",
 	})
 }
 
-// performCaptchaCheck submits captcha answer and returns status payload.
+// generateDeviceInfo generates a device info JSON string
+func generateDeviceInfo() string {
+	device := map[string]interface{}{
+		"screenWidth":             1920,
+		"screenHeight":            1080,
+		"screenAvailWidth":        1920,
+		"screenAvailHeight":       1036,
+		"innerWidth":              1920,
+		"innerHeight":             949,
+		"devicePixelRatio":        1,
+		"language":                "en-US",
+		"languages":               []string{"en-US"},
+		"webdriver":               false,
+		"hardwareConcurrency":     12,
+		"deviceMemory":            8,
+		"connectionEffectiveType": "4g",
+		"notificationsPermission": "denied",
+	}
+
+	jsonBytes, _ := json.Marshal(device)
+	return string(jsonBytes)
+}
+
+// performCaptchaCheck submits captcha answer and returns status payload
 func (V *VKHandler) performCaptchaCheck(
 	ctx context.Context,
 	sessionToken string,
@@ -356,20 +391,18 @@ func (V *VKHandler) solveCheckboxCaptcha(
 		"session_token", sessionToken,
 		"domain", "vk.com",
 		"adFp", adFP,
-		"access_token", "",
 		"browser_fp", browserFP,
-		"device", deviceInfoJSON,
+		"device", generateDeviceInfo(),
+		"access_token", "",
 	)); err != nil {
 		return "", fmt.Errorf("captcha componentDone failed: %w", err)
 	}
 
-	/*
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(time.Duration(250) * time.Millisecond):
-		}
-	*/
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(time.Duration(400) * time.Millisecond):
+	}
 
 	/*
 		type pt struct {
@@ -469,7 +502,7 @@ func (V *VKHandler) solveSliderCaptcha(
 		"adFp", adFP,
 		"access_token", "",
 		"browser_fp", browserFP,
-		"device", deviceInfoJSON,
+		"device", generateDeviceInfo(),
 	)); err != nil {
 		return "", fmt.Errorf("captcha componentDone failed: %w", err)
 	}

@@ -235,104 +235,83 @@ func (V *VKHandler) Authorize(callID string, username string) error {
 	return nil
 }
 
-// authorizeAnonymous performs the VK anonymous auth flow and returns both tokens
-// The flow intentionally requests the messages token directly via login.vk.com, matching vk-turn-proxy/client behavior
+// authorizeAnonymous performs the full VK anonymous auth flow, fetching a fresh messages token
+// before each calls.getAnonymousToken attempt (or after a captcha rate limit) and returning both tokens
 func (V *VKHandler) authorizeAnonymous(ctx context.Context) (string, string, error) {
-	slog.Debug("vk authorize anonymous started")
-	messagesResp, err := V.postVKForm(ctx, vkLoginEndpoint+"/?act=get_anonym_token", common.NewValues(
-		"client_id", vkClientID,
-		"token_type", "messages",
-		"client_secret", vkClientSecret,
-		"version", "1",
-		"app_id", vkClientID,
-	), nil)
-	if err != nil {
-		return "", "", err
-	}
-
-	messagesAccessToken, ok := common.NestedString(messagesResp, "data", "access_token")
-	if !ok || messagesAccessToken == "" {
-		return "", "", errors.New("field data.access_token is missing")
-	}
-	slog.Debug("vk authorize anonymous messages token acquired")
-
-	anonymToken, err := V.fetchCallAnonymousToken(ctx, messagesAccessToken)
-	if err == nil {
-		slog.Debug("vk authorize anonymous call token acquired")
-	}
-	return messagesAccessToken, anonymToken, err
-}
-
-// fetchCallAnonymousToken exchanges the messages token for a call-scoped anonymous token
-func (V *VKHandler) fetchCallAnonymousToken(ctx context.Context, messagesAccessToken string) (string, error) {
 	V.mu.Lock()
 	V.ensureInitLocked()
 	joinURL := V.joinURL
 	username := V.username
 	V.mu.Unlock()
 
-	form := common.NewValues(
-		"vk_join_link", joinURL,
-		"name", username,
-		"access_token", messagesAccessToken,
+	slog.Debug("vk authorize anonymous started")
+
+	var (
+		messagesToken string
+		form          *common.Values
 	)
 
 	for attempt := 0; attempt < vkCaptchaRetries; attempt++ {
+		if messagesToken == "" {
+			resp, err := V.postVKForm(ctx, vkLoginEndpoint+"/?act=get_anonym_token", common.NewValues(
+				"client_id", vkClientID,
+				"token_type", "messages",
+				"client_secret", vkClientSecret,
+				"version", "1",
+				"app_id", vkClientID,
+			), nil)
+			if err != nil {
+				return "", "", err
+			}
+
+			token, ok := common.NestedString(resp, "data", "access_token")
+			if !ok || token == "" {
+				return "", "", errors.New("field data.access_token is missing")
+			}
+
+			messagesToken = token
+
+			slog.Debug("vk authorize anonymous messages token acquired")
+			form = common.NewValues(
+				"vk_join_link", joinURL,
+				"name", username,
+				"access_token", messagesToken,
+			)
+		}
+
 		resp, err := V.postVKForm(ctx, vkAPIEndpoint+"/calls.getAnonymousToken?v=5.274&client_id="+vkClientID, form, map[string]string{
 			"Origin":  "https://vk.com",
 			"Referer": "https://vk.com/",
 		})
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 
 		if errMap, ok := resp["error"].(map[string]any); ok {
 			apiErr := parseVKAPIError(errMap)
 			if apiErr.Code != 14 {
-				return "", fmt.Errorf("%s", apiErr.Message)
+				return "", "", fmt.Errorf("%s", apiErr.Message)
 			}
-			slog.Info(
-				"vk captcha challenge received",
-				"request_attempt",
-				attempt+1,
-				"max_attempts",
-				vkCaptchaRetries,
-			)
+			slog.Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
 
 			solveStartedAt := time.Now()
-			successToken, err := V.solveCaptchaWithRetry(ctx, apiErr)
-			if err != nil {
-				slog.Warn(
-					"vk captcha solve failed",
-					"duration_ms",
-					time.Since(solveStartedAt).Milliseconds(),
-					"error",
-					err,
-				)
-				if errors.Is(err, errCaptchaRateLimit) {
-					form.Del("captcha_key")
-					form.Del("captcha_sid")
-					form.Del("success_token")
-					form.Del("captcha_ts")
-					form.Del("captcha_attempt")
+			successToken, solveErr := V.solveCaptchaWithRetry(ctx, apiErr)
+			if solveErr != nil {
+				slog.Warn("vk captcha solve failed", "duration_ms", time.Since(solveStartedAt).Milliseconds(), "error", solveErr)
+				if errors.Is(solveErr, errCaptchaRateLimit) {
+					messagesToken = ""
 					slog.Info("vk captcha rate limited, retrying", "delay", 1*time.Second)
 					select {
 					case <-ctx.Done():
-						return "", ctx.Err()
-					case <-time.After(1 * time.Second):
+						return "", "", ctx.Err()
+					case <-time.After(5 * time.Second):
 					}
 					continue
 				}
-				return "", err
+				return "", "", solveErr
 			}
-			slog.Info(
-				"vk captcha solved",
-				"duration_ms",
-				time.Since(solveStartedAt).Milliseconds(),
-				"request_attempt",
-				attempt+1,
-			)
 
+			slog.Info("vk captcha solved", "duration_ms", time.Since(solveStartedAt).Milliseconds(), "request_attempt", attempt+1)
 			form.Set("captcha_key", "")
 			form.Set("captcha_sid", apiErr.CaptchaSID)
 			form.Set("is_sound_captcha", "0")
@@ -344,12 +323,14 @@ func (V *VKHandler) fetchCallAnonymousToken(ctx context.Context, messagesAccessT
 
 		token, ok := common.NestedString(resp, "response", "token")
 		if !ok || token == "" {
-			return "", errors.New("field response.token is missing")
+			return "", "", errors.New("field response.token is missing")
 		}
-		return token, nil
+
+		slog.Debug("vk authorize anonymous call token acquired")
+		return messagesToken, token, nil
 	}
 
-	return "", errors.New("failed to obtain anonymous call token")
+	return "", "", errors.New("failed to obtain anonymous call token")
 }
 
 // callsLogin creates an anonymous calls session in the VK calls backend

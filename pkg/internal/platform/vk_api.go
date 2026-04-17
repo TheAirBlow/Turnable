@@ -88,7 +88,7 @@ func (V *VKHandler) postVKFormRaw(ctx context.Context, method, endpoint string, 
 
 	req.Header.Set("User-Agent", p.UserAgent)
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "ru-RU,en;q=0.9")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Sec-CH-UA", p.SecChUa)
 	req.Header.Set("Sec-CH-UA-Mobile", p.SecChUaMobile)
 	req.Header.Set("Sec-CH-UA-Platform", p.SecChUaPlatform)

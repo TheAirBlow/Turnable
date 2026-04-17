@@ -4,13 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"net/http/cookiejar"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
-
-	"golang.org/x/net/publicsuffix"
 
 	"github.com/gorilla/websocket"
 
@@ -241,11 +238,9 @@ func (V *VKHandler) ensureInitLocked() {
 	if V.httpClient != nil {
 		return
 	}
-	jar, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	//proxyURL, _ := url.Parse("http://127.0.0.1:8080")
 	V.httpClient = &http.Client{
 		Timeout: 20 * time.Second,
-		Jar:     jar,
 		Transport: &http.Transport{
 			MaxIdleConns:        32,
 			MaxIdleConnsPerHost: 8,
