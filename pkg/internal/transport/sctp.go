@@ -3,7 +3,6 @@ package transport
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -16,6 +15,7 @@ const (
 	sctpMaxReceiveBuffer    = 4 * 1024 * 1024 // Max SCTP receive buffer size
 	sctpMaxMessageSize      = 64 * 1024       // Max SCTP message size accepted by the association
 	sctpRetransmitTimeoutMs = 2000            // Maximum SCTP retransmit timeout in milliseconds
+	sctpMTU                 = 1418            // DTLS(1440) - encryption overhead(20) - mux header(2)
 )
 
 // SCTPHandler represents an SCTP transport handler
@@ -26,155 +26,108 @@ func (D *SCTPHandler) ID() string {
 	return "sctp"
 }
 
-// WrapClient wraps a client packet connection
-func (D *SCTPHandler) WrapClient(conn net.PacketConn) (io.ReadWriteCloser, error) {
-	nc := &sctpPacketConnNetConn{pc: conn}
+// WrapClient wraps a client connection into a reliable stream
+func (D *SCTPHandler) WrapClient(conn net.Conn) (net.Conn, error) {
 	assoc, err := sctp.Client(sctp.Config{
 		Name:                 "turnable-transport-sctp-client",
-		NetConn:              nc,
+		NetConn:              conn,
 		MaxReceiveBufferSize: sctpMaxReceiveBuffer,
 		MaxMessageSize:       sctpMaxMessageSize,
 		RTOMax:               sctpRetransmitTimeoutMs,
+		MTU:                  sctpMTU,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client sctp association: %w", err)
 	}
 
-	sctpStream, err := assoc.OpenStream(sctpStreamID, sctp.PayloadTypeWebRTCBinary)
+	stream, err := assoc.OpenStream(sctpStreamID, sctp.PayloadTypeWebRTCBinary)
 	if err != nil {
 		_ = assoc.Close()
 		return nil, fmt.Errorf("failed to open sctp stream: %w", err)
 	}
 
-	return &managedSCTPConn{base: conn, assoc: assoc, stream: sctpStream}, nil
+	return &managedSCTPConn{underlying: conn, assoc: assoc, stream: stream}, nil
 }
 
-// WrapServer wraps a server packet connection
-func (D *SCTPHandler) WrapServer(conn net.PacketConn) (io.ReadWriteCloser, error) {
-	nc := &sctpPacketConnNetConn{pc: conn}
+// WrapServer wraps a server connection into a reliable stream
+func (D *SCTPHandler) WrapServer(conn net.Conn) (net.Conn, error) {
 	assoc, err := sctp.Server(sctp.Config{
 		Name:                 "turnable-transport-sctp-server",
-		NetConn:              nc,
+		NetConn:              conn,
 		MaxReceiveBufferSize: sctpMaxReceiveBuffer,
 		MaxMessageSize:       sctpMaxMessageSize,
 		RTOMax:               sctpRetransmitTimeoutMs,
+		MTU:                  sctpMTU,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server sctp association: %w", err)
 	}
 
-	sctpStream, err := assoc.AcceptStream()
+	stream, err := assoc.AcceptStream()
 	if err != nil {
 		_ = assoc.Close()
 		return nil, fmt.Errorf("failed to accept sctp stream: %w", err)
 	}
 
-	return &managedSCTPConn{base: conn, assoc: assoc, stream: sctpStream}, nil
+	return &managedSCTPConn{underlying: conn, assoc: assoc, stream: stream}, nil
 }
 
-// managedSCTPConn represents a managed SCTP connection
+// managedSCTPConn wraps an SCTP stream and implements net.Conn
 type managedSCTPConn struct {
-	base   io.Closer
-	assoc  *sctp.Association
-	stream *sctp.Stream
+	underlying net.Conn
+	assoc      *sctp.Association
+	stream     *sctp.Stream
 
-	closeMu  sync.Mutex
-	isClosed bool
+	closeOnce sync.Once
 }
 
-// Read forwards payload bytes out of the underlying SCTP stream
-func (c *managedSCTPConn) Read(p []byte) (int, error) {
-	return c.stream.Read(p)
-}
+// Read reads from the SCTP stream
+func (c *managedSCTPConn) Read(p []byte) (int, error) { return c.stream.Read(p) }
 
-// Write forwards payload bytes into the underlying SCTP stream
-func (c *managedSCTPConn) Write(p []byte) (int, error) {
-	return c.stream.Write(p)
-}
+// Write writes to the SCTP stream
+func (c *managedSCTPConn) Write(p []byte) (int, error) { return c.stream.Write(p) }
 
-// Close closes the stream, association, and underlying transport.
+// Close closes the SCTP stream, association, and underlying connection
 func (c *managedSCTPConn) Close() error {
-	c.closeMu.Lock()
-	if c.isClosed {
-		c.closeMu.Unlock()
-		return nil
-	}
-	c.isClosed = true
-	c.closeMu.Unlock()
-
-	return errors.Join(
-		func() error {
-			if c.stream == nil {
-				return nil
-			}
-			return c.stream.Close()
-		}(),
-		func() error {
-			if c.assoc == nil {
-				return nil
-			}
-			return c.assoc.Close()
-		}(),
-		func() error {
-			if c.base == nil {
-				return nil
-			}
-			return c.base.Close()
-		}(),
-	)
+	var err error
+	c.closeOnce.Do(func() {
+		err = errors.Join(
+			func() error {
+				if c.stream == nil {
+					return nil
+				}
+				return c.stream.Close()
+			}(),
+			func() error {
+				if c.assoc == nil {
+					return nil
+				}
+				return c.assoc.Close()
+			}(),
+			func() error {
+				if c.underlying == nil {
+					return nil
+				}
+				return c.underlying.Close()
+			}(),
+		)
+	})
+	return err
 }
 
-// sctpPacketConnNetConn adapts a net.PacketConn to net.Conn
-type sctpPacketConnNetConn struct {
-	pc net.PacketConn
+// LocalAddr returns the local address of the underlying connection
+func (c *managedSCTPConn) LocalAddr() net.Addr { return c.underlying.LocalAddr() }
+
+// RemoteAddr returns the remote address of the underlying connection
+func (c *managedSCTPConn) RemoteAddr() net.Addr { return c.underlying.RemoteAddr() }
+
+// SetDeadline sets the read and write deadline on the underlying connection
+func (c *managedSCTPConn) SetDeadline(t time.Time) error { return c.underlying.SetDeadline(t) }
+
+// SetReadDeadline sets the read deadline on the underlying connection
+func (c *managedSCTPConn) SetReadDeadline(t time.Time) error { return c.underlying.SetReadDeadline(t) }
+
+// SetWriteDeadline sets the write deadline on the underlying connection
+func (c *managedSCTPConn) SetWriteDeadline(t time.Time) error {
+	return c.underlying.SetWriteDeadline(t)
 }
-
-// Read reads one packet from the underlying net.PacketConn
-func (c *sctpPacketConnNetConn) Read(p []byte) (int, error) {
-	n, _, err := c.pc.ReadFrom(p)
-	return n, err
-}
-
-// Write sends one packet via the underlying net.PacketConn
-func (c *sctpPacketConnNetConn) Write(p []byte) (int, error) {
-	return c.pc.WriteTo(p, c.pc.LocalAddr())
-}
-
-// Close closes the underlying net.PacketConn
-func (c *sctpPacketConnNetConn) Close() error {
-	return c.pc.Close()
-}
-
-// LocalAddr returns the local address of the underlying net.PacketConn
-func (c *sctpPacketConnNetConn) LocalAddr() net.Addr {
-	return c.pc.LocalAddr()
-}
-
-// RemoteAddr returns a synthetic remote address
-func (c *sctpPacketConnNetConn) RemoteAddr() net.Addr {
-	return sctpDummyAddr{}
-}
-
-// SetDeadline forwards deadline configuration
-func (c *sctpPacketConnNetConn) SetDeadline(t time.Time) error {
-	return c.pc.SetDeadline(t)
-}
-
-// SetReadDeadline forwards read deadline configuration
-func (c *sctpPacketConnNetConn) SetReadDeadline(t time.Time) error {
-	return c.pc.SetReadDeadline(t)
-}
-
-// SetWriteDeadline forwards write deadline configuration
-func (c *sctpPacketConnNetConn) SetWriteDeadline(t time.Time) error {
-	return c.pc.SetWriteDeadline(t)
-}
-
-// sctpDummyAddr provides a synthetic remote address
-type sctpDummyAddr struct{}
-
-// Network returns the synthetic network name used for the SCTP transport
-func (sctpDummyAddr) Network() string { return "sctp-transport" }
-
-// String returns the synthetic address string used for the SCTP transport
-func (sctpDummyAddr) String() string { return "sctp-transport" }

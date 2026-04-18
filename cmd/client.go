@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -15,12 +16,14 @@ import (
 	"github.com/theairblow/turnable/pkg/engine/tunnels"
 )
 
+// clientOptions holds CLI flags for the client subcommand
 type clientOptions struct {
 	connectionURL string
 	listenAddr    string
 	verbose       bool
 }
 
+// newClientCommand creates the Client cobra command
 func newClientCommand() *cobra.Command {
 	opts := &clientOptions{}
 
@@ -42,6 +45,7 @@ func newClientCommand() *cobra.Command {
 	return cmd
 }
 
+// serverMain runs the client command
 func clientMain(opts *clientOptions) error {
 	if opts.verbose {
 		common.SetLogLevel(int(slog.LevelDebug))
@@ -49,17 +53,17 @@ func clientMain(opts *clientOptions) error {
 
 	cfg, err := config.NewClientConfigFromURL(opts.connectionURL)
 	if err != nil {
-		return common.WrapError("failed to parse connection URL", err)
+		return fmt.Errorf("failed to parse connection URL: %w", err)
 	}
 	if err := cfg.Validate(); err != nil {
-		return common.WrapError("failed to validate connection URL", err)
+		return fmt.Errorf("failed to validate connection URL: %w", err)
 	}
 
 	tunnelHandler := &tunnels.SocketHandler{LocalAddr: opts.listenAddr}
 
 	client := engine.NewVPNClient(*cfg)
 	if err := client.Start(tunnelHandler); err != nil {
-		return common.WrapError("failed to start vpn client", err)
+		return fmt.Errorf("failed to start vpn client: %w", err)
 	}
 
 	slog.Info("client started", "socket", cfg.Socket, "connection_type", cfg.Type, "listen", opts.listenAddr)
@@ -83,7 +87,7 @@ func clientMain(opts *clientOptions) error {
 
 	<-ctx.Done()
 	if err := client.Stop(); err != nil {
-		return common.WrapError("failed to stop vpn client", err)
+		return fmt.Errorf("failed to stop vpn client: %w", err)
 	}
 	return nil
 }

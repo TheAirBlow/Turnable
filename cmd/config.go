@@ -6,11 +6,11 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/theairblow/turnable/pkg/common"
 	configpkg "github.com/theairblow/turnable/pkg/config"
 	"github.com/theairblow/turnable/pkg/config/providers"
 )
 
+// configOptions holds CLI flags for the config subcommand
 type configOptions struct {
 	configPath string
 	storePath  string
@@ -18,6 +18,7 @@ type configOptions struct {
 	userUUID   string
 }
 
+// newConfigCommand creates the config cobra command
 func newConfigCommand() *cobra.Command {
 	opts := &configOptions{}
 
@@ -39,43 +40,44 @@ func newConfigCommand() *cobra.Command {
 	return cmd
 }
 
+// serverMain runs the config command
 func configMain(opts *configOptions) error {
 	storeData, err := os.ReadFile(opts.storePath)
 	if err != nil {
-		return common.WrapError("failed to read store json file", err)
+		return fmt.Errorf("failed to read store json file: %w", err)
 	}
 
 	provider, err := providers.NewJSONProviderFromJSON(string(storeData))
 	if err != nil {
-		return common.WrapError("failed to parse store json file", err)
+		return fmt.Errorf("failed to parse store json file: %w", err)
 	}
 
 	configData, err := os.ReadFile(opts.configPath)
 	if err != nil {
-		return common.WrapError("failed to read config json file", err)
+		return fmt.Errorf("failed to read config json file: %w", err)
 	}
 
 	serverCfg, err := configpkg.NewServerConfigFromJSON(string(configData), provider)
 	if err != nil {
-		return common.WrapError("failed to parse config json file", err)
+		return fmt.Errorf("failed to parse config json file: %w", err)
 	}
 	if err := serverCfg.Validate(); err != nil {
-		return common.WrapError("failed to validate server config", err)
+		return fmt.Errorf("failed to validate server config: %w", err)
 	}
 
 	user, err := serverCfg.GetUser(opts.userUUID)
 	if err != nil {
-		return common.WrapError("failed to resolve user", err)
+		return fmt.Errorf("failed to resolve user: %w", err)
 	}
 
 	route, err := serverCfg.GetRoute(opts.routeID)
 	if err != nil {
-		return common.WrapError("failed to resolve route", err)
+		return fmt.Errorf("failed to resolve route: %w", err)
 	}
 
 	clientCfg, err := serverCfg.GetClientConfig(user, route)
 	if err != nil {
-		return common.WrapError("failed to generate client config", err)
+		return fmt.Errorf("failed to generate client config: %w", err)
 	}
 
 	fmt.Println(clientCfg.ToURL(false))

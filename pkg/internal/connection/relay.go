@@ -2,6 +2,7 @@ package connection
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -56,7 +57,7 @@ type RelayHandler struct {
 
 	// client-side
 	platform  platformpkg.Handler
-	muxClient *VPNMuxClient
+	muxClient *TinyMuxClient
 	peerConn  *PeerConn
 	cancel    context.CancelFunc
 
@@ -135,7 +136,7 @@ func (D *RelayHandler) Stop() error {
 
 // Connect establishes a relay client connection and performs the connection-layer handshake.
 // The sessionUUID parameter is accepted for API compatibility but the server assigns the UUID.
-func (D *RelayHandler) Connect(cfg config.ClientConfig, _ string) error {
+func (D *RelayHandler) Connect(cfg config.ClientConfig) error {
 	if cfg.Type != D.ID() {
 		return fmt.Errorf("invalid connection type %q, expected %q", cfg.Type, D.ID())
 	}
@@ -158,16 +159,33 @@ func (D *RelayHandler) Connect(cfg config.ClientConfig, _ string) error {
 	return nil
 }
 
-// OpenChannel opens a new vpnmux data channel for the given socket type ("tcp" or "udp").
-func (D *RelayHandler) OpenChannel(socketType string) (io.ReadWriteCloser, error) {
-	stream, err := D.openChannel()
+// OpenChannel opens a new tinymux data channel, wrapping with transport for TCP
+func (D *RelayHandler) OpenChannel(socketType string) (net.Conn, error) {
+	flowConn, err := D.openChannel()
 	if err != nil {
 		return nil, err
 	}
-	if strings.ToLower(socketType) == "udp" {
-		return newFramedUDPStream(stream), nil
+	if strings.ToLower(socketType) == "tcp" {
+		D.mu.Lock()
+		cfg := D.clientConfig
+		D.mu.Unlock()
+		if cfg == nil {
+			_ = flowConn.Close()
+			return nil, errors.New("relay: no client config")
+		}
+		handler, err := transportpkg.GetHandler(cfg.Transport)
+		if err != nil {
+			_ = flowConn.Close()
+			return nil, fmt.Errorf("relay: transport setup: %w", err)
+		}
+		wrapped, err := handler.WrapClient(flowConn)
+		if err != nil {
+			_ = flowConn.Close()
+			return nil, fmt.Errorf("relay: transport wrap: %w", err)
+		}
+		return wrapped, nil
 	}
-	return stream, nil
+	return flowConn, nil
 }
 
 // Disconnect gracefully disconnects the current client-side relay session.
@@ -200,7 +218,7 @@ func (D *RelayHandler) Disconnect() error {
 			if muxClient == nil {
 				return nil
 			}
-			_ = muxClient.SendDisconnect()
+			_ = muxClient.Disconnect()
 			return muxClient.Close()
 		}(),
 		func() error {
@@ -265,7 +283,8 @@ func (D *RelayHandler) Close() error {
 	)
 }
 
-func (D *RelayHandler) openChannel() (io.ReadWriteCloser, error) {
+// openChannel opens a new mux channel for data forwarding
+func (D *RelayHandler) openChannel() (net.Conn, error) {
 	if D.reconnecting.Load() {
 		return nil, ErrReconnecting
 	}
@@ -291,7 +310,7 @@ func (D *RelayHandler) openChannel() (io.ReadWriteCloser, error) {
 	return stream, nil
 }
 
-// connectClientSession establishes the platform, underlay, and vpnmux session for the client.
+// connectClientSession establishes the platform, underlay, and tinymux session for the client.
 func (D *RelayHandler) connectClientSession() error {
 	D.reconnectMu.Lock()
 	defer D.reconnectMu.Unlock()
@@ -370,7 +389,7 @@ func (D *RelayHandler) connectClientSession() error {
 		return fmt.Errorf("peer 0 connect: %w", err)
 	}
 
-	encTunnel0, err := wrapClientEncryptedStream(rawConn0, cfg.PubKey)
+	encTunnel0, err := wrapClientEncryptedConn(rawConn0, cfg.PubKey)
 	if err != nil {
 		_ = rawConn0.Close()
 		cancel()
@@ -378,14 +397,10 @@ func (D *RelayHandler) connectClientSession() error {
 		return fmt.Errorf("peer 0 encryption init: %w", err)
 	}
 
-	if dc, ok := rawConn0.(interface{ SetDeadline(time.Time) error }); ok {
-		_ = dc.SetDeadline(time.Now().Add(relayHandshakeTimeout))
-	}
+	_ = rawConn0.SetDeadline(time.Now().Add(relayHandshakeTimeout))
 
 	assignedUUID, err := doClientPrimaryHandshake(encTunnel0, cfg.ToURL(true))
-	if dc, ok := rawConn0.(interface{ SetDeadline(time.Time) error }); ok {
-		_ = dc.SetDeadline(time.Time{})
-	}
+	_ = rawConn0.SetDeadline(time.Time{})
 
 	if err != nil {
 		_ = rawConn0.Close()
@@ -396,113 +411,11 @@ func (D *RelayHandler) connectClientSession() error {
 
 	sessionUUIDStr := uuid.UUID(assignedUUID).String()
 
-	var conn0 io.ReadWriteCloser
+	var conn0 net.Conn
 	if cfg.Encryption == "full" {
 		conn0 = encTunnel0
 	} else {
 		conn0 = encTunnel0.Underlying()
-	}
-
-	// Reconnect factory - all peers (including peer 0) reconnect as secondary peers,
-	// since the primary session (KCP/VPNMux) stays alive as long as ≥1 peer is connected.
-	makePeerReconnectFn := func(peerIdx int) func(context.Context) (io.ReadWriteCloser, error) {
-		return func(ctx context.Context) (io.ReadWriteCloser, error) {
-			handler, _ := protocol.GetHandler(cfg.Proto)
-			handler.SetLogger(slog.With("peer_idx", peerIdx))
-			ctx, cancel := context.WithTimeout(watchCtx, 5*time.Second)
-			defer cancel()
-
-			rawConn, err := handler0.Connect(ctx, dest, relayInfo, true)
-			if err != nil {
-				return nil, err
-			}
-			encTunnel, err := wrapClientEncryptedStream(rawConn, cfg.PubKey)
-			if err != nil {
-				_ = rawConn.Close()
-				return nil, err
-			}
-
-			if dc, ok := rawConn.(interface{ SetDeadline(time.Time) error }); ok {
-				_ = dc.SetDeadline(time.Now().Add(relayHandshakeTimeout))
-			}
-
-			handshakeErr := doClientSecondaryHandshake(encTunnel, assignedUUID, cfg.UserUUID, cfg.RouteID)
-			if dc, ok := rawConn.(interface{ SetDeadline(time.Time) error }); ok {
-				_ = dc.SetDeadline(time.Time{})
-			}
-
-			if handshakeErr != nil {
-				_ = rawConn.Close()
-				// Server no longer knows about this session: trigger a full primary reconnect
-				// instead of endlessly retrying secondary handshakes that will keep failing.
-				if handshakeErr.Error() == "session not found" || handshakeErr.Error() == "session mismatch" {
-					return nil, fmt.Errorf("%w: %s", ErrNeedFullReconnect, handshakeErr.Error())
-				}
-				return nil, handshakeErr
-			}
-
-			if cfg.Encryption == "full" {
-				return encTunnel, nil
-			}
-			return encTunnel.Underlying(), nil
-		}
-	}
-
-	peerConn := NewPeerConn()
-	if err := peerConn.AddPeer(conn0, makePeerReconnectFn(0)); err != nil {
-		_ = rawConn0.Close()
-		cancel()
-		_ = platformHandler.Disconnect()
-		return err
-	}
-
-	// Transport layer over PeerConn for reliable stream delivery.
-	handler, err := transportpkg.GetHandler(cfg.Transport)
-	if err != nil {
-		_ = peerConn.Close()
-		cancel()
-		_ = platformHandler.Disconnect()
-		return fmt.Errorf("transport setup: %w", err)
-	}
-	muxTransport, err := handler.WrapClient(peerConn)
-	if err != nil {
-		_ = peerConn.Close()
-		cancel()
-		_ = platformHandler.Disconnect()
-		return fmt.Errorf("transport setup: %w", err)
-	}
-
-	// Plain VPNMux - no auth or encryption at this layer; handled per-peer above.
-	muxClient, err := NewVPNMuxClient(muxTransport)
-	if err != nil {
-		_ = muxTransport.Close()
-		cancel()
-		_ = platformHandler.Disconnect()
-		return err
-	}
-
-	// Atomically swap in new session state.
-	D.mu.Lock()
-	D.cancel = cancel
-	D.proto = handler0
-	D.platform = platformHandler
-	D.muxClient = muxClient
-	D.peerConn = peerConn
-	D.sessionUUID = sessionUUIDStr
-	D.mu.Unlock()
-
-	// Tear down previous session (best-effort).
-	if oldCancel != nil {
-		oldCancel()
-	}
-	if oldPeerConn != nil {
-		_ = oldPeerConn.Close()
-	}
-	if oldPlatform != nil {
-		_ = oldPlatform.Close()
-	}
-	if oldMux != nil {
-		_ = oldMux.Close()
 	}
 
 	// fullReconnect triggers a fresh primary session with exponential backoff.
@@ -541,8 +454,87 @@ func (D *RelayHandler) connectClientSession() error {
 		}
 	}
 
-	// Register on peerConn so per-peer loops can escalate ErrNeedFullReconnect.
-	peerConn.SetOnFullReconnect(fullReconnect)
+	// Reconnect factory - all peers (including peer 0) reconnect as secondary peers,
+	// since the primary session (VPNMux) stays alive as long as ≥1 peer is connected.
+	makePeerReconnectFn := func(peerIdx int) func(context.Context) (net.Conn, error) {
+		return func(ctx context.Context) (net.Conn, error) {
+			handler, _ := protocol.GetHandler(cfg.Proto)
+			handler.SetLogger(slog.With("peer_idx", peerIdx))
+			ctx, cancel := context.WithTimeout(watchCtx, 5*time.Second)
+			defer cancel()
+
+			rawConn, err := handler0.Connect(ctx, dest, relayInfo, true)
+			if err != nil {
+				return nil, err
+			}
+			encTunnel, err := wrapClientEncryptedConn(rawConn, cfg.PubKey)
+			if err != nil {
+				_ = rawConn.Close()
+				return nil, err
+			}
+
+			_ = rawConn.SetDeadline(time.Now().Add(relayHandshakeTimeout))
+			handshakeErr := doClientSecondaryHandshake(encTunnel, assignedUUID, cfg.UserUUID, cfg.RouteID)
+			_ = rawConn.SetDeadline(time.Time{})
+
+			if handshakeErr != nil {
+				_ = rawConn.Close()
+				// Server no longer knows about this session: trigger a full primary reconnect
+				// instead of endlessly retrying secondary handshakes that will keep failing.
+				if handshakeErr.Error() == "session not found" || handshakeErr.Error() == "session mismatch" {
+					fullReconnect()
+					return nil, ErrPeerDone
+				}
+				return nil, handshakeErr
+			}
+
+			if cfg.Encryption == "full" {
+				return encTunnel, nil
+			}
+			return encTunnel.Underlying(), nil
+		}
+	}
+
+	peerConn := NewPeerConn(watchCtx)
+	if err := peerConn.AddPeer(conn0, makePeerReconnectFn(0)); err != nil {
+		_ = rawConn0.Close()
+		cancel()
+		_ = platformHandler.Disconnect()
+		return err
+	}
+
+	// VPNMux directly on PeerConn - transport is per-flow, not global.
+	muxClient, err := NewTinyMuxClient(watchCtx, peerConn)
+	if err != nil {
+		_ = peerConn.Close()
+		cancel()
+		_ = platformHandler.Disconnect()
+		return err
+	}
+
+	// Atomically swap in new session state.
+	D.mu.Lock()
+	D.cancel = cancel
+	D.proto = handler0
+	D.platform = platformHandler
+	D.muxClient = muxClient
+	D.peerConn = peerConn
+	D.sessionUUID = sessionUUIDStr
+	D.mu.Unlock()
+
+	// Tear down previous session (best-effort).
+	if oldCancel != nil {
+		oldCancel()
+	}
+	if oldPeerConn != nil {
+		_ = oldPeerConn.Close()
+	}
+	if oldPlatform != nil {
+		_ = oldPlatform.Close()
+	}
+	if oldMux != nil {
+		_ = oldMux.Close()
+	}
 
 	// Watch the mux session independently: if VPNMux dies (ping timeout or Disconnect
 	// from server) without the underlying DTLS connections failing, nothing else would
@@ -555,7 +547,7 @@ func (D *RelayHandler) connectClientSession() error {
 			isCurrentMux := D.muxClient == watchedMux
 			D.mu.Unlock()
 			if isCurrentMux {
-				slog.Info("vpnmux session died, triggering full reconnect")
+				slog.Info("tinymux session died, triggering full reconnect")
 				fullReconnect()
 			}
 		case <-watchCtx.Done():
@@ -581,14 +573,8 @@ func (D *RelayHandler) connectClientSession() error {
 					}
 					return
 				}
-				if errors.Is(err, ErrNeedFullReconnect) {
-					slog.Info("peer needs full session reconnect during init", "peer_idx", peerIdx)
-					peerConn.mu.RLock()
-					fn := peerConn.onFullReconnect
-					peerConn.mu.RUnlock()
-					if fn != nil {
-						fn()
-					}
+				if errors.Is(err, ErrPeerDone) {
+					// fullReconnect already triggered inside reconnFn.
 					return
 				}
 				slog.Warn("peer handshake failed", "peer_idx", peerIdx, "delay", delay, "error", err)
@@ -646,62 +632,83 @@ func (D *RelayHandler) AcceptClients(ctx context.Context) <-chan ServerClient {
 	return out
 }
 
-// handleIncomingPeer dispatches an incoming peer to the primary or secondary handler.
+// handleIncomingPeer dispatches an incoming peer to the primary or secondary handler
 func (D *RelayHandler) handleIncomingPeer(
 	ctx context.Context,
 	client protocol.ServerClient,
 	serverCfg *config.ServerConfig,
 	out chan<- ServerClient,
 ) error {
-	// Deadline covers the full per-peer KEM exchange + hello.
-	if dc, ok := client.IO.(interface{ SetDeadline(time.Time) error }); ok {
-		_ = dc.SetDeadline(time.Now().Add(relayHandshakeTimeout))
-	}
+	_ = client.Conn.SetDeadline(time.Now().Add(relayHandshakeTimeout))
 
-	// Every peer gets its own EncryptedTunnel with an independent KEM-derived key.
+	// Every peer gets its own EncryptedConn with an independent KEM-derived key.
 	// TODO: fix resource leak
-	encTunnel, err := wrapServerEncryptedStream(client.IO, serverCfg.PrivKey)
+	encConn, err := wrapServerEncryptedConn(client.Conn, serverCfg.PrivKey)
 	if err != nil {
-		_ = client.IO.Close()
+		_ = client.Conn.Close()
 		return fmt.Errorf("peer encryption setup: %w", err)
 	}
 
-	// Read hello type byte (sent inside the encrypted tunnel).
-	typeBuf := make([]byte, 1)
-	if _, err := common.ReadFullRetry(encTunnel, typeBuf); err != nil {
-		_ = client.IO.Close()
-		return fmt.Errorf("read hello type: %w", err)
+	// Send a fresh 8-byte challenge so the client must echo it in the hello.
+	// This binds the relay handshake to this specific connection and prevents replay.
+	var challenge [8]byte
+	if _, err := rand.Read(challenge[:]); err != nil {
+		_ = client.Conn.Close()
+		return fmt.Errorf("generate challenge: %w", err)
+	}
+	if _, err := encConn.Write(challenge[:]); err != nil {
+		_ = client.Conn.Close()
+		return fmt.Errorf("write challenge: %w", err)
 	}
 
-	switch typeBuf[0] {
+	// Read entire hello packet (type byte + challenge echo + payload) in one datagram read
+	buf := make([]byte, 4096)
+	n, err := encConn.Read(buf)
+	if err != nil {
+		_ = client.Conn.Close()
+		return fmt.Errorf("read hello: %w", err)
+	}
+	if n < 9 {
+		_ = client.Conn.Close()
+		return errors.New("hello packet too short")
+	}
+
+	// Verify challenge echo (bytes 1-8)
+	if [8]byte(buf[1:9]) != challenge {
+		_ = client.Conn.Close()
+		return errors.New("challenge mismatch: possible replay")
+	}
+
+	switch buf[0] {
 	case relayHelloTypePrimary:
-		return D.handlePrimaryPeer(ctx, client, encTunnel, serverCfg, out)
+		return D.handlePrimaryPeer(ctx, client, encConn, buf[9:n], serverCfg, out)
 	case relayHelloTypeSecondary:
-		return D.handleSecondaryPeer(client, encTunnel)
+		return D.handleSecondaryPeer(client, encConn, buf[9:n])
 	default:
-		_ = client.IO.Close()
-		return fmt.Errorf("unknown hello type %d", typeBuf[0])
+		_ = client.Conn.Close()
+		return fmt.Errorf("unknown hello type %d", buf[0])
 	}
 }
 
-// handlePrimaryPeer establishes the primary session (KCP → VPNMux) for a new client.
+// handlePrimaryPeer establishes the primary session (VPNMux) for a new client
 func (D *RelayHandler) handlePrimaryPeer(
 	ctx context.Context,
 	client protocol.ServerClient,
-	encTunnel *EncryptedTunnel,
+	encConn *EncryptedConn,
+	helloPayload []byte,
 	serverCfg *config.ServerConfig,
 	out chan<- ServerClient,
 ) error {
-	configURL, err := readPrimaryHello(encTunnel)
+	configURL, err := parsePrimaryHello(helloPayload)
 	if err != nil {
-		_ = client.IO.Close()
-		return fmt.Errorf("read primary hello: %w", err)
+		_ = client.Conn.Close()
+		return fmt.Errorf("parse primary hello: %w", err)
 	}
 
 	clientCfg, user, route, err := validateRelayConfigURL(*serverCfg, configURL)
 	if err != nil {
-		_ = writePrimaryAck(encTunnel, [16]byte{}, err.Error())
-		_ = client.IO.Close()
+		_ = writePrimaryAck(encConn, [16]byte{}, err.Error())
+		_ = client.Conn.Close()
 		return err
 	}
 
@@ -709,20 +716,17 @@ func (D *RelayHandler) handlePrimaryPeer(
 	var sessionUUIDBin [16]byte
 	copy(sessionUUIDBin[:], sessionID[:])
 
-	if err := writePrimaryAck(encTunnel, sessionUUIDBin, ""); err != nil {
-		_ = client.IO.Close()
+	if err := writePrimaryAck(encConn, sessionUUIDBin, ""); err != nil {
+		_ = client.Conn.Close()
 		return fmt.Errorf("write primary ack: %w", err)
 	}
 
-	// Clear deadline after handshake.
-	if dc, ok := client.IO.(interface{ SetDeadline(time.Time) error }); ok {
-		_ = dc.SetDeadline(time.Time{})
-	}
+	_ = client.Conn.SetDeadline(time.Time{})
 
 	sessionUUIDStr := sessionID.String()
 	slog.Info("relay handshake started", "addr", client.Address)
 
-	peerConn := NewPeerConn()
+	peerConn := NewPeerConn(ctx)
 	peerConn.SetLogger(slog.With("session_uuid", sessionUUIDStr))
 	newSess := &relayServerSession{
 		peerConn: peerConn,
@@ -733,129 +737,123 @@ func (D *RelayHandler) handlePrimaryPeer(
 
 	actual, loaded := D.sessions.LoadOrStore(sessionUUIDStr, newSess)
 	if loaded {
-		// UUID collision (extremely unlikely) - join the existing session.
 		existSess := actual.(*relayServerSession)
-		var conn io.ReadWriteCloser
+		var conn net.Conn
 		if existSess.fullEnc {
-			conn = encTunnel
+			conn = encConn
 		} else {
-			conn = encTunnel.Underlying()
+			conn = encConn.Underlying()
 		}
 		_ = existSess.peerConn.AddPeer(conn, nil)
 		return nil
 	}
 	defer D.sessions.Delete(sessionUUIDStr)
 
-	var peer0 io.ReadWriteCloser
+	var peer0 net.Conn
 	if clientCfg.Encryption == "full" {
-		peer0 = encTunnel
+		peer0 = encConn
 	} else {
-		peer0 = encTunnel.Underlying()
+		peer0 = encConn.Underlying()
 	}
 	_ = peerConn.AddPeer(peer0, nil)
 
-	handler, err := transportpkg.GetHandler(route.Transport)
+	// VPNMux directly on PeerConn - transport is per-flow.
+	muxServer, err := NewTinyMuxServer(peerConn)
 	if err != nil {
 		_ = peerConn.Close()
-		return fmt.Errorf("transport setup: %w", err)
-	}
-	kcpTransport, err := handler.WrapServer(peerConn)
-	if err != nil {
-		_ = peerConn.Close()
-		return fmt.Errorf("transport setup: %w", err)
-	}
-	defer func() { _ = kcpTransport.Close() }()
-
-	muxServer, err := NewVPNMuxServer(kcpTransport)
-	if err != nil {
-		return fmt.Errorf("vpnmux setup: %w", err)
+		return fmt.Errorf("tinymux setup: %w", err)
 	}
 	defer func() { _ = muxServer.Close() }()
-	muxServer.SetSessionUUID(sessionUUIDStr)
 
 	// When all peers disconnect, forcibly close the mux so AcceptChannels unblocks immediately.
 	peerConn.SetOnAllPeersGone(func() { _ = muxServer.Close() })
 
+	// Per-flow transport handler for TCP routes.
+	transportHandler, transportErr := transportpkg.GetHandler(route.Transport)
+	if transportErr != nil {
+		return fmt.Errorf("transport setup: %w", transportErr)
+	}
+
 	slog.Info("relay handshake completed", "addr", client.Address, "session_uuid", sessionUUIDStr, "user_uuid", clientCfg.UserUUID, "route_id", clientCfg.RouteID)
 
 	for channel := range muxServer.AcceptChannels(ctx) {
-		var stream io.ReadWriteCloser = channel.Stream
-		if route.Socket == "udp" {
-			stream = newFramedUDPStream(channel.Stream)
+		var conn net.Conn = channel.Conn
+		if route.Socket == "tcp" {
+			wrapped, wrapErr := transportHandler.WrapServer(channel.Conn)
+			if wrapErr != nil {
+				slog.Warn("transport wrap failed", "flow_id", channel.FlowID, "error", wrapErr)
+				_ = channel.Conn.Close()
+				continue
+			}
+			conn = wrapped
 		}
 		select {
 		case out <- ServerClient{
-			Address:        client.Address,
-			IO:             stream,
-			Config:         clientCfg,
-			User:           user,
-			Route:          route,
-			SessionUUID:    fmt.Sprintf("%s:%d", sessionUUIDStr, channel.ID),
-			CloseRequested: channel.CloseRequested,
+			Address:     client.Address,
+			Conn:        conn,
+			Config:      clientCfg,
+			User:        user,
+			Route:       route,
+			SessionUUID: fmt.Sprintf("%s:%d", sessionUUIDStr, channel.FlowID),
 		}:
 		case <-ctx.Done():
-			_ = channel.Stream.Close()
+			_ = channel.Conn.Close()
 			return nil
 		}
 	}
-	// If the server context was canceled (graceful shutdown), notify the client before
-	// the deferred Close() tears down the session.
 	select {
 	case <-ctx.Done():
-		_ = muxServer.SendDisconnect()
+		_ = muxServer.Disconnect()
 	default:
 	}
 	return nil
 }
 
-// handleSecondaryPeer attaches an incoming secondary connection to an existing session.
+// handleSecondaryPeer attaches an incoming secondary connection to an existing session
 func (D *RelayHandler) handleSecondaryPeer(
 	client protocol.ServerClient,
-	encTunnel *EncryptedTunnel,
+	encConn *EncryptedConn,
+	helloPayload []byte,
 ) error {
-	sessionUUIDBin, userUUID, routeID, err := readSecondaryHello(encTunnel)
+	sessionUUIDBin, userUUID, routeID, err := parseSecondaryHello(helloPayload)
 	if err != nil {
-		_ = client.IO.Close()
-		return fmt.Errorf("read secondary hello: %w", err)
+		_ = client.Conn.Close()
+		return fmt.Errorf("parse secondary hello: %w", err)
 	}
 
 	sessionUUIDStr := uuid.UUID(sessionUUIDBin).String()
 
 	existing, loaded := D.sessions.Load(sessionUUIDStr)
 	if !loaded {
-		_ = writeSecondaryAck(encTunnel, "session not found")
-		_ = client.IO.Close()
+		_ = writeSecondaryAck(encConn, "session not found")
+		_ = client.Conn.Close()
 		return fmt.Errorf("secondary peer: session %s not found", sessionUUIDStr)
 	}
 
 	sess := existing.(*relayServerSession)
 
-	// Validate user UUID and route ID to prevent unauthorized peer injection.
 	if sess.userUUID != userUUID || sess.routeID != routeID {
-		_ = writeSecondaryAck(encTunnel, "session mismatch")
-		_ = client.IO.Close()
+		_ = writeSecondaryAck(encConn, "session mismatch")
+		_ = client.Conn.Close()
 		return fmt.Errorf("secondary peer: session mismatch for %s", sessionUUIDStr)
 	}
 
-	if err := writeSecondaryAck(encTunnel, ""); err != nil {
-		_ = client.IO.Close()
+	if err := writeSecondaryAck(encConn, ""); err != nil {
+		_ = client.Conn.Close()
 		return fmt.Errorf("write secondary ack: %w", err)
 	}
 
-	// Clear deadline.
-	if dc, ok := client.IO.(interface{ SetDeadline(time.Time) error }); ok {
-		_ = dc.SetDeadline(time.Time{})
-	}
+	_ = client.Conn.SetDeadline(time.Time{})
 
-	var conn io.ReadWriteCloser
+	var conn net.Conn
 	if sess.fullEnc {
-		conn = encTunnel
+		conn = encConn
 	} else {
-		conn = encTunnel.Underlying()
+		conn = encConn.Underlying()
 	}
 
 	if err := sess.peerConn.AddPeer(conn, nil); err != nil {
-		_ = client.IO.Close()
+		_ = client.Conn.Close()
 		return err
 	}
 
@@ -932,189 +930,175 @@ func validateRelayConfigURL(serverCfg config.ServerConfig, configURL string) (*c
 	return clientCfg, user, route, nil
 }
 
-// writePrimaryHello encodes and sends the primary hello payload.
-func writePrimaryHello(enc io.Writer, configURL string) error {
+// writePrimaryHello sends hello_type + challenge_echo + version + configLen + config as a single packet
+func writePrimaryHello(w io.Writer, challenge [8]byte, configURL string) error {
 	configBytes := []byte(configURL)
-	buf := make([]byte, 0, 1+4+len(configBytes))
+	buf := make([]byte, 0, 1+8+1+4+len(configBytes))
+	buf = append(buf, relayHelloTypePrimary)
+	buf = append(buf, challenge[:]...)
 	buf = append(buf, relayHandshakeVersion)
 	buf = binary.BigEndian.AppendUint32(buf, uint32(len(configBytes)))
 	buf = append(buf, configBytes...)
-	if err := common.WriteFullRetry(enc, buf); err != nil {
-		return fmt.Errorf("write primary hello: %w", err)
-	}
-	return nil
+	_, err := w.Write(buf)
+	return err
 }
 
-// readPrimaryHello decodes the primary hello payload.
-func readPrimaryHello(enc io.Reader) (string, error) {
-	header := make([]byte, 5) // version(1) + configLen(4)
-	if _, err := common.ReadFullRetry(enc, header); err != nil {
-		return "", fmt.Errorf("read primary hello header: %w", err)
+// parsePrimaryHello parses the hello payload (after type byte is stripped)
+func parsePrimaryHello(data []byte) (string, error) {
+	if len(data) < 5 {
+		return "", errors.New("primary hello too short")
 	}
-	if header[0] != relayHandshakeVersion {
-		return "", fmt.Errorf("unsupported primary hello version %d", header[0])
+	if data[0] != relayHandshakeVersion {
+		return "", fmt.Errorf("unsupported primary hello version %d", data[0])
 	}
-	configLen := binary.BigEndian.Uint32(header[1:5])
+	configLen := binary.BigEndian.Uint32(data[1:5])
 	if configLen == 0 {
 		return "", errors.New("primary hello: empty config URL")
 	}
-	configBytes := make([]byte, configLen)
-	if _, err := common.ReadFullRetry(enc, configBytes); err != nil {
-		return "", fmt.Errorf("read primary hello config: %w", err)
+	if len(data) < 5+int(configLen) {
+		return "", errors.New("primary hello: truncated config")
 	}
-	return string(configBytes), nil
+	return string(data[5 : 5+configLen]), nil
 }
 
-// writeSecondaryHello encodes and sends the secondary hello payload.
-func writeSecondaryHello(enc io.Writer, sessionUUID [16]byte, userUUID, routeID string) error {
+// writeSecondaryHello sends hello_type + challenge_echo + version + uuid + userLen + user + routeLen + route as a single packet
+func writeSecondaryHello(w io.Writer, challenge [8]byte, sessionUUID [16]byte, userUUID, routeID string) error {
 	userBytes := []byte(userUUID)
 	routeBytes := []byte(routeID)
-	buf := make([]byte, 0, 1+16+2+len(userBytes)+2+len(routeBytes))
+	buf := make([]byte, 0, 1+8+1+16+2+len(userBytes)+2+len(routeBytes))
+	buf = append(buf, relayHelloTypeSecondary)
+	buf = append(buf, challenge[:]...)
 	buf = append(buf, relayHandshakeVersion)
 	buf = append(buf, sessionUUID[:]...)
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(userBytes)))
 	buf = append(buf, userBytes...)
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(routeBytes)))
 	buf = append(buf, routeBytes...)
-	if err := common.WriteFullRetry(enc, buf); err != nil {
-		return fmt.Errorf("write secondary hello: %w", err)
-	}
-	return nil
+	_, err := w.Write(buf)
+	return err
 }
 
-// readSecondaryHello decodes the secondary hello payload.
-func readSecondaryHello(enc io.Reader) ([16]byte, string, string, error) {
-	header := make([]byte, 19) // version(1) + uuid(16) + userUUIDLen(2)
-	if _, err := common.ReadFullRetry(enc, header); err != nil {
-		return [16]byte{}, "", "", fmt.Errorf("read secondary hello header: %w", err)
+// parseSecondaryHello parses the secondary hello payload (after type byte is stripped)
+func parseSecondaryHello(data []byte) ([16]byte, string, string, error) {
+	if len(data) < 19 { // version(1) + uuid(16) + userLen(2)
+		return [16]byte{}, "", "", errors.New("secondary hello too short")
 	}
-	if header[0] != relayHandshakeVersion {
-		return [16]byte{}, "", "", fmt.Errorf("unsupported secondary hello version %d", header[0])
+	if data[0] != relayHandshakeVersion {
+		return [16]byte{}, "", "", fmt.Errorf("unsupported secondary hello version %d", data[0])
 	}
 	var sessionUUID [16]byte
-	copy(sessionUUID[:], header[1:17])
-	userLen := binary.BigEndian.Uint16(header[17:19])
-	userBytes := make([]byte, userLen)
-	if _, err := common.ReadFullRetry(enc, userBytes); err != nil {
-		return [16]byte{}, "", "", fmt.Errorf("read secondary hello user uuid: %w", err)
+	copy(sessionUUID[:], data[1:17])
+	userLen := binary.BigEndian.Uint16(data[17:19])
+	off := 19
+	if len(data) < off+int(userLen)+2 {
+		return [16]byte{}, "", "", errors.New("secondary hello: truncated user uuid")
 	}
-	routeLenBuf := make([]byte, 2)
-	if _, err := common.ReadFullRetry(enc, routeLenBuf); err != nil {
-		return [16]byte{}, "", "", fmt.Errorf("read secondary hello route len: %w", err)
+	userUUID := string(data[off : off+int(userLen)])
+	off += int(userLen)
+	routeLen := binary.BigEndian.Uint16(data[off : off+2])
+	off += 2
+	if len(data) < off+int(routeLen) {
+		return [16]byte{}, "", "", errors.New("secondary hello: truncated route id")
 	}
-	routeLen := binary.BigEndian.Uint16(routeLenBuf)
-	routeBytes := make([]byte, routeLen)
-	if _, err := common.ReadFullRetry(enc, routeBytes); err != nil {
-		return [16]byte{}, "", "", fmt.Errorf("read secondary hello route id: %w", err)
-	}
-	return sessionUUID, string(userBytes), string(routeBytes), nil
+	routeID := string(data[off : off+int(routeLen)])
+	return sessionUUID, userUUID, routeID, nil
 }
 
-// writePrimaryAck encodes and sends the primary ack (includes session UUID on success).
-func writePrimaryAck(enc io.Writer, sessionUUID [16]byte, errMsg string) error {
+// writePrimaryAck sends version + status + [uuid | errLen + err] as a single packet
+func writePrimaryAck(w io.Writer, sessionUUID [16]byte, errMsg string) error {
 	if errMsg == "" {
 		buf := make([]byte, 0, 1+1+16)
 		buf = append(buf, relayHandshakeVersion, relayAckOK)
 		buf = append(buf, sessionUUID[:]...)
-		if err := common.WriteFullRetry(enc, buf); err != nil {
-			return fmt.Errorf("write primary ack: %w", err)
-		}
-		return nil
+		_, err := w.Write(buf)
+		return err
 	}
 	errBytes := []byte(errMsg)
 	buf := make([]byte, 0, 1+1+2+len(errBytes))
 	buf = append(buf, relayHandshakeVersion, relayAckErr)
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(errBytes)))
 	buf = append(buf, errBytes...)
-	if err := common.WriteFullRetry(enc, buf); err != nil {
-		return fmt.Errorf("write primary ack error: %w", err)
-	}
-	return nil
+	_, err := w.Write(buf)
+	return err
 }
 
-// readPrimaryAck decodes the primary ack, returning the server-assigned session UUID.
-func readPrimaryAck(enc io.Reader) ([16]byte, string, error) {
-	header := make([]byte, 2) // version(1) + status(1)
-	if _, err := common.ReadFullRetry(enc, header); err != nil {
-		return [16]byte{}, "", fmt.Errorf("read primary ack header: %w", err)
+// parsePrimaryAck parses a primary ack packet, returning session UUID and error message
+func parsePrimaryAck(data []byte) ([16]byte, string, error) {
+	if len(data) < 2 {
+		return [16]byte{}, "", errors.New("primary ack too short")
 	}
-	if header[0] != relayHandshakeVersion {
-		return [16]byte{}, "", fmt.Errorf("unsupported primary ack version %d", header[0])
+	if data[0] != relayHandshakeVersion {
+		return [16]byte{}, "", fmt.Errorf("unsupported primary ack version %d", data[0])
 	}
-	if header[1] == relayAckOK {
-		sessionUUIDBin := make([]byte, 16)
-		if _, err := common.ReadFullRetry(enc, sessionUUIDBin); err != nil {
-			return [16]byte{}, "", fmt.Errorf("read primary ack session uuid: %w", err)
+	if data[1] == relayAckOK {
+		if len(data) < 18 {
+			return [16]byte{}, "", errors.New("primary ack uuid too short")
 		}
 		var sessionUUID [16]byte
-		copy(sessionUUID[:], sessionUUIDBin)
+		copy(sessionUUID[:], data[2:18])
 		return sessionUUID, "", nil
 	}
-	errLenBuf := make([]byte, 2)
-	if _, err := common.ReadFullRetry(enc, errLenBuf); err != nil {
-		return [16]byte{}, "", fmt.Errorf("read primary ack error len: %w", err)
+	if len(data) < 4 {
+		return [16]byte{}, "", errors.New("primary ack error too short")
 	}
-	errLen := binary.BigEndian.Uint16(errLenBuf)
-	errBytes := make([]byte, errLen)
-	if _, err := common.ReadFullRetry(enc, errBytes); err != nil {
-		return [16]byte{}, "", fmt.Errorf("read primary ack error msg: %w", err)
+	errLen := binary.BigEndian.Uint16(data[2:4])
+	if len(data) < 4+int(errLen) {
+		return [16]byte{}, "", errors.New("primary ack error truncated")
 	}
-	return [16]byte{}, string(errBytes), nil
+	return [16]byte{}, string(data[4 : 4+errLen]), nil
 }
 
-// writeSecondaryAck encodes and sends the secondary ack.
-func writeSecondaryAck(enc io.Writer, errMsg string) error {
+// writeSecondaryAck sends version + status + [errLen + err] as a single packet
+func writeSecondaryAck(w io.Writer, errMsg string) error {
 	if errMsg == "" {
-		buf := []byte{relayHandshakeVersion, relayAckOK}
-		if err := common.WriteFullRetry(enc, buf); err != nil {
-			return fmt.Errorf("write secondary ack: %w", err)
-		}
-		return nil
+		_, err := w.Write([]byte{relayHandshakeVersion, relayAckOK})
+		return err
 	}
 	errBytes := []byte(errMsg)
 	buf := make([]byte, 0, 1+1+2+len(errBytes))
 	buf = append(buf, relayHandshakeVersion, relayAckErr)
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(errBytes)))
 	buf = append(buf, errBytes...)
-	if err := common.WriteFullRetry(enc, buf); err != nil {
-		return fmt.Errorf("write secondary ack error: %w", err)
-	}
-	return nil
+	_, err := w.Write(buf)
+	return err
 }
 
-// readSecondaryAck decodes the secondary ack, returning a non-empty error message on failure.
-func readSecondaryAck(enc io.Reader) (string, error) {
-	header := make([]byte, 2)
-	if _, err := common.ReadFullRetry(enc, header); err != nil {
-		return "", fmt.Errorf("read secondary ack header: %w", err)
+// parseSecondaryAck parses a secondary ack packet, returning error message on failure
+func parseSecondaryAck(data []byte) (string, error) {
+	if len(data) < 2 {
+		return "", errors.New("secondary ack too short")
 	}
-	if header[0] != relayHandshakeVersion {
-		return "", fmt.Errorf("unsupported secondary ack version %d", header[0])
+	if data[0] != relayHandshakeVersion {
+		return "", fmt.Errorf("unsupported secondary ack version %d", data[0])
 	}
-	if header[1] == relayAckOK {
+	if data[1] == relayAckOK {
 		return "", nil
 	}
-	errLenBuf := make([]byte, 2)
-	if _, err := common.ReadFullRetry(enc, errLenBuf); err != nil {
-		return "", fmt.Errorf("read secondary ack error len: %w", err)
+	if len(data) < 4 {
+		return "", errors.New("secondary ack error too short")
 	}
-	errLen := binary.BigEndian.Uint16(errLenBuf)
-	errBytes := make([]byte, errLen)
-	if _, err := common.ReadFullRetry(enc, errBytes); err != nil {
-		return "", fmt.Errorf("read secondary ack error msg: %w", err)
+	errLen := binary.BigEndian.Uint16(data[2:4])
+	if len(data) < 4+int(errLen) {
+		return "", errors.New("secondary ack error truncated")
 	}
-	return string(errBytes), nil
+	return string(data[4 : 4+errLen]), nil
 }
 
-// doClientPrimaryHandshake sends the primary hello and receives the server-assigned session UUID.
-func doClientPrimaryHandshake(encTunnel io.ReadWriteCloser, configURL string) ([16]byte, error) {
-	if err := common.WriteFullRetry(encTunnel, []byte{relayHelloTypePrimary}); err != nil {
-		return [16]byte{}, fmt.Errorf("write hello type: %w", err)
+// doClientPrimaryHandshake reads the server challenge, sends primary hello, and reads the server-assigned session UUID
+func doClientPrimaryHandshake(conn net.Conn, configURL string) ([16]byte, error) {
+	var challenge [8]byte
+	if _, err := io.ReadFull(conn, challenge[:]); err != nil {
+		return [16]byte{}, fmt.Errorf("read challenge: %w", err)
 	}
-	if err := writePrimaryHello(encTunnel, configURL); err != nil {
-		return [16]byte{}, err
+	if err := writePrimaryHello(conn, challenge, configURL); err != nil {
+		return [16]byte{}, fmt.Errorf("write primary hello: %w", err)
 	}
-	sessionUUID, errMsg, err := readPrimaryAck(encTunnel)
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return [16]byte{}, fmt.Errorf("read primary ack: %w", err)
+	}
+	sessionUUID, errMsg, err := parsePrimaryAck(buf[:n])
 	if err != nil {
 		return [16]byte{}, err
 	}
@@ -1124,15 +1108,21 @@ func doClientPrimaryHandshake(encTunnel io.ReadWriteCloser, configURL string) ([
 	return sessionUUID, nil
 }
 
-// doClientSecondaryHandshake sends the secondary hello and waits for ack.
-func doClientSecondaryHandshake(encTunnel io.ReadWriteCloser, sessionUUID [16]byte, userUUID, routeID string) error {
-	if err := common.WriteFullRetry(encTunnel, []byte{relayHelloTypeSecondary}); err != nil {
-		return fmt.Errorf("write hello type: %w", err)
+// doClientSecondaryHandshake reads the server challenge, sends secondary hello, and waits for ack
+func doClientSecondaryHandshake(conn net.Conn, sessionUUID [16]byte, userUUID, routeID string) error {
+	var challenge [8]byte
+	if _, err := io.ReadFull(conn, challenge[:]); err != nil {
+		return fmt.Errorf("read challenge: %w", err)
 	}
-	if err := writeSecondaryHello(encTunnel, sessionUUID, userUUID, routeID); err != nil {
-		return err
+	if err := writeSecondaryHello(conn, challenge, sessionUUID, userUUID, routeID); err != nil {
+		return fmt.Errorf("write secondary hello: %w", err)
 	}
-	errMsg, err := readSecondaryAck(encTunnel)
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return fmt.Errorf("read secondary ack: %w", err)
+	}
+	errMsg, err := parseSecondaryAck(buf[:n])
 	if err != nil {
 		return err
 	}

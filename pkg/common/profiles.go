@@ -2,7 +2,7 @@ package common
 
 import "math/rand"
 
-// BrowserProfile holds browser identity headers used for HTTP and WebSocket requests.
+// BrowserProfile holds browser identity headers
 type BrowserProfile struct {
 	UserAgent       string
 	SecChUa         string
@@ -10,7 +10,7 @@ type BrowserProfile struct {
 	SecChUaPlatform string
 }
 
-// browserProfiles is the pool of realistic browser profiles to pick from
+// browserProfiles represents a pool of realistic browser profiles
 var browserProfiles = []BrowserProfile{
 	// Windows Chrome
 	{
@@ -95,6 +95,7 @@ var browserProfiles = []BrowserProfile{
 	},
 }
 
+// RandomBrowserProfile returns a random browser identity profile
 func RandomBrowserProfile() BrowserProfile {
 	return browserProfiles[rand.Intn(len(browserProfiles))]
 }

@@ -1,19 +1,15 @@
 package engine
 
 import (
-	"errors"
 	"io"
 	"log/slog"
 	"sync"
-
-	"github.com/theairblow/turnable/pkg/common"
 )
 
 // pipeCopyChunkSize is the buffer size used when copying between two streams.
 const pipeCopyChunkSize = 64 * 1024
 
-// pipeStreams copies bidirectionally between a and b, blocking until both directions finish.
-// Both streams are closed when done.
+// pipeStreams copies data bidirectionally, blocking until both directions finish.
 func pipeStreams(a, b io.ReadWriteCloser) {
 	var hardCloseOnce sync.Once
 	hardClose := func() {
@@ -28,16 +24,15 @@ func pipeStreams(a, b io.ReadWriteCloser) {
 
 	runCopy := func(direction string, dst io.ReadWriteCloser, src io.ReadWriteCloser) {
 		defer wg.Done()
+
 		n, err := copyStream(direction, dst, src)
-		if err != nil && !errors.Is(err, io.EOF) {
-			slog.Debug("pipe copy stopped", "direction", direction, "bytes", n, "error", err)
-			hardClose()
-			return
+		if err != nil {
+			slog.Debug("pipe copy done", "direction", direction, "bytes", n, "error", err)
+		} else {
+			slog.Debug("pipe copy done", "direction", direction, "bytes", n)
 		}
-		slog.Debug("pipe copy done", "direction", direction, "bytes", n)
-		if cwErr := closeWrite(dst); cwErr != nil {
-			hardClose()
-		}
+
+		hardClose()
 	}
 
 	go runCopy("a->b", b, a)
@@ -47,7 +42,7 @@ func pipeStreams(a, b io.ReadWriteCloser) {
 	hardClose()
 }
 
-// copyStream copies from src to dst until EOF or error.
+// copyStream copies from source to destination until EOF or error
 func copyStream(direction string, dst io.Writer, src io.Reader) (int64, error) {
 	buf := make([]byte, pipeCopyChunkSize)
 	var total int64
@@ -55,21 +50,14 @@ func copyStream(direction string, dst io.Writer, src io.Reader) (int64, error) {
 		n, readErr := src.Read(buf)
 		if n > 0 {
 			slog.Debug("pipe chunk", "direction", direction, "bytes", n)
-			if err := common.WriteFullRetry(dst, buf[:n]); err != nil {
+			if _, err := dst.Write(buf[:n]); err != nil {
 				return total, err
 			}
 			total += int64(n)
 		}
+
 		if readErr != nil {
 			return total, readErr
 		}
 	}
-}
-
-// closeWrite attempts a half-close on dst. Silently ignored if unsupported.
-func closeWrite(stream io.ReadWriteCloser) error {
-	if cw, ok := stream.(interface{ CloseWrite() error }); ok {
-		return cw.CloseWrite()
-	}
-	return nil
 }

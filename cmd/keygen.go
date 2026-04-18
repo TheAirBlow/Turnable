@@ -9,10 +9,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// keygenOptions holds CLI flags for the keygen subcommand
 type keygenOptions struct {
 	asJSON bool
 }
 
+// newKeygenCommand creates the keygen cobra command
 func newKeygenCommand() *cobra.Command {
 	opts := &keygenOptions{}
 
@@ -28,6 +30,7 @@ func newKeygenCommand() *cobra.Command {
 	return cmd
 }
 
+// serverMain runs the keygen command
 func keygenMain(opts *keygenOptions) error {
 	dk, err := mlkem.GenerateKey768()
 	if err != nil {

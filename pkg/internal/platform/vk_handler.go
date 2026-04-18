@@ -29,7 +29,9 @@ const (
 
 // VKHandler manages VK authorization, signaling, and peer state
 type VKHandler struct {
-	mu sync.Mutex
+	once   sync.Once
+	mu     sync.RWMutex // protects all data fields except conn/seq/readerCancel
+	connMu sync.Mutex   // protects conn, seq, readerCancel
 
 	httpClient *http.Client
 	profile    common.BrowserProfile
@@ -47,9 +49,8 @@ type VKHandler struct {
 	turnAddr  string
 	turnAddrs []string
 
-	conn *websocket.Conn
-	seq  int
-
+	conn         *websocket.Conn
+	seq          int
 	readerCancel context.CancelFunc
 
 	participantsByID  map[int64]*vkParticipant
@@ -84,10 +85,9 @@ func (V *VKHandler) GetConfig() Config {
 
 // GetTURNInfo returns the latest TURN server credentials learned from VK signaling
 func (V *VKHandler) GetTURNInfo() TURNInfo {
-	V.mu.Lock()
-	defer V.mu.Unlock()
-
-	V.ensureInitLocked()
+	V.ensureInit()
+	V.mu.RLock()
+	defer V.mu.RUnlock()
 	return TURNInfo{
 		Address:   V.turnAddr,
 		Addresses: append([]string(nil), V.turnAddrs...),
@@ -98,10 +98,9 @@ func (V *VKHandler) GetTURNInfo() TURNInfo {
 
 // GetPeers returns all currently known peers connected to the call
 func (V *VKHandler) GetPeers() []PeerInfo {
-	V.mu.Lock()
-	defer V.mu.Unlock()
-
-	V.ensureInitLocked()
+	V.ensureInit()
+	V.mu.RLock()
+	defer V.mu.RUnlock()
 
 	ids := make([]int64, 0, len(V.participantsByID))
 	for id := range V.participantsByID {
@@ -127,22 +126,21 @@ func (V *VKHandler) GetPeers() []PeerInfo {
 
 // GetRemoteMedia returns the latest parsed remote media description from signaling
 func (V *VKHandler) GetRemoteMedia() RemoteMediaInfo {
-	V.mu.Lock()
-	defer V.mu.Unlock()
-
-	V.ensureInitLocked()
+	V.ensureInit()
+	V.mu.RLock()
+	defer V.mu.RUnlock()
 	return cloneRemoteMediaInfo(V.remoteMedia)
 }
 
 // GetUsersBySourceIDs resolves participant or peer IDs to names when the roster contains them
 func (V *VKHandler) GetUsersBySourceIDs(sourceIDs []string) (map[string]string, error) {
+	V.ensureInit()
 	result := make(map[string]string, len(sourceIDs))
 
-	V.mu.Lock()
-	V.ensureInitLocked()
+	V.mu.RLock()
 	externalIDs := make(map[string]struct{})
 	for _, sourceID := range sourceIDs {
-		participant := V.lookupParticipantLocked(sourceID)
+		participant := V.lookupParticipant(sourceID)
 		if participant == nil {
 			continue
 		}
@@ -157,7 +155,7 @@ func (V *VKHandler) GetUsersBySourceIDs(sourceIDs []string) (map[string]string, 
 	}
 	accessToken := V.messagesAccessToken
 	callID := V.callID
-	V.mu.Unlock()
+	V.mu.RUnlock()
 
 	if len(externalIDs) == 0 || common.IsNullOrWhiteSpace(accessToken) {
 		return result, nil
@@ -169,30 +167,28 @@ func (V *VKHandler) GetUsersBySourceIDs(sourceIDs []string) (map[string]string, 
 	}
 
 	V.mu.Lock()
-	defer V.mu.Unlock()
-	V.ensureInitLocked()
-
 	for _, participant := range V.participantsByID {
 		if name := namesByExternalID[participant.ExternalID]; name != "" {
 			participant.Name = name
 		}
 	}
-
 	for _, sourceID := range sourceIDs {
-		if participant := V.lookupParticipantLocked(sourceID); participant != nil && participant.Name != "" {
+		if participant := V.lookupParticipant(sourceID); participant != nil && participant.Name != "" {
 			result[sourceID] = participant.Name
 		}
 	}
+	V.mu.Unlock()
 
 	return result, nil
 }
 
 // WatchEvents subscribes to signaling events emitted by the internal signaling loop
 func (V *VKHandler) WatchEvents(ctx context.Context) <-chan Event {
+	V.ensureInit()
 	out := make(chan Event, 16)
 	sub := make(chan Event, 16)
+
 	V.mu.Lock()
-	V.ensureInitLocked()
 	id := V.nextSubscriber
 	V.nextSubscriber++
 	V.subscribers[id] = sub
@@ -201,8 +197,11 @@ func (V *VKHandler) WatchEvents(ctx context.Context) <-chan Event {
 		"password": V.turnPass,
 		"address":  V.turnAddr,
 	}
-	connected := V.conn != nil
 	V.mu.Unlock()
+
+	V.connMu.Lock()
+	connected := V.conn != nil
+	V.connMu.Unlock()
 
 	if connected {
 		out <- Event{Type: EventTurnAuthUpdated, Payload: turnPayload}
@@ -233,34 +232,30 @@ func (V *VKHandler) WatchEvents(ctx context.Context) <-chan Event {
 	return out
 }
 
-// ensureInitLocked lazily initializes handler internals while the mutex is held
-func (V *VKHandler) ensureInitLocked() {
-	if V.httpClient != nil {
-		return
-	}
-	//proxyURL, _ := url.Parse("http://127.0.0.1:8080")
-	V.httpClient = &http.Client{
-		Timeout: 20 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:        32,
-			MaxIdleConnsPerHost: 8,
-			IdleConnTimeout:     90 * time.Second,
-			//Proxy:               http.ProxyURL(proxyURL),
-			//TLSClientConfig: &tls.Config{
-			//	InsecureSkipVerify: true,
-			//},
-		},
-	}
-	V.profile = common.RandomBrowserProfile()
-	slog.Debug("vk browser profile", "user_agent", V.profile.UserAgent, "sec_ch_ua", V.profile.SecChUa, "sec_ch_ua_platform", V.profile.SecChUaPlatform, "sec_ch_ua_mobile", V.profile.SecChUaMobile)
-	V.participantsByID = make(map[int64]*vkParticipant)
-	V.participantByPeer = make(map[string]int64)
-	V.subscribers = make(map[int]chan Event)
-	V.videoTrackSlots = vkVideoTrackSlots
+// ensureInit lazily initializes handler internals exactly once
+func (V *VKHandler) ensureInit() {
+	V.once.Do(func() {
+		V.httpClient = &http.Client{
+			Timeout: 20 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        32,
+				MaxIdleConnsPerHost: 8,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		}
+
+		V.profile = common.RandomBrowserProfile()
+		slog.Debug("vk browser profile", "user_agent", V.profile.UserAgent, "sec_ch_ua", V.profile.SecChUa, "sec_ch_ua_platform", V.profile.SecChUaPlatform, "sec_ch_ua_mobile", V.profile.SecChUaMobile)
+
+		V.participantsByID = make(map[int64]*vkParticipant)
+		V.participantByPeer = make(map[string]int64)
+		V.subscribers = make(map[int]chan Event)
+		V.videoTrackSlots = vkVideoTrackSlots
+	})
 }
 
-// ensureParticipantLocked returns the participant entry for the given ID, creating it if needed
-func (V *VKHandler) ensureParticipantLocked(participantID int64) *vkParticipant {
+// ensureParticipant returns the participant entry for the given ID, creating it if needed; mu must be held
+func (V *VKHandler) ensureParticipant(participantID int64) *vkParticipant {
 	if participant := V.participantsByID[participantID]; participant != nil {
 		return participant
 	}
@@ -269,8 +264,8 @@ func (V *VKHandler) ensureParticipantLocked(participantID int64) *vkParticipant 
 	return participant
 }
 
-// lookupParticipantLocked resolves a peer or participant ID to a participant entry
-func (V *VKHandler) lookupParticipantLocked(sourceID string) *vkParticipant {
+// lookupParticipant resolves a peer or participant ID to a participant entry; mu must be held
+func (V *VKHandler) lookupParticipant(sourceID string) *vkParticipant {
 	if sourceID == "" {
 		return nil
 	}

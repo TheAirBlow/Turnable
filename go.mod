@@ -12,8 +12,6 @@ require (
 	github.com/pion/turn/v5 v5.0.3
 	github.com/spf13/cobra v1.10.2
 	github.com/xtaci/kcp-go/v5 v5.6.72
-	github.com/xtaci/smux v1.5.57
-	golang.org/x/net v0.53.0
 )
 
 // fixes building on android locally inside termux
@@ -31,6 +29,7 @@ require (
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )

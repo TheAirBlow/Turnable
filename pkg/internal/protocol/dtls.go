@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -18,8 +17,11 @@ import (
 	"github.com/theairblow/turnable/pkg/config"
 )
 
-// DTLS MTU used for every session
-const dtlsMTU = 1200
+const (
+	// dtlsMTU is the DTLS record payload limit; with 20 bytes encryption overhead,
+	// upper layers have ~1420 bytes of usable plaintext per datagram
+	dtlsMTU = 1440
+)
 
 // DTLSHandler represents a DTLS session handler
 type DTLSHandler struct {
@@ -144,7 +146,7 @@ func (D *DTLSHandler) AcceptClients(ctx context.Context) (<-chan ServerClient, e
 				}
 
 				select {
-				case out <- ServerClient{Address: conn.RemoteAddr(), IO: conn}:
+				case out <- ServerClient{Address: conn.RemoteAddr(), Conn: conn}:
 				case <-ctx.Done():
 					_ = conn.Close()
 				}
@@ -156,7 +158,7 @@ func (D *DTLSHandler) AcceptClients(ctx context.Context) (<-chan ServerClient, e
 }
 
 // Connect connects to a remote server directly or via TURN
-func (D *DTLSHandler) Connect(ctx context.Context, dest net.Addr, relay RelayInfo, forceTURN bool) (io.ReadWriteCloser, error) {
+func (D *DTLSHandler) Connect(ctx context.Context, dest net.Addr, relay RelayInfo, forceTURN bool) (net.Conn, error) {
 	if D.log == nil {
 		D.log = slog.Default()
 	}
@@ -207,7 +209,7 @@ func (D *DTLSHandler) SetLogger(log *slog.Logger) {
 }
 
 // connectViaTURN attempts to connect to the remote server via one of the provided TURN servers
-func (D *DTLSHandler) connectViaTURN(ctx context.Context, relay RelayInfo, dest net.Addr) (io.ReadWriteCloser, error) {
+func (D *DTLSHandler) connectViaTURN(ctx context.Context, relay RelayInfo, dest net.Addr) (net.Conn, error) {
 	servers := relay.Addresses
 
 	if len(servers) == 0 {
@@ -297,13 +299,14 @@ func (D *DTLSHandler) openTURNUnderlay(relay RelayInfo, dest net.Addr) (net.Pack
 	}
 	D.log.Debug("dtls turn base socket opened", "network", network, "local", underlay.LocalAddr().String(), "turn_server", relay.Address)
 
+	infoLevel := slog.LevelInfo
 	client, err := turn.NewClient(&turn.ClientConfig{
 		STUNServerAddr: relay.Address,
 		TURNServerAddr: relay.Address,
 		Username:       relay.Username,
 		Password:       relay.Password,
 		Conn:           underlay,
-		LoggerFactory:  &common.SlogLoggerFactory{Log: D.log},
+		LoggerFactory:  &common.SlogLoggerFactory{Log: D.log, Level: &infoLevel},
 	})
 	if err != nil {
 		_ = underlay.Close()
@@ -341,7 +344,7 @@ func (D *DTLSHandler) openTURNUnderlay(relay RelayInfo, dest net.Addr) (net.Pack
 }
 
 // connectPacketConn upgrades a packet underlay into an established DTLS session
-func (D *DTLSHandler) connectPacketConn(ctx context.Context, underlay net.PacketConn, remoteAddr net.Addr) (io.ReadWriteCloser, error) {
+func (D *DTLSHandler) connectPacketConn(ctx context.Context, underlay net.PacketConn, remoteAddr net.Addr) (net.Conn, error) {
 	if underlay == nil {
 		return nil, errors.New("dtls connect requires packet underlay")
 	}
@@ -383,21 +386,21 @@ type dtlsClientConn struct {
 	*dtls.Conn
 	underlay  net.PacketConn
 	closeOnce sync.Once
-	closeErr  error
 }
 
 // Close closes both the DTLS connection and the underlay
 func (c *dtlsClientConn) Close() error {
+	var err error
 	c.closeOnce.Do(func() {
 		dtlsErr := c.Conn.Close()
 		underlayErr := c.underlay.Close()
 		if dtlsErr != nil {
-			c.closeErr = dtlsErr
+			err = dtlsErr
 			return
 		}
-		c.closeErr = underlayErr
+		err = underlayErr
 	})
-	return c.closeErr
+	return err
 }
 
 // turnPacketConn represents a TURN packet connection that automatically closes the client and the underlay
@@ -406,19 +409,19 @@ type turnPacketConn struct {
 	underlay  net.PacketConn
 	client    *turn.Client
 	closeOnce sync.Once
-	closeErr  error
 }
 
-// Close closes the TURN packet connection, the client and the underlay.
+// Close closes the TURN packet connection, the client and the underlay
 func (c *turnPacketConn) Close() error {
+	var err error
 	c.closeOnce.Do(func() {
-		c.closeErr = c.PacketConn.Close()
+		err = c.PacketConn.Close()
 		if c.client != nil {
 			c.client.Close()
 		}
 		if c.underlay != nil {
-			c.closeErr = errors.Join(c.closeErr, c.underlay.Close())
+			err = errors.Join(err, c.underlay.Close())
 		}
 	})
-	return c.closeErr
+	return err
 }

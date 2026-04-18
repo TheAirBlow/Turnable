@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -13,12 +14,14 @@ import (
 	"github.com/theairblow/turnable/pkg/engine"
 )
 
+// serverOptions holds CLI flags for the server subcommand
 type serverOptions struct {
 	configPath string
 	storePath  string
 	verbose    bool
 }
 
+// newServerCommand creates the server cobra command
 func newServerCommand() *cobra.Command {
 	opts := &serverOptions{}
 
@@ -36,6 +39,7 @@ func newServerCommand() *cobra.Command {
 	return cmd
 }
 
+// serverMain runs the server command
 func serverMain(opts *serverOptions) error {
 	if opts.verbose {
 		common.SetLogLevel(int(slog.LevelDebug))
@@ -43,32 +47,32 @@ func serverMain(opts *serverOptions) error {
 
 	storeData, err := os.ReadFile(opts.storePath)
 	if err != nil {
-		return common.WrapError("failed to read store json file", err)
+		return fmt.Errorf("failed to read store json file: %w", err)
 	}
 
 	provider, err := providers.NewJSONProviderFromJSON(string(storeData))
 	if err != nil {
-		return common.WrapError("failed to parse store json file", err)
+		return fmt.Errorf("failed to parse store json file: %w", err)
 	}
 
 	configData, err := os.ReadFile(opts.configPath)
 	if err != nil {
-		return common.WrapError("failed to read config json file", err)
+		return fmt.Errorf("failed to read config json file: %w", err)
 	}
 
 	config, err := config2.NewServerConfigFromJSON(string(configData), provider)
 	if err != nil {
-		return common.WrapError("failed to parse config json file", err)
+		return fmt.Errorf("failed to parse config json file: %w", err)
 	}
 
 	err = config.Validate()
 	if err != nil {
-		return common.WrapError("failed to validate server config", err)
+		return fmt.Errorf("failed to validate server config: %w", err)
 	}
 
 	server := engine.NewVPNServer(*config)
 	if err := server.Start(); err != nil {
-		return common.WrapError("failed to start VPN server", err)
+		return fmt.Errorf("failed to start VPN server: %w", err)
 	}
 
 	sigCh := make(chan os.Signal, 2)
@@ -84,7 +88,7 @@ func serverMain(opts *serverOptions) error {
 	}()
 
 	if err := server.Stop(); err != nil {
-		return common.WrapError("failed to stop VPN server", err)
+		return fmt.Errorf("failed to stop VPN server: %w", err)
 	}
 
 	return nil

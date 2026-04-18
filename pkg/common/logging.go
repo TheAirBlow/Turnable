@@ -199,7 +199,8 @@ func SetLogLevel(newLevel int) {
 
 // SlogLoggerFactory adapts slog to pion's logging.LoggerFactory interface
 type SlogLoggerFactory struct {
-	Log *slog.Logger
+	Log   *slog.Logger
+	Level *slog.Level
 }
 
 // NewLogger creates a pion LeveledLogger that forwards to slog with scope attribute
@@ -208,31 +209,59 @@ func (f *SlogLoggerFactory) NewLogger(scope string) logging.LeveledLogger {
 	if l == nil {
 		l = slog.Default()
 	}
-	return &slogLeveledLogger{log: l.With("scope", scope)}
+	return &slogLeveledLogger{log: l.With("scope", scope), level: f.Level}
 }
 
 // slogLeveledLogger adapts *slog.Logger to pion's LeveledLogger
 type slogLeveledLogger struct {
-	log *slog.Logger
+	log   *slog.Logger
+	level *slog.Level
 }
 
-func (l *slogLeveledLogger) Trace(msg string) { l.log.Debug(msg) }
+// emit logs a message at the given level, dropping it if below the level
+func (l *slogLeveledLogger) emit(level slog.Level, msg string) {
+	if l.level != nil && level < *l.level {
+		return
+	}
+	l.log.Log(nil, level, msg)
+}
+
+// Trace logs at trace level
+func (l *slogLeveledLogger) Trace(msg string) { l.emit(slog.LevelDebug-4, msg) }
+
+// Tracef logs a formatted message at trace level
 func (l *slogLeveledLogger) Tracef(format string, args ...interface{}) {
-	l.log.Debug(fmt.Sprintf(format, args...))
+	l.emit(slog.LevelDebug-4, fmt.Sprintf(format, args...))
 }
-func (l *slogLeveledLogger) Debug(msg string) { l.log.Debug(msg) }
+
+// Debug logs at debug level
+func (l *slogLeveledLogger) Debug(msg string) { l.emit(slog.LevelDebug, msg) }
+
+// Debugf logs a formatted message at debug level
 func (l *slogLeveledLogger) Debugf(format string, args ...interface{}) {
-	l.log.Debug(fmt.Sprintf(format, args...))
+	l.emit(slog.LevelDebug, fmt.Sprintf(format, args...))
 }
-func (l *slogLeveledLogger) Info(msg string) { l.log.Info(msg) }
+
+// Info logs at info level
+func (l *slogLeveledLogger) Info(msg string) { l.emit(slog.LevelInfo, msg) }
+
+// Infof logs a formatted message at info level
 func (l *slogLeveledLogger) Infof(format string, args ...interface{}) {
-	l.log.Info(fmt.Sprintf(format, args...))
+	l.emit(slog.LevelInfo, fmt.Sprintf(format, args...))
 }
-func (l *slogLeveledLogger) Warn(msg string) { l.log.Warn(msg) }
+
+// Warn logs at warn level
+func (l *slogLeveledLogger) Warn(msg string) { l.emit(slog.LevelWarn, msg) }
+
+// Warnf logs a formatted message at warn level
 func (l *slogLeveledLogger) Warnf(format string, args ...interface{}) {
-	l.log.Warn(fmt.Sprintf(format, args...))
+	l.emit(slog.LevelWarn, fmt.Sprintf(format, args...))
 }
-func (l *slogLeveledLogger) Error(msg string) { l.log.Error(msg) }
+
+// Error logs at error level
+func (l *slogLeveledLogger) Error(msg string) { l.emit(slog.LevelError, msg) }
+
+// Errorf logs a formatted message at error level
 func (l *slogLeveledLogger) Errorf(format string, args ...interface{}) {
-	l.log.Error(fmt.Sprintf(format, args...))
+	l.emit(slog.LevelError, fmt.Sprintf(format, args...))
 }

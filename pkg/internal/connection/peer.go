@@ -14,14 +14,11 @@ import (
 	"github.com/theairblow/turnable/pkg/internal/protocol"
 )
 
-// ErrNeedFullReconnect is returned by a reconnectFn to signal that the peer session UUID is
-// no longer valid on the server and the entire client session must be rebuilt from scratch
-// (new primary handshake) rather than just reconnecting one peer as secondary.
-var ErrNeedFullReconnect = errors.New("peer: full reconnect needed")
+// ErrPeerDone is returned by a reconnectFn to signal that this peer slot should be removed
+// and no further reconnect attempts should be made (e.g. the reconnectFn handled escalation itself).
+var ErrPeerDone = errors.New("peer: done")
 
 const (
-	peerHandshakeTimeout = 10 * time.Second // peerHandshakeTimeout is the maximum time allowed for the peer handshake.
-
 	peerMaxPacket       = 8192             // peerMaxPacket is the maximum packet size read from a peer connection.
 	peerReconnectInit   = 5 * time.Second  // peerReconnectInit is the initial back-off delay before the first peer reconnect attempt.
 	peerReconnectMax    = 8 * time.Second  // peerReconnectMax is the maximum back-off delay between peer reconnect attempts.
@@ -29,14 +26,14 @@ const (
 	peerIncomingBufSize = 256              // peerIncomingBufSize is the channel buffer size for packets arriving from all peers.
 )
 
-// peerEntry holds one live connection inside PeerConn.
+// peerEntry holds one live connection inside PeerConn
 type peerEntry struct {
 	mu        sync.Mutex
-	conn      io.ReadWriteCloser
+	conn      net.Conn
 	connected atomic.Bool
 }
 
-// PeerConn aggregates multiple per-peer connections into one logical net.PacketConn.
+// PeerConn aggregates multiple per-peer connections into one logical net.Conn.
 // Writes are round-robined across live peers; reads come from whichever peer delivers first.
 type PeerConn struct {
 	mu       sync.RWMutex
@@ -47,29 +44,20 @@ type PeerConn struct {
 	writeIdx atomic.Uint64
 	closed   atomic.Bool
 
-	log             *slog.Logger // optional logger; nil means slog.Default()
-	onFullReconnect func()       // called when a reconnect fn signals ErrNeedFullReconnect
-	onAllPeersGone  func()       // called when every peer slot is removed (server: close transport)
+	log            *slog.Logger
+	onAllPeersGone func() // all peers disconnected callback
 }
 
-// NewPeerConn creates an empty PeerConn. Add peers with AddPeer.
-func NewPeerConn() *PeerConn {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &PeerConn{
+// NewPeerConn creates an empty PeerConn derived from the given context; add peers with AddPeer
+func NewPeerConn(ctx context.Context) *PeerConn {
+	ctx, cancel := context.WithCancel(ctx)
+	p := &PeerConn{
 		incoming: make(chan []byte, peerIncomingBufSize),
 		ctx:      ctx,
 		cancel:   cancel,
+		log:      slog.Default(),
 	}
-}
-
-// SetOnFullReconnect registers a callback invoked when any reconnect function returns
-// ErrNeedFullReconnect. The callback should initiate a fresh primary session (not just
-// a secondary peer reconnect). It is called at most once per event; the peer loop exits
-// immediately afterwards so the old PeerConn can be discarded.
-func (m *PeerConn) SetOnFullReconnect(fn func()) {
-	m.mu.Lock()
-	m.onFullReconnect = fn
-	m.mu.Unlock()
+	return p
 }
 
 // SetOnAllPeersGone registers a callback invoked when the last peer slot is removed
@@ -79,27 +67,16 @@ func (m *PeerConn) SetOnAllPeersGone(fn func()) {
 	m.mu.Unlock()
 }
 
-// SetLogger sets an optional logger; when nil, slog.Default() is used
+// SetLogger sets the logger; if nil, resets to slog.Default()
 func (m *PeerConn) SetLogger(l *slog.Logger) {
-	m.mu.Lock()
-	m.log = l
-	m.mu.Unlock()
-}
-
-// logger returns the configured logger or slog.Default()
-func (m *PeerConn) logger() *slog.Logger {
-	m.mu.RLock()
-	l := m.log
-	m.mu.RUnlock()
-	if l != nil {
-		return l
+	if l == nil {
+		l = slog.Default()
 	}
-	return slog.Default()
+	m.log = l
 }
 
-// AddPeer adds a peer connection and starts its read loop. If reconnectFn is non-nil it is
-// called on disconnect to get a replacement connection (with exponential back-off).
-func (m *PeerConn) AddPeer(conn io.ReadWriteCloser, reconnectFn func(context.Context) (io.ReadWriteCloser, error)) error {
+// AddPeer adds a peer connection and starts its read loop
+func (m *PeerConn) AddPeer(conn net.Conn, reconnectFn func(context.Context) (net.Conn, error)) error {
 	if m.closed.Load() {
 		return errors.New("peer: conn is closed")
 	}
@@ -109,13 +86,13 @@ func (m *PeerConn) AddPeer(conn io.ReadWriteCloser, reconnectFn func(context.Con
 	idx := len(m.peers)
 	m.peers = append(m.peers, entry)
 	m.mu.Unlock()
-	m.logger().Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
+	m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
 	go m.peerReadLoop(idx, entry, reconnectFn)
 	return nil
 }
 
-// peerReadLoop reads packets from one peer connection and feeds them into the incoming channel.
-func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(context.Context) (io.ReadWriteCloser, error)) {
+// peerReadLoop reads packets from one peer and feeds them into the incoming channel
+func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(context.Context) (net.Conn, error)) {
 	buf := make([]byte, peerMaxPacket)
 	delay := peerReconnectInit
 
@@ -149,7 +126,7 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 
 		entry.connected.Store(false)
 		_ = conn.Close()
-		m.logger().Info("peer offline", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "error", err)
+		m.log.Info("peer offline", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "error", err)
 
 		if reconnectFn == nil {
 			m.removePeer(idx)
@@ -169,21 +146,16 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 
 			newConn, err := reconnectFn(m.ctx)
 			if err != nil {
-				if errors.Is(err, ErrNeedFullReconnect) {
-					m.logger().Info("peer needs full session reconnect", "peer_idx", idx)
-					m.mu.RLock()
-					fn := m.onFullReconnect
-					m.mu.RUnlock()
-					if fn != nil {
-						fn()
-					}
+				if errors.Is(err, ErrPeerDone) {
+					m.log.Info("peer done, removing slot", "peer_idx", idx)
+					m.removePeer(idx)
 					return
 				}
 				if errors.Is(err, protocol.ErrQuotaReached) {
-					m.logger().Warn("peer quota reached, backing off", "peer_idx", idx, "delay", peerQuotaBackoff)
+					m.log.Warn("peer quota reached, backing off", "peer_idx", idx, "delay", peerQuotaBackoff)
 					delay = peerQuotaBackoff
 				}
-				m.logger().Warn("peer reconnect failed", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "delay", delay, "error", err)
+				m.log.Warn("peer reconnect failed", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "delay", delay, "error", err)
 				continue
 			}
 
@@ -192,7 +164,7 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 			entry.mu.Unlock()
 			entry.connected.Store(true)
 			delay = peerReconnectInit
-			m.logger().Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
+			m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
 			break
 		}
 	}
@@ -235,7 +207,7 @@ func (m *PeerConn) removePeer(idx int) {
 	m.mu.Unlock()
 
 	if allGone {
-		m.logger().Debug("all peers disconnected, closing peer conn")
+		m.log.Debug("all peers disconnected, closing peer conn")
 		m.cancel()
 		if fn != nil {
 			fn()
@@ -243,22 +215,22 @@ func (m *PeerConn) removePeer(idx int) {
 	}
 }
 
-// ReadFrom blocks until a packet arrives from any peer.
-func (m *PeerConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+// Read blocks until a packet arrives from any peer
+func (m *PeerConn) Read(p []byte) (int, error) {
 	select {
 	case pkt, ok := <-m.incoming:
 		if !ok {
-			return 0, nil, io.EOF
+			return 0, io.EOF
 		}
-		n = copy(p, pkt)
-		return n, peerDummyAddr{}, nil
+		n := copy(p, pkt)
+		return n, nil
 	case <-m.ctx.Done():
-		return 0, nil, io.EOF
+		return 0, io.EOF
 	}
 }
 
-// WriteTo sends one packet to the next live peer in round-robin order.
-func (m *PeerConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
+// Write sends one packet to the next live peer in round-robin order
+func (m *PeerConn) Write(p []byte) (int, error) {
 	m.mu.RLock()
 	peers := m.peers
 	m.mu.RUnlock()
@@ -268,6 +240,7 @@ func (m *PeerConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
 		return 0, errors.New("peer: no peers")
 	}
 
+	var err error
 	start := m.writeIdx.Add(1) - 1
 	for i := uint64(0); i < total; i++ {
 		idx := (start + i) % total
@@ -281,15 +254,22 @@ func (m *PeerConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
 		if conn == nil {
 			continue
 		}
-		n, err = conn.Write(p)
-		if err == nil {
+		n, werr := conn.Write(p)
+		if werr == nil {
 			return n, nil
 		}
+		err = werr
 	}
-	return 0, fmt.Errorf("peer: all peers failed: %w", err)
+	if err != nil {
+		return 0, fmt.Errorf("peer: all peers failed: %w", err)
+	}
+	return 0, errors.New("peer: no live peers")
 }
 
-// Close shuts down all peer connections.
+// RemoteAddr returns a dummy remote address
+func (m *PeerConn) RemoteAddr() net.Addr { return peerDummyAddr{} }
+
+// Close shuts down all peer connections
 func (m *PeerConn) Close() error {
 	if !m.closed.CompareAndSwap(false, true) {
 		return nil
@@ -312,23 +292,23 @@ func (m *PeerConn) Close() error {
 	return nil
 }
 
-// LocalAddr returns a dummy local address for the peer conn.
+// LocalAddr returns a dummy local address
 func (m *PeerConn) LocalAddr() net.Addr { return peerDummyAddr{} }
 
-// SetDeadline is a no-op; PeerConn does not support deadlines.
+// SetDeadline is a no-op
 func (m *PeerConn) SetDeadline(t time.Time) error { return nil }
 
-// SetReadDeadline is a no-op; PeerConn does not support deadlines.
+// SetReadDeadline is a no-op
 func (m *PeerConn) SetReadDeadline(t time.Time) error { return nil }
 
-// SetWriteDeadline is a no-op; PeerConn does not support deadlines.
+// SetWriteDeadline is a no-op
 func (m *PeerConn) SetWriteDeadline(t time.Time) error { return nil }
 
-// peerDummyAddr is a placeholder net.Addr used when no real address is available.
+// peerDummyAddr is a placeholder net.Addr returned by PeerConn's LocalAddr/RemoteAddr
 type peerDummyAddr struct{}
 
-// Network returns the network name for the dummy address.
+// Network returns the network name for this dummy address
 func (peerDummyAddr) Network() string { return "peer" }
 
-// String returns the string representation of the dummy address.
+// String returns the string form of this dummy address
 func (peerDummyAddr) String() string { return "peer" }

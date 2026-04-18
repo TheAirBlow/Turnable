@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"io"
 	"net"
 )
 
@@ -13,33 +12,12 @@ func (D *NoneHandler) ID() string {
 	return "none"
 }
 
-// WrapClient wraps a client packet connection
-func (D *NoneHandler) WrapClient(conn net.PacketConn) (io.ReadWriteCloser, error) {
-	return &noneConn{pc: conn}, nil
+// WrapClient returns the connection as-is
+func (D *NoneHandler) WrapClient(conn net.Conn) (net.Conn, error) {
+	return conn, nil
 }
 
-// WrapServer wraps a server packet connection
-func (D *NoneHandler) WrapServer(conn net.PacketConn) (io.ReadWriteCloser, error) {
-	return &noneConn{pc: conn}, nil
-}
-
-// noneConn adapts a net.PacketConn to io.ReadWriteCloser
-type noneConn struct {
-	pc net.PacketConn
-}
-
-// Read reads one packet from the underlying net.PacketConn
-func (c *noneConn) Read(p []byte) (int, error) {
-	n, _, err := c.pc.ReadFrom(p)
-	return n, err
-}
-
-// Write sends one packet via the underlying net.PacketConn
-func (c *noneConn) Write(p []byte) (int, error) {
-	return c.pc.WriteTo(p, c.pc.LocalAddr())
-}
-
-// Close closes the underlying net.PacketConn
-func (c *noneConn) Close() error {
-	return c.pc.Close()
+// WrapServer returns the connection as-is
+func (D *NoneHandler) WrapServer(conn net.Conn) (net.Conn, error) {
+	return conn, nil
 }

@@ -3,9 +3,9 @@ package transport
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
+	"time"
 
 	kcp "github.com/xtaci/kcp-go/v5"
 )
@@ -15,7 +15,7 @@ const (
 	kcpUpdateMs      = 40              // KCP update interval in milliseconds
 	kcpResend        = 2               // Fast resend after 2 duplicate ACKs
 	kcpDisableCC     = 1               // Disable KCP congestion control
-	kcpMTU           = 1200            // Maximum KCP MTU used for this transport
+	kcpMTU           = 1418            // DTLS(1440) - encryption overhead(20) - mux header(2)
 	kcpReadWriteBuff = 2 * 1024 * 1024 // Read/write buffer size for the session
 	kcpConversation  = 1               // Conversation ID for this transport channel
 )
@@ -28,18 +28,19 @@ func (D *KCPHandler) ID() string {
 	return "kcp"
 }
 
-// WrapClient wraps a client packet connection
-func (D *KCPHandler) WrapClient(conn net.PacketConn) (io.ReadWriteCloser, error) {
-	return wrapKCP(conn)
+// WrapClient wraps a client connection into a reliable stream
+func (D *KCPHandler) WrapClient(conn net.Conn) (net.Conn, error) {
+	return WrapKCP(conn)
 }
 
-// WrapServer wraps a server packet connection
-func (D *KCPHandler) WrapServer(conn net.PacketConn) (io.ReadWriteCloser, error) {
-	return wrapKCP(conn)
+// WrapServer wraps a server connection into a reliable stream
+func (D *KCPHandler) WrapServer(conn net.Conn) (net.Conn, error) {
+	return WrapKCP(conn)
 }
 
-// wrapKCP initializes a KCP session directly over a net.PacketConn
-func wrapKCP(pc net.PacketConn) (io.ReadWriteCloser, error) {
+// WrapKCP initializes a KCP session over a packet-centric net.Conn
+func WrapKCP(conn net.Conn) (net.Conn, error) {
+	pc := &connPacketConn{Conn: conn}
 	session, err := kcp.NewConn3(kcpConversation, pc.LocalAddr(), nil, 0, 0, pc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize kcp session: %w", err)
@@ -54,50 +55,73 @@ func wrapKCP(pc net.PacketConn) (io.ReadWriteCloser, error) {
 	_ = session.SetWriteBuffer(kcpReadWriteBuff)
 	_ = session.SetMtu(kcpMTU)
 
-	return &managedKCPConn{packetConn: pc, session: session}, nil
+	return &managedKCPConn{underlying: conn, packetConn: pc, session: session}, nil
 }
 
-// managedKCPConn represents a managed KCP connection
+// managedKCPConn wraps a KCP session and implements net.Conn
 type managedKCPConn struct {
+	underlying net.Conn
 	packetConn net.PacketConn
 	session    *kcp.UDPSession
 
-	closeMu  sync.Mutex
-	isClosed bool
+	closeOnce sync.Once
 }
 
-// Read forwards payload bytes out of the underlying KCP session
-func (c *managedKCPConn) Read(p []byte) (int, error) {
-	return c.session.Read(p)
-}
+// Read reads from the KCP session
+func (c *managedKCPConn) Read(p []byte) (int, error) { return c.session.Read(p) }
 
-// Write forwards payload bytes into the underlying KCP session
-func (c *managedKCPConn) Write(p []byte) (int, error) {
-	return c.session.Write(p)
-}
+// Write writes to the KCP session
+func (c *managedKCPConn) Write(p []byte) (int, error) { return c.session.Write(p) }
 
-// Close closes both the KCP session and the underlying packet connection
+// Close closes the KCP session and underlying connection
 func (c *managedKCPConn) Close() error {
-	c.closeMu.Lock()
-	if c.isClosed {
-		c.closeMu.Unlock()
-		return nil
-	}
-	c.isClosed = true
-	c.closeMu.Unlock()
+	var err error
+	c.closeOnce.Do(func() {
+		err = errors.Join(
+			func() error {
+				if c.session == nil {
+					return nil
+				}
+				return c.session.Close()
+			}(),
+			func() error {
+				if c.underlying == nil {
+					return nil
+				}
+				return c.underlying.Close()
+			}(),
+		)
+	})
+	return err
+}
 
-	return errors.Join(
-		func() error {
-			if c.session == nil {
-				return nil
-			}
-			return c.session.Close()
-		}(),
-		func() error {
-			if c.packetConn == nil {
-				return nil
-			}
-			return c.packetConn.Close()
-		}(),
-	)
+// LocalAddr returns the local address of the underlying connection
+func (c *managedKCPConn) LocalAddr() net.Addr { return c.underlying.LocalAddr() }
+
+// RemoteAddr returns the remote address of the underlying connection
+func (c *managedKCPConn) RemoteAddr() net.Addr { return c.underlying.RemoteAddr() }
+
+// SetDeadline sets the read and write deadline on the KCP session
+func (c *managedKCPConn) SetDeadline(t time.Time) error { return c.session.SetDeadline(t) }
+
+// SetReadDeadline sets the read deadline on the KCP session
+func (c *managedKCPConn) SetReadDeadline(t time.Time) error { return c.session.SetReadDeadline(t) }
+
+// SetWriteDeadline sets the write deadline on the KCP session
+func (c *managedKCPConn) SetWriteDeadline(t time.Time) error { return c.session.SetWriteDeadline(t) }
+
+// connPacketConn adapts a packet-centric net.Conn to net.PacketConn
+type connPacketConn struct {
+	net.Conn
+}
+
+// ReadFrom reads a packet and returns the local address as source
+func (c *connPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, err := c.Conn.Read(p)
+	return n, c.Conn.LocalAddr(), err
+}
+
+// WriteTo writes a packet, ignoring the destination address
+func (c *connPacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	return c.Conn.Write(p)
 }

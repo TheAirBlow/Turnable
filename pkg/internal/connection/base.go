@@ -2,7 +2,6 @@ package connection
 
 import (
 	"context"
-	"io"
 	"net"
 
 	"github.com/theairblow/turnable/pkg/common"
@@ -11,25 +10,24 @@ import (
 
 // Handler represents a connection handler
 type Handler interface {
-	ID() string                                                   // Returns the unique ID of this handler
-	Start(config config.ServerConfig) error                       // Starts the VPN server
-	Stop() error                                                  // Stops the VPN server
-	Connect(config config.ClientConfig, sessionUUID string) error // Connects to a VPN server
-	OpenChannel(socketType string) (io.ReadWriteCloser, error)    // Opens a data channel for the given socket type ("tcp"/"udp")
-	Disconnect() error                                            // Gracefully disconnects from the current VPN server
-	Close() error                                                 // Forcibly closes the current VPN server connection
-	AcceptClients(ctx context.Context) <-chan ServerClient        // Emits an event for every new client
+	ID() string                                            // Returns the unique ID of this handler
+	Start(config config.ServerConfig) error                // Starts the VPN server
+	Stop() error                                           // Stops the VPN server
+	Connect(config config.ClientConfig) error              // Connects to a VPN server
+	OpenChannel(socketType string) (net.Conn, error)       // Opens a data channel for the given socket type ("tcp"/"udp")
+	Disconnect() error                                     // Gracefully disconnects from the current VPN server
+	Close() error                                          // Forcibly closes the current VPN server connection
+	AcceptClients(ctx context.Context) <-chan ServerClient // Emits an event for every new client
 }
 
-// ServerClient represents a server client's Address and IO
+// ServerClient represents a server client
 type ServerClient struct {
-	Address        net.Addr             // IP and port of the client
-	IO             io.ReadWriteCloser   // Client IO stream
-	Config         *config.ClientConfig // Authenticated client config
-	User           *config.User         // Authenticated user
-	Route          *config.Route        // Requested route
-	SessionUUID    string               // Multi-peer session identifier
-	CloseRequested <-chan struct{}      // closed when client sends CloseRequest (half-close)
+	Address     net.Addr             // IP and port of the client
+	Conn        net.Conn             // Client connection
+	Config      *config.ClientConfig // Authenticated client config
+	User        *config.User         // Authenticated user
+	Route       *config.Route        // Requested route
+	SessionUUID string               // Multi-peer session identifier
 }
 
 // Handlers represents connection Handler registry

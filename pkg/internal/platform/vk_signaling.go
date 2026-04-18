@@ -39,25 +39,35 @@ type vkMessage struct {
 
 // Connect connects to the signaling server and starts the internal signaling loop
 func (V *VKHandler) Connect() error {
-	V.mu.Lock()
-	V.ensureInitLocked()
-	if common.IsNullOrWhiteSpace(V.endpoint) {
-		V.mu.Unlock()
+	V.ensureInit()
+
+	V.mu.RLock()
+	endpoint := V.endpoint
+	profile := V.profile
+	videoTrackSlots := V.videoTrackSlots
+	turnUser := V.turnUser
+	turnPass := V.turnPass
+	turnAddr := V.turnAddr
+	V.mu.RUnlock()
+
+	if common.IsNullOrWhiteSpace(endpoint) {
 		slog.Warn("vk signaling connect rejected: not authorized")
 		return errors.New("authorize must be called before connect")
 	}
+
+	V.connMu.Lock()
 	if V.conn != nil {
-		V.mu.Unlock()
+		V.connMu.Unlock()
 		return nil
 	}
+	V.connMu.Unlock()
 
 	header := http.Header{}
 	header.Set("Origin", "https://vk.com")
-	header.Set("User-Agent", V.profile.UserAgent)
+	header.Set("User-Agent", profile.UserAgent)
 
 	// Chromium websocket captures show these query params are always present and appear to
 	// influence backend behavior/validation.
-	endpoint := V.endpoint
 	if parsed, err := url.Parse(endpoint); err == nil {
 		q := parsed.Query()
 		q.Set("platform", "WEB")
@@ -76,11 +86,16 @@ func (V *VKHandler) Connect() error {
 
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, endpoint, header)
 	if err != nil {
-		V.mu.Unlock()
 		slog.Warn("vk signaling websocket dial failed", "error", err)
 		return err
 	}
 
+	V.connMu.Lock()
+	if V.conn != nil {
+		V.connMu.Unlock()
+		_ = conn.Close()
+		return nil
+	}
 	V.conn = conn
 	V.seq = 1
 
@@ -99,7 +114,7 @@ func (V *VKHandler) Connect() error {
 			"onDemandTracks":                         true,
 			"unifiedPlan":                            true,
 			"singleSession":                          true,
-			"videoTracksCount":                       V.videoTrackSlots,
+			"videoTracksCount":                       videoTrackSlots,
 			"red":                                    true,
 			"audioShare":                             false,
 			"fastScreenShare":                        true,
@@ -111,7 +126,7 @@ func (V *VKHandler) Connect() error {
 	}); err != nil {
 		_ = conn.Close()
 		V.conn = nil
-		V.mu.Unlock()
+		V.connMu.Unlock()
 		slog.Warn("vk signaling setup command failed", "command", "allocate-consumer", "error", err)
 		return err
 	}
@@ -128,7 +143,7 @@ func (V *VKHandler) Connect() error {
 	}); err != nil {
 		_ = conn.Close()
 		V.conn = nil
-		V.mu.Unlock()
+		V.connMu.Unlock()
 		slog.Warn("vk signaling setup command failed", "command", "change-media-settings", "error", err)
 		return err
 	}
@@ -141,41 +156,35 @@ func (V *VKHandler) Connect() error {
 	}); err != nil {
 		_ = conn.Close()
 		V.conn = nil
-		V.mu.Unlock()
+		V.connMu.Unlock()
 		slog.Warn("vk signaling setup command failed", "command", "update-media-modifiers", "error", err)
 		return err
 	}
 
 	readerCtx, readerCancel := context.WithCancel(context.Background())
 	V.readerCancel = readerCancel
-	turnPayload := map[string]string{
-		"username": V.turnUser,
-		"password": V.turnPass,
-		"address":  V.turnAddr,
-	}
+	V.connMu.Unlock()
+
 	endpointHost := ""
 	if parsedEndpoint, parseErr := url.Parse(endpoint); parseErr == nil {
 		endpointHost = parsedEndpoint.Host
 	}
-	conn = V.conn
-	V.mu.Unlock()
 
 	go V.runSignalingLoop(readerCtx, conn)
-	V.broadcast(Event{Type: EventTurnAuthUpdated, Payload: turnPayload})
-	slog.Info(
-		"vk signaling connected",
-		"endpoint_host",
-		endpointHost,
-	)
+	V.broadcast(Event{Type: EventTurnAuthUpdated, Payload: map[string]string{
+		"username": turnUser,
+		"password": turnPass,
+		"address":  turnAddr,
+	}})
+	slog.Info("vk signaling connected", "endpoint_host", endpointHost)
 	return nil
 }
 
 // Disconnect gracefully disconnects from the signaling server
 func (V *VKHandler) Disconnect() error {
-	V.mu.Lock()
-	defer V.mu.Unlock()
+	V.connMu.Lock()
+	defer V.connMu.Unlock()
 
-	V.ensureInitLocked()
 	if V.conn == nil {
 		return nil
 	}
@@ -219,10 +228,9 @@ func (V *VKHandler) Disconnect() error {
 
 // Close forcibly closes the current signaling connection
 func (V *VKHandler) Close() error {
-	V.mu.Lock()
-	defer V.mu.Unlock()
+	V.connMu.Lock()
+	defer V.connMu.Unlock()
 
-	V.ensureInitLocked()
 	if V.conn == nil {
 		return nil
 	}
@@ -259,7 +267,6 @@ func (V *VKHandler) handleIncomingMessage(msg *vkMessage) []Event {
 	V.mu.Lock()
 	defer V.mu.Unlock()
 
-	V.ensureInitLocked()
 	switch msg.Notification {
 	case "connection":
 		if msg.Endpoint != "" {
@@ -282,7 +289,7 @@ func (V *VKHandler) handleIncomingMessage(msg *vkMessage) []Event {
 				}
 			}
 		}
-		return V.handleConnectionSnapshotLocked(msg.Conversation)
+		return V.handleConnectionSnapshot(msg.Conversation)
 	case "producer-updated":
 		remoteMedia, err := parseRemoteMediaDescription(msg.Description)
 		if err != nil {
@@ -297,7 +304,7 @@ func (V *VKHandler) handleIncomingMessage(msg *vkMessage) []Event {
 		return []Event{{Type: EventRemoteMediaUpdated, Payload: cloneRemoteMediaInfo(remoteMedia)}}
 	case "participant-joined":
 		participantID := int64(msg.ParticipantID)
-		participant := V.ensureParticipantLocked(participantID)
+		participant := V.ensureParticipant(participantID)
 		participant.ID = participantID
 		if participantMap := msg.Participant; participantMap != nil {
 			if externalID, ok := common.NestedString(participantMap, "externalId", "id"); ok {
@@ -314,7 +321,7 @@ func (V *VKHandler) handleIncomingMessage(msg *vkMessage) []Event {
 		}}
 	case "registered-peer":
 		participantID := int64(msg.ParticipantID)
-		participant := V.ensureParticipantLocked(participantID)
+		participant := V.ensureParticipant(participantID)
 		if msg.PeerID != nil {
 			peerID := common.StringifyAny(msg.PeerID["id"])
 			if peerID != "" {
@@ -328,8 +335,8 @@ func (V *VKHandler) handleIncomingMessage(msg *vkMessage) []Event {
 	return nil
 }
 
-// handleConnectionSnapshotLocked registers participants from the initial connection snapshot
-func (V *VKHandler) handleConnectionSnapshotLocked(conversation map[string]any) []Event {
+// handleConnectionSnapshot registers participants from the initial connection snapshot; mu must be held
+func (V *VKHandler) handleConnectionSnapshot(conversation map[string]any) []Event {
 	participantsRaw, ok := conversation["participants"].([]any)
 	if !ok || len(participantsRaw) == 0 {
 		return nil
@@ -361,7 +368,7 @@ func (V *VKHandler) handleConnectionSnapshotLocked(conversation map[string]any) 
 			continue
 		}
 
-		participant := V.ensureParticipantLocked(participantID)
+		participant := V.ensureParticipant(participantID)
 		participant.ID = participantID
 		if externalID, ok := common.NestedString(participantMap, "externalId", "id"); ok {
 			participant.ExternalID = externalID
@@ -403,12 +410,12 @@ func (V *VKHandler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) 
 	}()
 
 	terminate := func(err error) {
-		V.mu.Lock()
+		V.connMu.Lock()
 		if V.conn == conn {
 			V.conn = nil
 			V.readerCancel = nil
 		}
-		V.mu.Unlock()
+		V.connMu.Unlock()
 		V.broadcast(Event{Type: EventCallEnded, Metadata: map[string]string{"error": err.Error()}})
 		slog.Warn("vk signaling loop terminated", "error", err)
 	}
@@ -419,19 +426,19 @@ func (V *VKHandler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) 
 			_ = conn.Close()
 			return
 		case <-pingTicker.C:
-			V.mu.Lock()
+			V.connMu.Lock()
 			if V.conn == conn {
 				if err := conn.WriteControl(
 					websocket.PingMessage,
 					nil,
 					time.Now().Add(2*time.Second),
 				); err != nil {
-					V.mu.Unlock()
+					V.connMu.Unlock()
 					terminate(err)
 					return
 				}
 			}
-			V.mu.Unlock()
+			V.connMu.Unlock()
 		case result := <-readCh:
 			if result.err != nil {
 				terminate(result.err)
@@ -485,13 +492,12 @@ func (V *VKHandler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) 
 
 // broadcast fan-outs an event to all active subscribers without blocking
 func (V *VKHandler) broadcast(event Event) {
-	V.mu.Lock()
-	V.ensureInitLocked()
+	V.mu.RLock()
 	subscribers := make([]chan Event, 0, len(V.subscribers))
 	for _, ch := range V.subscribers {
 		subscribers = append(subscribers, ch)
 	}
-	V.mu.Unlock()
+	V.mu.RUnlock()
 
 	for _, ch := range subscribers {
 		select {
@@ -501,21 +507,19 @@ func (V *VKHandler) broadcast(event Event) {
 	}
 }
 
-// writeSimpleCommand sends a signaling command while holding the handler lock
+// writeSimpleCommand sends a signaling command acquiring connMu
 func (V *VKHandler) writeSimpleCommand(command string, payload map[string]any) error {
-	V.mu.Lock()
-	defer V.mu.Unlock()
+	V.connMu.Lock()
+	defer V.connMu.Unlock()
 
-	V.ensureInitLocked()
 	if V.conn == nil {
 		return errors.New("signaling connection is not established")
 	}
 	return V.writeCommandLocked(command, payload)
 }
 
-// writeCommandLocked serializes and writes a signaling command while the mutex is held
+// writeCommandLocked serializes and writes a signaling command; connMu must be held by caller
 func (V *VKHandler) writeCommandLocked(command string, payload map[string]any) error {
-	V.ensureInitLocked()
 	sequence := V.seq
 	V.seq++
 	encoded, err := marshalCommandJSON(command, sequence, payload)

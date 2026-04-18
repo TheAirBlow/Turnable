@@ -12,7 +12,7 @@ import (
 	"github.com/theairblow/turnable/pkg/internal/connection"
 )
 
-// VPNClient represents a VPN client.
+// VPNClient represents a VPN client
 type VPNClient struct {
 	Config config.ClientConfig
 
@@ -23,7 +23,7 @@ type VPNClient struct {
 	cancel context.CancelFunc
 }
 
-// NewVPNClient creates a new VPN client from the specified ClientConfig.
+// NewVPNClient creates a new VPN client from the specified ClientConfig
 func NewVPNClient(cfg config.ClientConfig) *VPNClient {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &VPNClient{
@@ -33,8 +33,7 @@ func NewVPNClient(cfg config.ClientConfig) *VPNClient {
 	}
 }
 
-// Start starts the VPN client using the provided local tunnel handler.
-// It connects to the relay, opens the local socket, and forwards per-client traffic.
+// Start starts the VPN client using the provided local tunnel handler
 func (c *VPNClient) Start(tunnelHandler tunnels.Handler) error {
 	if !c.running.CompareAndSwap(false, true) {
 		return errors.New("already running")
@@ -60,7 +59,7 @@ func (c *VPNClient) Start(tunnelHandler tunnels.Handler) error {
 		return fmt.Errorf("get connection handler: %w", err)
 	}
 
-	if err := connHandler.Connect(c.Config, ""); err != nil {
+	if err := connHandler.Connect(c.Config); err != nil {
 		_ = connHandler.Close()
 		c.running.Store(false)
 		return fmt.Errorf("connect: %w", err)
@@ -75,14 +74,14 @@ func (c *VPNClient) Start(tunnelHandler tunnels.Handler) error {
 		return fmt.Errorf("open tunnel: %w", err)
 	}
 
-	go c.serveLocal(c.Config.Socket, acceptCh)
+	go c.acceptClients(c.Config.Socket, acceptCh)
 
 	slog.Info("vpn client started", "connection_type", c.Config.Type)
 	success = true
 	return nil
 }
 
-// Stop stops the VPN client.
+// Stop stops the VPN client
 func (c *VPNClient) Stop() error {
 	if !c.running.CompareAndSwap(true, false) {
 		return errors.New("not running")
@@ -105,8 +104,8 @@ func (c *VPNClient) Stop() error {
 	return err
 }
 
-// serveLocal dispatches accepted local clients to individual forwarding goroutines.
-func (c *VPNClient) serveLocal(socketType string, acceptCh <-chan tunnels.AcceptedClient) {
+// acceptClients accepts local clients and handles them
+func (c *VPNClient) acceptClients(socketType string, acceptCh <-chan tunnels.AcceptedClient) {
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -115,13 +114,13 @@ func (c *VPNClient) serveLocal(socketType string, acceptCh <-chan tunnels.Accept
 			if !ok {
 				return
 			}
-			go c.handleLocalClient(socketType, client)
+			go c.handleClient(socketType, client)
 		}
 	}
 }
 
-// handleLocalClient opens a vpnmux channel and pipes the local client through it.
-func (c *VPNClient) handleLocalClient(socketType string, local tunnels.AcceptedClient) {
+// handleClient opens a tinymux channel and pipes the local client through it
+func (c *VPNClient) handleClient(socketType string, local tunnels.AcceptedClient) {
 	if c.handler == nil {
 		slog.Warn("no active handler for local client")
 		_ = local.Stream.Close()
@@ -136,6 +135,7 @@ func (c *VPNClient) handleLocalClient(socketType string, local tunnels.AcceptedC
 		_ = local.Stream.Close()
 		return
 	}
+
 	slog.Debug("piping local client to channel", "socket", socketType)
 	pipeStreams(local.Stream, channel)
 }

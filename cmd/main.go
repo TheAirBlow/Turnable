@@ -8,24 +8,21 @@ import (
 	_ "github.com/theairblow/turnable/pkg/common"
 )
 
-func newRootCommand() *cobra.Command {
-	rootCmd := &cobra.Command{
+// main runs the specified command
+func main() {
+	root := &cobra.Command{
 		Use:           "turnable",
-		Short:         "MAX/VK TURN VPN",
+		Short:         "VPN core for stealthy tunneling through TURN or via SFU",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
-	rootCmd.AddCommand(newServerCommand())
-	rootCmd.AddCommand(newClientCommand())
-	rootCmd.AddCommand(newKeygenCommand())
-	rootCmd.AddCommand(newConfigCommand())
+	root.AddCommand(newServerCommand())
+	root.AddCommand(newClientCommand())
+	root.AddCommand(newKeygenCommand())
+	root.AddCommand(newConfigCommand())
 
-	return rootCmd
-}
-
-func main() {
-	if err := newRootCommand().Execute(); err != nil {
+	if err := root.Execute(); err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}

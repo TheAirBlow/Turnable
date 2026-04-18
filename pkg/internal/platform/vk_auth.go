@@ -142,18 +142,20 @@ func (V *VKHandler) Authorize(callID string, username string) error {
 		normalizedCallID = normalizedCallID[idx+len("join/"):]
 	}
 
+	V.ensureInit()
+	joinURL := "https://vk.com/call/join/" + normalizedCallID
+	name := strings.TrimSpace(username)
+
 	V.mu.Lock()
-	V.ensureInitLocked()
 	V.callID = normalizedCallID
-	V.joinURL = "https://vk.com/call/join/" + V.callID
-	V.username = strings.TrimSpace(username)
+	V.joinURL = joinURL
+	V.username = name
 	V.mu.Unlock()
 
-	cacheKey := normalizedCallID + "|" + strings.TrimSpace(username)
+	cacheKey := normalizedCallID + "|" + name
 	for {
 		if cached, ok := getCachedVKAuth(cacheKey); ok {
 			V.mu.Lock()
-			V.ensureInitLocked()
 			V.messagesAccessToken = cached.MessagesAccessToken
 			V.anonymToken = cached.AnonymToken
 			V.sessionKey = cached.SessionKey
@@ -182,26 +184,19 @@ func (V *VKHandler) Authorize(callID string, username string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	messagesToken, anonymToken, err := V.authorizeAnonymous(ctx)
+	messagesToken, anonymToken, err := V.authorizeAnonymous(ctx, joinURL, name)
 	if err != nil {
 		slog.Warn("vk authorize anonymous flow failed", "error", err)
 		return err
 	}
-	V.mu.Lock()
-	V.messagesAccessToken = messagesToken
-	V.anonymToken = anonymToken
-	V.mu.Unlock()
 
-	loginSession, err := V.callsLogin(ctx)
+	sessionKey, err := V.callsLogin(ctx)
 	if err != nil {
 		slog.Warn("vk calls login failed", "error", err)
 		return err
 	}
-	V.mu.Lock()
-	V.sessionKey = loginSession
-	V.mu.Unlock()
 
-	startedInfo, err := V.joinConversation(ctx)
+	startedInfo, err := V.joinConversation(ctx, normalizedCallID, anonymToken, sessionKey)
 	if err != nil {
 		slog.Warn("vk join conversation failed", "error", err)
 		return err
@@ -214,6 +209,9 @@ func (V *VKHandler) Authorize(callID string, username string) error {
 	}
 
 	V.mu.Lock()
+	V.messagesAccessToken = messagesToken
+	V.anonymToken = anonymToken
+	V.sessionKey = sessionKey
 	V.endpoint = startedInfo.Endpoint
 	V.turnUser = startedInfo.TurnServer.Username
 	V.turnPass = startedInfo.TurnServer.Password
@@ -235,15 +233,8 @@ func (V *VKHandler) Authorize(callID string, username string) error {
 	return nil
 }
 
-// authorizeAnonymous performs the full VK anonymous auth flow, fetching a fresh messages token
-// before each calls.getAnonymousToken attempt (or after a captcha rate limit) and returning both tokens
-func (V *VKHandler) authorizeAnonymous(ctx context.Context) (string, string, error) {
-	V.mu.Lock()
-	V.ensureInitLocked()
-	joinURL := V.joinURL
-	username := V.username
-	V.mu.Unlock()
-
+// authorizeAnonymous performs the full VK anonymous auth flow, returning the messages token and call token
+func (V *VKHandler) authorizeAnonymous(ctx context.Context, joinURL, username string) (string, string, error) {
 	slog.Debug("vk authorize anonymous started")
 
 	var (
@@ -369,14 +360,7 @@ func (V *VKHandler) callsLogin(ctx context.Context) (string, error) {
 }
 
 // joinConversation joins the target call and returns the signaling bootstrap payload
-func (V *VKHandler) joinConversation(ctx context.Context) (vkStartedConversationInfo, error) {
-	V.mu.Lock()
-	V.ensureInitLocked()
-	callID := V.callID
-	anonymToken := V.anonymToken
-	sessionKey := V.sessionKey
-	V.mu.Unlock()
-
+func (V *VKHandler) joinConversation(ctx context.Context, callID, anonymToken, sessionKey string) (vkStartedConversationInfo, error) {
 	resp, err := V.postVKForm(ctx, vkCallsEndpoint, common.NewValues(
 		"method", "vchat.joinConversationByLink",
 		"format", "JSON",
@@ -394,10 +378,12 @@ func (V *VKHandler) joinConversation(ctx context.Context) (vkStartedConversation
 	if err != nil {
 		return vkStartedConversationInfo{}, err
 	}
+
 	info, err := parseStartedConversation(resp)
 	if err == nil {
 		slog.Debug("vk join conversation completed", "turn_urls_count", len(info.TurnServer.Urls))
 	}
+
 	return info, err
 }
 
@@ -415,6 +401,7 @@ func parseStartedConversation(raw map[string]any) (vkStartedConversationInfo, er
 	if !ok {
 		turnRaw, _ = payload["turnServer"].(map[string]any)
 	}
+
 	if ok && turnRaw != nil {
 		out.TurnServer.Username = common.StringifyAny(turnRaw["username"])
 		out.TurnServer.Password = common.FirstNonEmpty(
@@ -462,12 +449,14 @@ func parseVKAPIError(errMap map[string]any) vkAPIError {
 	redirectURI, _ := errMap["redirect_uri"].(string)
 	sessionToken := ""
 	adFP := ""
+
 	if redirectURI != "" {
 		if parsed, err := url.Parse(redirectURI); err == nil {
 			sessionToken = parsed.Query().Get("session_token")
 			adFP = common.FirstNonEmpty(parsed.Query().Get("adFp"), parsed.Query().Get("adfp"))
 		}
 	}
+
 	return vkAPIError{
 		Code:           int(code),
 		Message:        message,

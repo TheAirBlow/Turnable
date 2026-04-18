@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"sync/atomic"
 
-	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/config"
 	"github.com/theairblow/turnable/pkg/engine/tunnels"
 	"github.com/theairblow/turnable/pkg/internal/connection"
@@ -33,7 +32,7 @@ func NewVPNServer(cfg config.ServerConfig) *VPNServer {
 	}
 }
 
-// Start starts all enabled server-side connection handlers.
+// Start starts all enabled connection handlers
 func (s *VPNServer) Start() error {
 	if !s.running.CompareAndSwap(false, true) {
 		return errors.New("already running")
@@ -72,7 +71,7 @@ func (s *VPNServer) Start() error {
 	return nil
 }
 
-// Stop stops the VPN server and all active handlers.
+// Stop stops the VPN server and all active handlers
 func (s *VPNServer) Stop() error {
 	if !s.running.CompareAndSwap(true, false) {
 		return errors.New("not running")
@@ -83,7 +82,7 @@ func (s *VPNServer) Stop() error {
 
 	var err error
 	for _, handler := range s.handlers {
-		err = common.JoinErr(err, handler.Stop())
+		err = errors.Join(err, handler.Stop())
 	}
 
 	if err != nil {
@@ -95,24 +94,25 @@ func (s *VPNServer) Stop() error {
 	return err
 }
 
-// acceptClients consumes authenticated connection-handler clients and forwards each one.
+// acceptClients accepts authenticated clients and handles them
 func (s *VPNServer) acceptClients(handler connection.Handler) {
 	for client := range handler.AcceptClients(s.ctx) {
 		if client.Route == nil || client.Config == nil || client.User == nil {
 			slog.Warn("dropping client with incomplete metadata", "addr", client.Address)
-			_ = client.IO.Close()
+			_ = client.Conn.Close()
 			continue
 		}
+
 		go s.handleClient(client)
 	}
 }
 
-// handleClient dials the backend route and pipes the vpnmux channel through it.
+// handleClient dials the backend route and pipes the tinymux channel through it
 func (s *VPNServer) handleClient(client connection.ServerClient) {
 	tunnelHandler, err := tunnels.GetHandler("socket")
 	if err != nil {
 		slog.Warn("failed to get tunnel handler", "error", err)
-		_ = client.IO.Close()
+		_ = client.Conn.Close()
 		return
 	}
 
@@ -122,10 +122,10 @@ func (s *VPNServer) handleClient(client connection.ServerClient) {
 	routeIO, err := tunnelHandler.Connect(routeCtx, client.Route)
 	if err != nil {
 		slog.Warn("failed to connect to route", "addr", client.Address, "route", client.Route.ID, "error", err)
-		_ = client.IO.Close()
+		_ = client.Conn.Close()
 		return
 	}
 
 	slog.Debug("piping client to route", "addr", client.Address, "route", client.Route.ID, "session", client.SessionUUID)
-	pipeStreams(client.IO, routeIO)
+	pipeStreams(client.Conn, routeIO)
 }

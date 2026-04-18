@@ -41,9 +41,8 @@ func (S *SocketHandler) Open(ctx context.Context, socketType string) (<-chan Acc
 	}
 }
 
-// Connect dials a remote TCP or UDP address from the route.
-// The returned ReadWriteCloser wraps the raw socket directly; no internal goroutines are started.
-func (S *SocketHandler) Connect(ctx context.Context, route *config.Route) (io.ReadWriteCloser, error) {
+// Connect dials a remote TCP or UDP address from the route
+func (S *SocketHandler) Connect(ctx context.Context, route *config.Route) (net.Conn, error) {
 	socketType := strings.ToLower(route.Socket)
 	address := net.JoinHostPort(route.Address, fmt.Sprintf("%d", route.Port))
 	conn, err := (&net.Dialer{}).DialContext(ctx, socketType, address)
@@ -57,6 +56,7 @@ func (S *SocketHandler) Connect(ctx context.Context, route *config.Route) (io.Re
 	return conn, nil
 }
 
+// acceptTCP starts a TCP listener and yields each accepted connection as a stream
 func (S *SocketHandler) acceptTCP(ctx context.Context) (<-chan AcceptedClient, error) {
 	addr := S.LocalAddr
 	if addr == "" {
@@ -79,7 +79,9 @@ func (S *SocketHandler) acceptTCP(ctx context.Context) (<-chan AcceptedClient, e
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				if ctx.Err() != nil || errors.Is(err, net.ErrClosed) || isClosedNetErr(err) {
+				s := err.Error()
+				if ctx.Err() != nil || errors.Is(err, net.ErrClosed) ||
+					strings.Contains(s, "use of closed network connection") || strings.Contains(s, "already closed") {
 					return
 				}
 				slog.Warn("tcp accept failed", "error", err)
@@ -96,6 +98,7 @@ func (S *SocketHandler) acceptTCP(ctx context.Context) (<-chan AcceptedClient, e
 	return accepted, nil
 }
 
+// acceptUDP starts a UDP listener and yields each unique remote peer as a virtual stream
 func (S *SocketHandler) acceptUDP(ctx context.Context) (<-chan AcceptedClient, error) {
 	addr := S.LocalAddr
 	if addr == "" {
@@ -142,7 +145,9 @@ func (a *udpAcceptor) readLoop() {
 	for {
 		n, addr, err := a.conn.ReadFromUDP(buf)
 		if err != nil {
-			if a.ctx.Err() != nil || errors.Is(err, net.ErrClosed) || isClosedNetErr(err) {
+			s := err.Error()
+			if a.ctx.Err() != nil || errors.Is(err, net.ErrClosed) ||
+				strings.Contains(s, "use of closed network connection") || strings.Contains(s, "already closed") {
 				return
 			}
 			slog.Warn("udp read failed", "error", err)
@@ -254,10 +259,4 @@ func (u *udpPeerStream) deliver(packet []byte) bool {
 	default:
 	}
 	return true
-}
-
-// isClosedNetErr reports whether the error indicates a closed network connection.
-func isClosedNetErr(err error) bool {
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "use of closed network connection") || strings.Contains(s, "already closed")
 }

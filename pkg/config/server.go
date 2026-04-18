@@ -19,8 +19,8 @@ type ServerConfig struct {
 	PubKey  string `json:"pub_key"`  // Public key
 	PrivKey string `json:"priv_key"` // Private key
 
-	Relay RelayServerConfig `json:"relay"`
-	P2P   P2PServerConfig   `json:"p2p"`
+	Relay RelayServerConfig `json:"relay"` // Relay server config
+	P2P   P2PServerConfig   `json:"p2p"`   // P2P server config
 
 	provider Provider // User and Route provider
 }
@@ -122,7 +122,7 @@ func (s *ServerConfig) Validate() error {
 	for _, route := range s.GetAllRoutes() {
 		err := route.Validate()
 		if err != nil {
-			return common.WrapError(fmt.Sprintf("route %s is invalid", route.ID), err)
+			return fmt.Errorf("route %s is invalid: %w", route.ID, err)
 		}
 	}
 
