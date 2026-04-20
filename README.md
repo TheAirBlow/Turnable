@@ -266,5 +266,10 @@ Configure your proxy/VPN client application to use `127.0.0.1:1080` (or whatever
 
 ---
 
+## Credits
+- [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) - original project, on which Turnable is partially based on.
+
+---
+
 ## License
 [GNU General Public License v2.0](https://github.com/TheAirBlow/Turnable/blob/main/LICENCE)
