@@ -183,4 +183,4 @@ jobs:
 
       - name: No release
         if: steps.bump.outputs.type == 'none'
-        run: echo "No (major)/(minor)/(patch) keyword in commit message — skipping release."
+        run: echo "No (major)/(minor)/(patch) keyword in commit message - skipping release."

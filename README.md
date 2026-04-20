@@ -1,10 +1,21 @@
 # Turnable &nbsp;·&nbsp; [🇷🇺 RU](README_RU.md)
-Turnable is a VPN core that tunnels TCP/UDP traffic through [TURN](https://en.wikipedia.org/wiki/Traversal_Using_Relays_around_NAT) relay servers or via [SFU](https://bloggeek.me/webrtcglossary/sfu/) provided by platforms like VKontakte. From the platform's perspective, your client and server are just normal call participants. Traffic mimics legitimate WebRTC media and is encrypted, multiplexed, and spread across multiple peer connections.
+Turnable is a VPN core that tunnels TCP/UDP traffic through [TURN](https://en.wikipedia.org/wiki/Traversal_Using_Relays_around_NAT) relay servers or via [SFU](https://bloggeek.me/webrtcglossary/sfu/) provided by platforms like VKontakte. Traffic mimics legitimate WebRTC media and is encrypted, multiplexed, and spread across multiple peer connections. The entire codebase is modular and can be freely extended to add new features or support more platforms.
+
+---
+
+## Features
+1. Future-proof modular architecture
+2. Full support for both TCP and UDP sockets
+3. Tunneling through multiple peer connections to bypass ratelimits
+4. Multiplexing to allow establishing multiple route connections
+5. End-to-end encryption - forced for handshake, optional for data
+6. Convenient user and route management with proper authentication
+7. Overall more stable and less hacky implementation than others
 
 ---
 
 ## How it works
-There are two methods of establishing a tunnel with a remote server. Both of them allow to establish multiple TCP/UDP connections via multiplexing, with traffic being spread through multiple peer connections to bypass platform ratelimits.
+There are two methods of establishing a tunnel with a remote server that Turnable supports. Both of them allow to establish multiple TCP/UDP connections via multiplexing, with traffic being spread through multiple peer connections to bypass platform ratelimits.
 
 ### Relay - direct tunnel via TURN
 The server allocates a relay address on the platform's TURN server. The client connects to it, and from there the server forwards traffic to the configured destination. Simple and stable, but is usually heavily throttled and can be detected.
@@ -68,17 +79,19 @@ sequenceDiagram
 ## Building
 Pre-built binaries are available on the [releases page](https://github.com/TheAirBlow/Turnable/releases). Pick the correct file for your OS and architecture.
 
-To build from source (run this on the target machine):
+If you would like to compile it yourself, run this command on the target machine:
 ```bash
 go build -o turnable ./cmd
 ```
 
-Cross-compilation is handled by the CI pipeline - see `.github/workflows/` for reference.
+Check out the [ci.yml](https://github.com/TheAirBlow/Turnable/blob/main/.github/workflows/ci.yml) workflow for cross-compilation.
 
 ---
 
 ## Setup
 ### Server
+Turnable provides end-to-end encryption, user and route management for your convenience. You need a VPS with a public IP and an internet connection, on which you are able to open ports freely. Keep in mind that Turnable is just a tunnel - you still need to set up a VPN/Proxy server. It is recommended that you use [WireGuard](https://www.wireguard.com/quickstart/).
+
 #### 1. Generate a key pair
 ```bash
 ./turnable keygen
@@ -109,13 +122,14 @@ Cross-compilation is handled by the CI pipeline - see `.github/workflows/` for r
 | Field                  | Description                                                 |
 |------------------------|-------------------------------------------------------------|
 | `platform_id`          | Platform to use for signaling (see [Platforms](#platforms)) |
-| `call_id`              | Platform-specific call/meeting ID                           |
+| `call_id`              | Platform specific call or meeting ID                        |
 | `priv_key` / `pub_key` | Key pair for end-to-end encryption                          |
+| `relay.enabled`        | Relay mode enabled flag                                     |
 | `relay.proto`          | Transport protocol (`dtls` / `srtp`)                        |
 | `relay.cloak`          | Traffic obfuscation method (`none` for now)                 |
 | `relay.public_ip`      | Public IP address of this server                            |
 | `relay.port`           | UDP port for the DTLS/SRTP listener                         |
-| `p2p.enabled`          | P2P mode - **not yet implemented**, keep `false`            |
+| `p2p.enabled`          | P2P mode enabled flag **⚠️ WIP**                            |
 
 #### 3. Write `store.json`
 ```json
@@ -128,7 +142,7 @@ Cross-compilation is handled by the CI pipeline - see `.github/workflows/` for r
             "socket": "tcp",
             "transport": "kcp",
             "client_prefs": {
-                "username": "myuser",
+                "username": "Maxim Smirnov  ",
                 "type": "relay",
                 "encryption": "handshake",
                 "name": "My Server",
@@ -145,20 +159,23 @@ Cross-compilation is handled by the CI pipeline - see `.github/workflows/` for r
 }
 ```
 
-| Field                              | Description                                                       |
-|------------------------------------|-------------------------------------------------------------------|
-| `routes[].id`                      | Unique route identifier                                           |
-| `routes[].address`                 | Destination address to forward traffic to                         |
-| `routes[].port`                    | Destination port                                                  |
-| `routes[].socket`                  | Socket type (`tcp` / `udp`)                                       |
-| `routes[].transport`               | Transport layer - use `kcp` for TCP routes, `none` for UDP routes |
-| `routes[].client_prefs.username`   | Username embedded in the generated config URL                     |
-| `routes[].client_prefs.type`       | Connection type (`relay` / `p2p`)                                 |
-| `routes[].client_prefs.encryption` | Encryption mode (`handshake` / `full`)                            |
-| `routes[].client_prefs.name`       | Human-readable display name for this route                        |
-| `routes[].client_prefs.peers`      | Number of peer connections used for multiplexing                  |
-| `users[].uuid`                     | Unique user identifier                                            |
-| `users[].allowed_routes`           | List of route IDs this user is permitted to access                |
+| Field                              | Description                                         |
+|------------------------------------|-----------------------------------------------------|
+| `routes[].id`                      | Unique route identifier                             |
+| `routes[].address`                 | Destination address to forward traffic to           |
+| `routes[].port`                    | Destination port                                    |
+| `routes[].socket`                  | Socket type (`tcp` / `udp`)                         |
+| `routes[].transport`               | Transport layer - use `kcp` for TCP, `none` for UDP |
+| `routes[].client_prefs.username`   | Username to use in the call                         |
+| `routes[].client_prefs.type`       | Connection type (`relay` / `p2p`)                   |
+| `routes[].client_prefs.encryption` | Encryption mode (`handshake` / `full`)              |
+| `routes[].client_prefs.name`       | Human-readable display name for this route          |
+| `routes[].client_prefs.peers`      | Number of peer connections to establish             |
+| `users[].uuid`                     | Unique user identifier                              |
+| `users[].allowed_routes`           | List of route IDs this user is permitted to access  |
+
+> [!WARNING]
+> Do not share the user UUID willy-nilly, as it is used for authentication!
 
 #### 4. Start the server
 ```bash
@@ -178,18 +195,20 @@ Flags:
 # turnable://user:pass@vk.com/https?pub_key=...&type=relay&...
 ```
 
-This URL is the only thing your users need.
-
 ```
 Flags:
   -c, --config string   server config JSON file path (default "config.json")
   -s, --store string    server user/route store JSON file path (default "store.json")
 ```
 
+This config URL is the only thing you need to provide to your users.
+
 ---
 
 ### Client
-#### 1. Obtain your config URL from the server admin.
+Setting up a Turnable client is almost effortless. On android, its recommended that you use [Termux](https://f-droid.org/en/packages/com.termux/). Keep in mind that Turnable is just a tunnel - you still need to set up a VPN/Proxy client. It is recommended that you use [WireGuard](https://www.wireguard.com/quickstart/).
+
+#### 1. Obtain your config URL from the server admin
 #### 2. Start the client
 ```bash
 ./turnable client -l 127.0.0.1:1080 <config-url>
@@ -202,15 +221,15 @@ Flags:
 ```
 
 #### 3. Point your app at the local address
-Configure your proxy/VPN client application to use `127.0.0.1:1080` (or whatever address you chose).
+Configure your proxy/VPN client application to use `127.0.0.1:1080` (or whatever address you chose)
 
 ---
 
 ## Reference
 ### Platforms
-| ID       | Description                                                                                                                                                                                                                              |
-|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `vk.com` | Authenticates anonymously through [VKontakte](https://vk.com) and joins a meeting. Find open call IDs by searching [`"vk.com/call/join"` on Google](https://www.google.com/search?q=%22https%253A%252F%252Fvk.com%252Fcall%252Fjoin%22). |
+| ID       | Description                                                                                                                                                                                                                                                               |
+|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `vk.com` | Authenticates anonymously through [VKontakte](https://vk.com) and joins a meeting. You can find call IDs of meetings created by others by searching [`"vk.com/call/join"` on Google](https://www.google.com/search?q=%22https%253A%252F%252Fvk.com%252Fcall%252Fjoin%22). |
 
 ### Connection types
 | Type    | Description                                                                                                          |
@@ -219,16 +238,16 @@ Configure your proxy/VPN client application to use `127.0.0.1:1080` (or whatever
 | `p2p`   | Hides traffic inside fake screencasts routed through the platform's SFU. Requires SRTP and enabled Cloak. **⚠️ WIP** |
 
 ### Protocols
-| Protocol | Description                                                    |
-|----------|----------------------------------------------------------------|
-| `dtls`   | Raw DTLS. Simple, detectable. Only supported in `relay` mode.  |
-| `srtp`   | DTLS+SRTP. Mimics real media traffic. Required for `p2p` mode. |
+| Protocol | Description                                                      |
+|----------|------------------------------------------------------------------|
+| `dtls`   | Raw DTLS. Simple but detectable. Only supported in `relay` mode. |
+| `srtp`   | DTLS+SRTP. Mimics real media traffic. Required for `p2p` mode.   |
 
 ### Transports
-| Transport | Description                                                                                             |
-|-----------|---------------------------------------------------------------------------------------------------------|
-| `kcp`     | [KCP](https://github.com/xtaci/kcp-go) - reliable ordered stream over UDP. Recommended for TCP routes.  |
-| `sctp`    | [SCTP](https://en.wikipedia.org/wiki/Stream_Control_Transmission_Protocol) - unstable, not recommended. |
+| Transport | Description                                                                                                                                      |
+|-----------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| `kcp`     | [KCP](https://github.com/xtaci/kcp-go) - reliable and stable ordered stream over UDP. Recommended for TCP routes.                                |
+| `sctp`    | [SCTP](https://en.wikipedia.org/wiki/Stream_Control_Transmission_Protocol) - good enough, but not really ideal for our usecase. Not recommended. |
 
 ### Encryption modes
 | Mode        | Description                                                 |
@@ -239,7 +258,6 @@ Configure your proxy/VPN client application to use `127.0.0.1:1080` (or whatever
 ---
 
 ## Missing features
-- SRTP protocol to better mimic real media traffic
 - Built-in WireGuard / SOCKS5 server and client
 - Traffic obfuscation (cloak) implementations
 - Database user and route management
