@@ -18,8 +18,7 @@ import (
 )
 
 const (
-	// dtlsMTU is the DTLS record payload limit; with 20 bytes encryption overhead,
-	// upper layers have ~1420 bytes of usable plaintext per datagram
+	// dtlsMTU is the DTLS record payload limit
 	dtlsMTU = 1440
 )
 

@@ -219,10 +219,10 @@ Configure your proxy/VPN client application to use `127.0.0.1:1080` (or whatever
 | `p2p`   | Hides traffic inside fake screencasts routed through the platform's SFU. Requires SRTP and enabled Cloak. **⚠️ WIP** |
 
 ### Protocols
-| Protocol | Description                                                               |
-|----------|---------------------------------------------------------------------------|
-| `dtls`   | Raw DTLS. Simple, detectable. Only supported in `relay` mode.             |
-| `srtp`   | DTLS+SRTP. Mimics real media traffic. Required for `p2p` mode. **⚠️ WIP** |
+| Protocol | Description                                                    |
+|----------|----------------------------------------------------------------|
+| `dtls`   | Raw DTLS. Simple, detectable. Only supported in `relay` mode.  |
+| `srtp`   | DTLS+SRTP. Mimics real media traffic. Required for `p2p` mode. |
 
 ### Transports
 | Transport | Description                                                                                             |

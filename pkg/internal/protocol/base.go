@@ -44,6 +44,7 @@ var Handlers = common.NewRegistry[Handler]()
 func init() {
 	common.ProtocolsHolder = Handlers
 	Handlers.Register(&DTLSHandler{})
+	Handlers.Register(&SRTPHandler{})
 }
 
 // GetHandler fetches a protocol Handler by its string ID.

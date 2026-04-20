@@ -22,6 +22,9 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/reedsolomon v1.13.3 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/rtcp v1.2.16 // indirect
+	github.com/pion/rtp v1.10.1 // indirect
+	github.com/pion/srtp/v3 v3.0.10 // indirect
 	github.com/pion/stun/v3 v3.1.2 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
