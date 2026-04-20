@@ -11,14 +11,19 @@ import (
 )
 
 const (
-	kcpWindowSize      = 1024            // KCP send/receive window size
-	kcpUpdateMs        = 20              // KCP update interval in milliseconds
-	kcpControlUpdateMs = 1               // KCP update interval for control channels
-	kcpResend          = 2               // Fast resend after 2 duplicate ACKs
-	kcpDisableCC       = 1               // Disable KCP congestion control
-	kcpMTU             = 1418            // DTLS MTU excluding the overhead
-	kcpReadWriteBuff   = 2 * 1024 * 1024 // Read/write buffer size for the session
-	kcpConversation    = 1               // Conversation ID for this transport channel
+	kcpWindowSize      = 1024 // KCP send/receive window size
+	kcpUpdateMs        = 10   // KCP update interval in milliseconds
+	kcpControlUpdateMs = 1    // KCP update interval for control channels
+	kcpResend          = 2    // Fast resend after 2 duplicate ACKs
+	// kcpDataResend enables fast resend for data channels.  Burst-level peer
+	// affinity in the DRR scheduler keeps structural reordering low enough that
+	// a threshold of 2 duplicate ACKs rarely triggers spuriously, while
+	// recovering from genuine loss in ~1 RTT instead of a full RTO (200 ms+).
+	kcpDataResend    = 2
+	kcpDisableCC     = 1               // Disable KCP congestion control
+	kcpMTU           = 1418            // DTLS MTU excluding the overhead
+	kcpReadWriteBuff = 2 * 1024 * 1024 // Read/write buffer size for the session
+	kcpConversation  = 1               // Conversation ID for this transport channel
 )
 
 // KCPHandler represents a KCP transport handler
@@ -41,23 +46,23 @@ func (D *KCPHandler) WrapServer(conn net.Conn) (net.Conn, error) {
 
 // WrapKCP initializes a KCP session over a packet-centric net.Conn
 func WrapKCP(conn net.Conn) (net.Conn, error) {
-	return wrapKCPWithInterval(conn, kcpUpdateMs)
+	return wrapKCPWithInterval(conn, kcpUpdateMs, kcpDataResend)
 }
 
 // WrapControlKCP initializes a KCP session optimized for control channels that need to drain instantly.
 func WrapControlKCP(conn net.Conn) (net.Conn, error) {
-	return wrapKCPWithInterval(conn, kcpControlUpdateMs)
+	return wrapKCPWithInterval(conn, kcpControlUpdateMs, kcpResend)
 }
 
 // wrapKCPWithInterval initializes a KCP session with a given update interval in milliseconds
-func wrapKCPWithInterval(conn net.Conn, intervalMs int) (net.Conn, error) {
+func wrapKCPWithInterval(conn net.Conn, intervalMs int, resend int) (net.Conn, error) {
 	pc := &connPacketConn{Conn: conn}
 	session, err := kcp.NewConn3(kcpConversation, pc.LocalAddr(), nil, 0, 0, pc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize kcp session: %w", err)
 	}
 
-	session.SetNoDelay(1, intervalMs, kcpResend, kcpDisableCC)
+	session.SetNoDelay(1, intervalMs, resend, kcpDisableCC)
 	session.SetWindowSize(kcpWindowSize, kcpWindowSize)
 	session.SetACKNoDelay(true)
 	session.SetStreamMode(true)

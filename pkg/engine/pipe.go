@@ -7,7 +7,9 @@ import (
 )
 
 // pipeCopyChunkSize is the buffer size used when copying between two streams.
-const pipeCopyChunkSize = 64 * 1024
+// Kept at 32 KB so a single write produces fewer KCP segments (~22) and does not
+// saturate the per-flow send queue in one shot.
+const pipeCopyChunkSize = 32 * 1024
 
 // pipeStreams copies data bidirectionally, blocking until both directions finish.
 func pipeStreams(a, b io.ReadWriteCloser) {
@@ -25,7 +27,7 @@ func pipeStreams(a, b io.ReadWriteCloser) {
 	runCopy := func(direction string, dst io.ReadWriteCloser, src io.ReadWriteCloser) {
 		defer wg.Done()
 
-		n, err := copyStream(direction, dst, src)
+		n, err := copyStream(dst, src)
 		if err != nil {
 			slog.Debug("pipe copy done", "direction", direction, "bytes", n, "error", err)
 		} else {
@@ -43,13 +45,12 @@ func pipeStreams(a, b io.ReadWriteCloser) {
 }
 
 // copyStream copies from source to destination until EOF or error
-func copyStream(direction string, dst io.Writer, src io.Reader) (int64, error) {
+func copyStream(dst io.Writer, src io.Reader) (int64, error) {
 	buf := make([]byte, pipeCopyChunkSize)
 	var total int64
 	for {
 		n, readErr := src.Read(buf)
 		if n > 0 {
-			slog.Debug("pipe chunk", "direction", direction, "bytes", n)
 			if _, err := dst.Write(buf[:n]); err != nil {
 				return total, err
 			}

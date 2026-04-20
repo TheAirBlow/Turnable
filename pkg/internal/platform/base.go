@@ -26,8 +26,10 @@ type Handler interface {
 
 // Config represents platform configuration
 type Config struct {
-	CanReuseTURN bool // Whether the client can reuse the same TURN credentials to make multiple connections
-	CanMultiplex bool // Whether the client/server can request multiple anonymous identities from the same IP
+	CanReuseTURN   bool    // Whether the client can reuse the same TURN credentials to make multiple connections
+	CanMultiplex   bool    // Whether the client/server can request multiple anonymous identities from the same IP
+	BandwidthRelay float64 // Outbound rate limit per peer connection in bytes/sec for relay mode (0 = unlimited)
+	BandwidthP2P   float64 // Outbound rate limit per peer connection in bytes/sec for P2P mode (0 = unlimited)
 }
 
 // TURNInfo describes the TURN server credentials currently advertised by signaling.

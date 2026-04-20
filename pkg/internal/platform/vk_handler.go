@@ -78,8 +78,10 @@ func (V *VKHandler) ID() string {
 // GetConfig returns the platform configuration
 func (V *VKHandler) GetConfig() Config {
 	return Config{
-		CanReuseTURN: true,
-		CanMultiplex: true,
+		CanReuseTURN:   true,
+		CanMultiplex:   true,
+		BandwidthRelay: 250 * 1024,
+		BandwidthP2P:   0,
 	}
 }
 

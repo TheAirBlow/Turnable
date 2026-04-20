@@ -596,6 +596,11 @@ primaryLoop:
 				continue
 			}
 
+			platCfg := platformHandler.GetConfig()
+			if platCfg.BandwidthRelay > 0 {
+				muxClient.SetRateLimit(platCfg.BandwidthRelay * float64(numPeers))
+			}
+
 			break primaryLoop
 		}
 	}
@@ -816,6 +821,10 @@ func (D *RelayHandler) handlePrimaryPeer(
 
 	defer func() { _ = muxServer.Close() }()
 	newSess.muxServer.Store(muxServer)
+
+	if route.BandwidthRelay > 0 {
+		muxServer.SetRateLimit(route.BandwidthRelay * float64(clientCfg.Peers))
+	}
 
 	peerConn.SetOnAllPeersGone(func() { _ = muxServer.Close() })
 

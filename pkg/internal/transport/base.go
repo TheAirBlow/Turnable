@@ -24,7 +24,7 @@ func init() {
 	Handlers.Register(&KCPHandler{})
 }
 
-// GetHandler fetches a transport handler by its string ID
+// GetHandler fetches a transport handler by its string ID; empty name defaults to "none"
 func GetHandler(name string) (Handler, error) {
 	return Handlers.Get(name)
 }

@@ -58,6 +58,8 @@ type Route struct {
 
 	Conn string `json:"conn,omitempty"` // Connection type (optional)
 
+	BandwidthRelay float64 `json:"bandwidth_relay,omitempty"` // Per-TURN outbound rate limit in bytes/sec; 0 = unlimited
+
 	ClientPrefs ClientPrefs `json:"client_prefs"` // Client config preferences
 }
 

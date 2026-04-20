@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/theairblow/turnable/pkg/internal/transport"
+	"golang.org/x/time/rate"
 )
 
 // TODO: forward a logger with additional information prepended (e.g. session_id and peer_idx)
@@ -27,11 +28,16 @@ const (
 	muxControlTypeClose      byte = 4
 	muxControlTypeDisconnect byte = 7
 
-	muxFlowBufSize = 512
-	muxMaxPacket   = 65535
+	muxFlowBufSize      = 2048
+	muxWriteCtrlBufSize = 256
+	muxFlowSendBuf      = 256
+	muxMaxPacket        = 65535
+
+	muxDRRQuantum = 32768
+	muxBurstFloor = 2 * 1420
 
 	muxClientPingInterval = 1 * time.Second
-	muxPingTimeout        = 5 * time.Second
+	muxPingTimeout        = 10 * time.Second
 )
 
 // muxControlMessage is a control protocol message
@@ -54,17 +60,30 @@ type tinyMuxCore struct {
 	nextMu sync.Mutex
 	closed atomic.Bool
 	done   chan struct{}
+	ctrlCh chan []byte
+
+	drFlowsMu sync.RWMutex
+	drFlows   []*flowConn
+	notifyCh  chan struct{}
+
+	rateLimiter *rate.Limiter
+	stageBuf    []byte
 }
 
 // newTinyMuxCore creates a new tinymux core
 func newTinyMuxCore(conn net.Conn) *tinyMuxCore {
 	m := &tinyMuxCore{
-		conn:   conn,
-		nextID: 1,
-		done:   make(chan struct{}),
+		conn:        conn,
+		nextID:      1,
+		done:        make(chan struct{}),
+		ctrlCh:      make(chan []byte, muxWriteCtrlBufSize),
+		notifyCh:    make(chan struct{}, 1),
+		rateLimiter: rate.NewLimiter(rate.Inf, 256*1024),
+		stageBuf:    make([]byte, muxMaxPacket+2),
 	}
 
 	go m.readLoop()
+	go m.writeLoop()
 	return m
 }
 
@@ -89,8 +108,11 @@ func (m *tinyMuxCore) readLoop() {
 		copy(payload, buf[2:n])
 
 		if raw, ok := m.flows.Load(flowID); ok {
-			if !raw.(*flowConn).deliver(payload) {
-				slog.Debug("mux flow buffer got too congested", "flow_id", flowID)
+			fc := raw.(*flowConn)
+			select {
+			case fc.incoming <- payload:
+			default:
+				slog.Debug("mux flow receive buffer full, dropping packet", "flow_id", flowID)
 			}
 		}
 	}
@@ -102,6 +124,13 @@ func (m *tinyMuxCore) createFlow(id uint16) *flowConn {
 		mux:      m,
 		id:       id,
 		incoming: make(chan []byte, muxFlowBufSize),
+		closed:   make(chan struct{}),
+	}
+	if id != 0 {
+		fc.sendCh = make(chan []byte, muxFlowSendBuf)
+		m.drFlowsMu.Lock()
+		m.drFlows = append(m.drFlows, fc)
+		m.drFlowsMu.Unlock()
 	}
 	m.flows.Store(id, fc)
 	return fc
@@ -122,18 +151,151 @@ func (m *tinyMuxCore) allocateFlow() *flowConn {
 // removeFlow removes a flow by ID
 func (m *tinyMuxCore) removeFlow(id uint16) {
 	m.flows.Delete(id)
+	if id == 0 {
+		return
+	}
+	m.drFlowsMu.Lock()
+	for i, fc := range m.drFlows {
+		if fc.id == id {
+			m.drFlows = append(m.drFlows[:i], m.drFlows[i+1:]...)
+			break
+		}
+	}
+	m.drFlowsMu.Unlock()
 }
 
-// writePacket prepends the flow ID header and writes the payload to the underlying connection
-func (m *tinyMuxCore) writePacket(flowID uint16, payload []byte) (int, error) {
-	out := make([]byte, 2+len(payload))
-	binary.BigEndian.PutUint16(out, flowID)
-	copy(out[2:], payload)
-	_, err := m.conn.Write(out)
-	if err != nil {
-		return 0, err
+// drainControl flushes all pending control frames
+func (m *tinyMuxCore) drainControl() {
+	for {
+		select {
+		case frame := <-m.ctrlCh:
+			if _, err := m.conn.Write(frame); err != nil {
+				_ = m.Close()
+				return
+			}
+		default:
+			return
+		}
 	}
-	return len(payload), nil
+}
+
+// setRateLimit configures the aggregate outbound rate limit in bytes/sec
+func (m *tinyMuxCore) setRateLimit(bytesPerSec float64) {
+	if bytesPerSec <= 0 {
+		m.rateLimiter.SetLimit(rate.Inf)
+		m.rateLimiter.SetBurst(256 * 1024)
+	} else {
+		m.rateLimiter.SetLimit(rate.Limit(bytesPerSec))
+		burst := int(bytesPerSec / 20)
+		if burst < muxBurstFloor {
+			burst = muxBurstFloor
+		}
+		if burst > 128*1024 {
+			burst = 128 * 1024
+		}
+		m.rateLimiter.SetBurst(burst)
+	}
+}
+
+// rateWait absorbs the rate-limiter delay for n bytes, draining control packets while sleeping.
+func (m *tinyMuxCore) rateWait(n int) {
+	if m.rateLimiter.Limit() == rate.Inf {
+		return
+	}
+	rsv := m.rateLimiter.ReserveN(time.Now(), n)
+	delay := rsv.Delay()
+	if delay <= 0 {
+		return
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		select {
+		case frame := <-m.ctrlCh:
+			if _, err := m.conn.Write(frame); err != nil {
+				_ = m.Close()
+				return
+			}
+		case <-timer.C:
+			return
+		case <-m.done:
+			return
+		}
+	}
+}
+
+// writeLoop drains data flows and gives each one a fair byte quantum per round
+func (m *tinyMuxCore) writeLoop() {
+	for {
+		m.drainControl()
+
+		m.drFlowsMu.RLock()
+		flows := append([]*flowConn(nil), m.drFlows...)
+		m.drFlowsMu.RUnlock()
+
+		anyActive := false
+		for _, fc := range flows {
+			if len(fc.sendCh) == 0 {
+				if fc.deficit > 0 {
+					fc.deficit = 0
+				}
+				continue
+			}
+			fc.deficit += muxDRRQuantum
+
+		drainLoop:
+			for fc.deficit > 0 {
+				select {
+				case payload := <-fc.sendCh:
+					n := 2 + len(payload)
+					if n > len(m.stageBuf) {
+						m.stageBuf = make([]byte, n)
+					}
+					out := m.stageBuf[:n]
+					binary.BigEndian.PutUint16(out, fc.id)
+					copy(out[2:], payload)
+					if _, err := m.conn.Write(out); err != nil {
+						_ = m.Close()
+						return
+					}
+					fc.deficit -= len(payload)
+					anyActive = true
+					m.drainControl()
+					m.rateWait(n)
+				default:
+					break drainLoop
+				}
+			}
+			if len(fc.sendCh) == 0 && fc.deficit > 0 {
+				fc.deficit = 0
+			}
+		}
+
+		if !anyActive {
+			select {
+			case frame := <-m.ctrlCh:
+				if _, err := m.conn.Write(frame); err != nil {
+					_ = m.Close()
+					return
+				}
+			case <-m.notifyCh:
+			case <-m.done:
+				return
+			}
+		}
+	}
+}
+
+// sendControl enqueues a pre-framed control packet for the write goroutine
+func (m *tinyMuxCore) sendControl(payload []byte) error {
+	frame := make([]byte, 2+len(payload))
+	copy(frame[2:], payload)
+	select {
+	case m.ctrlCh <- frame:
+		return nil
+	case <-m.done:
+		return errors.New("mux: closed")
+	}
 }
 
 // Close closes the mux and underlying connection
@@ -141,6 +303,8 @@ func (m *tinyMuxCore) Close() error {
 	if !m.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+
+	close(m.done)
 
 	m.flows.Range(func(key, value any) bool {
 		_ = value.(*flowConn).Close()
@@ -155,6 +319,9 @@ type flowConn struct {
 	mux       *tinyMuxCore
 	id        uint16
 	incoming  chan []byte
+	sendCh    chan []byte
+	closed    chan struct{}
+	deficit   int
 	readBuf   []byte
 	closeOnce sync.Once
 }
@@ -166,45 +333,48 @@ func (f *flowConn) Read(p []byte) (int, error) {
 		f.readBuf = f.readBuf[n:]
 		return n, nil
 	}
-
-	pkt, ok := <-f.incoming
-	if !ok {
-		return 0, io.EOF
-	}
-
-	n := copy(p, pkt)
-	if n < len(pkt) {
-		f.readBuf = pkt[n:]
-	}
-
-	return n, nil
-}
-
-// deliver safely sends payload into the flow's receive buffer
-func (f *flowConn) deliver(payload []byte) (ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
-		}
-	}()
-
 	select {
-	case f.incoming <- payload:
-		return true
-	default:
-		return false
+	case pkt := <-f.incoming:
+		n := copy(p, pkt)
+		if n < len(pkt) {
+			f.readBuf = pkt[n:]
+		}
+		return n, nil
+	case <-f.closed:
+		return 0, io.EOF
 	}
 }
 
 // Write forwards the payload to the underlying mux connection under this flow's ID
 func (f *flowConn) Write(p []byte) (int, error) {
-	return f.mux.writePacket(f.id, p)
+	if f.id == 0 {
+		if err := f.mux.sendControl(p); err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	}
+	buf := make([]byte, len(p))
+	copy(buf, p)
+	select {
+	case f.sendCh <- buf:
+		select {
+		case f.mux.notifyCh <- struct{}{}:
+		default:
+		}
+		return len(p), nil
+	case <-f.closed:
+		return 0, errors.New("mux: flow closed")
+	case <-f.mux.done:
+		return 0, errors.New("mux: closed")
+	}
 }
 
 // Close removes this flow from the mux and closes it
 func (f *flowConn) Close() error {
 	f.mux.removeFlow(f.id)
-	f.closeOnce.Do(func() { close(f.incoming) })
+	f.closeOnce.Do(func() {
+		close(f.closed)
+	})
 	return nil
 }
 
@@ -269,6 +439,11 @@ type TinyMuxClient struct {
 	flowStates  sync.Map
 }
 
+// SetRateLimit configures the aggregate outbound rate limit in bytes/sec
+func (c *TinyMuxClient) SetRateLimit(bytesPerSec float64) {
+	c.mux.setRateLimit(bytesPerSec)
+}
+
 // NewTinyMuxClient creates a client tinymux connection
 func NewTinyMuxClient(ctx context.Context, conn net.Conn) (*TinyMuxClient, error) {
 	mux := newTinyMuxCore(conn)
@@ -322,10 +497,13 @@ func (c *TinyMuxClient) pingLoop() {
 				return
 			}
 
-			c.lastPingSent.Store(time.Now().UnixNano())
 			c.controlMu.Lock()
-			_ = writeControlMessage(c.control, muxControlMessage{Type: muxControlTypePing})
+			err := writeControlMessage(c.control, muxControlMessage{Type: muxControlTypePing})
 			c.controlMu.Unlock()
+
+			if err == nil {
+				c.lastPingSent.Store(time.Now().UnixNano())
+			}
 		}
 	}
 }
@@ -545,6 +723,11 @@ func (s *TinyMuxServer) pingTimeoutLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// SetRateLimit configures the aggregate outbound rate limit in bytes/sec; 0 = unlimited.
+func (s *TinyMuxServer) SetRateLimit(bytesPerSec float64) {
+	s.mux.setRateLimit(bytesPerSec)
 }
 
 // writeControl serializes and writes a control message under the control mutex

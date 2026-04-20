@@ -32,6 +32,10 @@ type EncryptedConn struct {
 	writePrefix [4]byte
 	writeSeq    uint64
 
+	readBuf  []byte
+	plainBuf []byte
+	writeBuf []byte
+
 	readMu  sync.Mutex
 	writeMu sync.Mutex
 }
@@ -111,6 +115,9 @@ func newEncryptedConn(conn net.Conn, sharedKey []byte, isClient bool) (*Encrypte
 		writeAEAD:   writeAEAD,
 		readPrefix:  readPrefix,
 		writePrefix: writePrefix,
+		readBuf:     make([]byte, muxMaxPacket+22),
+		plainBuf:    make([]byte, 0, muxMaxPacket+22),
+		writeBuf:    make([]byte, 8, muxMaxPacket+30),
 	}, nil
 }
 
@@ -189,8 +196,11 @@ func (t *EncryptedConn) Read(p []byte) (int, error) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 
-	tmp := make([]byte, len(p)+20)
-	n, err := t.conn.Read(tmp)
+	needed := len(p) + 20
+	if needed > len(t.readBuf) {
+		t.readBuf = make([]byte, needed)
+	}
+	n, err := t.conn.Read(t.readBuf[:needed])
 	if err != nil {
 		return 0, err
 	}
@@ -201,9 +211,9 @@ func (t *EncryptedConn) Read(p []byte) (int, error) {
 
 	var nonce [12]byte
 	copy(nonce[:4], t.readPrefix[:])
-	copy(nonce[4:], tmp[:8])
+	copy(nonce[4:], t.readBuf[:8])
 
-	plain, err := t.readAEAD.Open(nil, nonce[:], tmp[8:n], nil)
+	plain, err := t.readAEAD.Open(t.plainBuf[:0], nonce[:], t.readBuf[8:n], nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to decrypt packet: %w", err)
 	}
@@ -226,10 +236,13 @@ func (t *EncryptedConn) Write(p []byte) (int, error) {
 	binary.BigEndian.PutUint64(nonce[4:], t.writeSeq)
 	t.writeSeq++
 
-	ciphertext := t.writeAEAD.Seal(nil, nonce[:], p, nil)
-	out := make([]byte, 0, 8+len(ciphertext))
-	out = append(out, nonce[4:]...)
-	out = append(out, ciphertext...)
+	needed := 8 + len(p) + t.writeAEAD.Overhead()
+	if needed > cap(t.writeBuf) {
+		t.writeBuf = make([]byte, 8, needed)
+	}
+	out := t.writeBuf[:8]
+	copy(out, nonce[4:])
+	out = t.writeAEAD.Seal(out, nonce[:], p, nil)
 
 	if _, err := t.conn.Write(out); err != nil {
 		return 0, err

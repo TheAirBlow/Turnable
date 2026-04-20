@@ -18,11 +18,11 @@ import (
 var ErrPeerDone = errors.New("peer: done")
 
 const (
-	peerMaxPacket       = 8192             // maximum packet size read from a peer connection
+	peerMaxPacket       = muxMaxPacket + 2 // maximum packet size read from a peer connection; must hold a full mux frame
 	peerReconnectInit   = 5 * time.Second  // initial back-off delay before the first peer reconnect attempt
 	peerReconnectMax    = 10 * time.Second // maximum back-off delay between peer reconnect attempts
 	peerQuotaBackoff    = 10 * time.Second // delay when TURN allocation quota is exhausted
-	peerIncomingBufSize = 256              // channel buffer size for packets arriving from all peers
+	peerIncomingBufSize = 1024             // channel buffer size for packets arriving from all peers
 )
 
 // peerEntry holds one live connection inside PeerConn
@@ -233,7 +233,7 @@ func (m *PeerConn) Read(p []byte) (int, error) {
 	}
 }
 
-// Write sends one packet to the next live peer in round-robin order
+// Write sends one packet to the next live peer in round-robin order.
 func (m *PeerConn) Write(p []byte) (int, error) {
 	m.mu.RLock()
 	peers := m.peers
@@ -244,8 +244,10 @@ func (m *PeerConn) Write(p []byte) (int, error) {
 		return 0, errors.New("peer: no peers")
 	}
 
-	var err error
 	start := m.writeIdx.Add(1) - 1
+
+	var err error
+	start = start % total
 	for i := uint64(0); i < total; i++ {
 		idx := (start + i) % total
 		entry := peers[idx]
@@ -264,6 +266,7 @@ func (m *PeerConn) Write(p []byte) (int, error) {
 		}
 		err = werr
 	}
+
 	if err != nil {
 		return 0, fmt.Errorf("peer: all peers failed: %w", err)
 	}
