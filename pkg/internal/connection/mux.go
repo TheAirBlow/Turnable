@@ -429,8 +429,9 @@ type TinyMuxClient struct {
 	control   net.Conn
 	controlMu sync.Mutex
 
-	lastPingSent atomic.Int64
-	lastPong     atomic.Int64
+	lastPingSent    atomic.Int64
+	lastPong        atomic.Int64
+	firstUnanswered atomic.Int64
 
 	pingCtx    context.Context
 	pingCancel context.CancelFunc
@@ -488,13 +489,17 @@ func (c *TinyMuxClient) pingLoop() {
 		case <-c.pingCtx.Done():
 			return
 		case <-ticker.C:
-			sent := c.lastPingSent.Load()
-			pong := c.lastPong.Load()
-			if pong < sent && time.Since(time.Unix(0, sent)) > muxPingTimeout {
-				slog.Debug("tinymux client pong timeout")
-				c.pingCancel()
-				_ = c.mux.Close()
-				return
+			if c.lastPong.Load() < c.lastPingSent.Load() {
+				if c.firstUnanswered.Load() == 0 {
+					c.firstUnanswered.Store(time.Now().UnixNano())
+				} else if time.Since(time.Unix(0, c.firstUnanswered.Load())) > muxPingTimeout {
+					slog.Debug("tinymux client pong timeout")
+					c.pingCancel()
+					_ = c.mux.Close()
+					return
+				}
+			} else {
+				c.firstUnanswered.Store(0)
 			}
 
 			c.controlMu.Lock()
