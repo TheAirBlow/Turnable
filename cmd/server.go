@@ -35,7 +35,7 @@ func newServerCommand() *cobra.Command {
 
 	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "config.json", "server config JSON file path")
 	cmd.Flags().StringVarP(&opts.storePath, "store", "s", "store.json", "server user/route store JSON file path")
-	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "v", false, "enable verbose debug logging")
+	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "V", false, "enable verbose debug logging")
 	return cmd
 }
 

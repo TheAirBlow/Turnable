@@ -15,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/setup-go@v5
         with:
@@ -76,6 +79,43 @@ jobs:
           ndk-version: r26d
           add-to-path: false
 
+      - name: Compute build version
+        id: version
+        run: |
+          COMMIT_MSG="$(git log -1 --format='%s')"
+
+          if echo "$COMMIT_MSG" | grep -qiF "(major)"; then
+            BUMP=major
+          elif echo "$COMMIT_MSG" | grep -qiF "(minor)"; then
+            BUMP=minor
+          elif echo "$COMMIT_MSG" | grep -qiF "(patch)"; then
+            BUMP=patch
+          else
+            BUMP=none
+          fi
+
+          if [ "$BUMP" = "none" ]; then
+            VERSION="$(git rev-parse --short=8 HEAD)"
+          else
+            LATEST="$(git tag -l | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
+            if [ -z "$LATEST" ]; then
+              MAJOR=0; MINOR=0; PATCH=0
+            else
+              IFS=. read -r MAJOR MINOR PATCH <<< "$LATEST"
+            fi
+
+            case "$BUMP" in
+              major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH+1)) ;;
+            esac
+
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Build version: $VERSION"
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
@@ -103,7 +143,7 @@ jobs:
           EXT=""
           [ "$GOOS" = "windows" ] && EXT=".exe"
 
-          go build -ldflags "-s -w" -trimpath \
+          go build -ldflags "-s -w -X main.buildVersion=${{ steps.version.outputs.version }}" -trimpath \
             -o "dist/turnable-${GOOS}-${GOARCH}${EXT}" \
             ./cmd
 

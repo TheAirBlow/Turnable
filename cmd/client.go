@@ -40,7 +40,7 @@ func newClientCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&opts.listenAddr, "listen", "l", "127.0.0.1:0", "local TCP/UDP listen address (ip:port)")
-	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "v", false, "enable verbose debug logging")
+	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "V", false, "enable verbose debug logging")
 
 	return cmd
 }

@@ -186,7 +186,7 @@ Turnable provides end-to-end encryption, user and route management for your conv
 Flags:
   -c, --config string   server config JSON file path (default "config.json")
   -s, --store string    server user/route store JSON file path (default "store.json")
-  -v, --verbose         enable verbose debug logging
+  -V, --verbose         enable verbose debug logging
 ```
 
 #### 5. Generate client config URLs
@@ -217,7 +217,7 @@ Setting up a Turnable client is almost effortless. On android, its recommended t
 ```
 Flags:
   -l, --listen string   local TCP/UDP listen address (default "127.0.0.1:0")
-  -v, --verbose         enable verbose debug logging
+  -V, --verbose         enable verbose debug logging
 ```
 
 #### 3. Point your app at the local address
