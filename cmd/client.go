@@ -18,8 +18,10 @@ import (
 
 // clientOptions holds CLI flags for the client subcommand
 type clientOptions struct {
-	connectionURL string
+	configPath    string
+	configURL     string
 	listenAddr    string
+	noInteractive bool
 	verbose       bool
 }
 
@@ -28,19 +30,21 @@ func newClientCommand() *cobra.Command {
 	opts := &clientOptions{}
 
 	cmd := &cobra.Command{
-		Use:   "client <connection-url>",
+		Use:   "client [config-url]",
 		Short: "Run in client mode",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return errors.New("expected exactly one positional argument: <connection-url>")
+			if len(args) > 0 {
+				opts.configURL = args[0]
 			}
-			opts.connectionURL = args[0]
+
 			return clientMain(opts)
 		},
 	}
 
 	cmd.Flags().StringVarP(&opts.listenAddr, "listen", "l", "127.0.0.1:0", "local TCP/UDP listen address (ip:port)")
 	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "V", false, "enable verbose debug logging")
+	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "config.json", "client config JSON file path")
+	cmd.Flags().BoolVarP(&opts.noInteractive, "no-interactive", "i", false, "disable interactive mode")
 
 	return cmd
 }
@@ -51,13 +55,33 @@ func clientMain(opts *clientOptions) error {
 		common.SetLogLevel(int(slog.LevelDebug))
 	}
 
-	cfg, err := config.NewClientConfigFromURL(opts.connectionURL)
-	if err != nil {
-		return fmt.Errorf("failed to parse connection URL: %w", err)
+	var cfg *config.ClientConfig
+
+	if !common.IsNullOrWhiteSpace(opts.configURL) {
+		var err error
+		cfg, err = config.NewClientConfigFromURL(opts.configURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse config URL: %w", err)
+		}
+	} else if !common.IsNullOrWhiteSpace(opts.configPath) {
+		configData, err := os.ReadFile(opts.configPath)
+		if err != nil {
+			return fmt.Errorf("failed to read config json file: %w", err)
+		}
+
+		cfg, err = config.NewClientConfigFromJSON(string(configData))
+		if err != nil {
+			return err
+		}
+	} else {
+		return errors.New("either config-url or config path is required")
 	}
+
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("failed to validate connection URL: %w", err)
 	}
+
+	cfg.Interactive = !opts.noInteractive
 
 	tunnelHandler := &tunnels.SocketHandler{LocalAddr: opts.listenAddr}
 

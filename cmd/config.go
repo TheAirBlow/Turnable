@@ -16,6 +16,7 @@ type configOptions struct {
 	storePath  string
 	routeID    string
 	userUUID   string
+	json       bool
 }
 
 // newConfigCommand creates the config cobra command
@@ -37,6 +38,7 @@ func newConfigCommand() *cobra.Command {
 
 	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "config.json", "server config JSON file path")
 	cmd.Flags().StringVarP(&opts.storePath, "store", "s", "store.json", "server user/route store JSON file path")
+	cmd.Flags().BoolVarP(&opts.json, "json", "j", false, "output config in json format")
 	return cmd
 }
 
@@ -80,6 +82,11 @@ func configMain(opts *configOptions) error {
 		return fmt.Errorf("failed to generate client config: %w", err)
 	}
 
-	fmt.Println(clientCfg.ToURL(false))
+	if opts.json {
+		fmt.Println(clientCfg.ToJSON(false))
+	} else {
+		fmt.Println(clientCfg.ToURL())
+	}
+
 	return nil
 }

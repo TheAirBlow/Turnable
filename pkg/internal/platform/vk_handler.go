@@ -237,12 +237,17 @@ func (V *VKHandler) WatchEvents(ctx context.Context) <-chan Event {
 // ensureInit lazily initializes handler internals exactly once
 func (V *VKHandler) ensureInit() {
 	V.once.Do(func() {
+		//proxyURL, _ := url.Parse("http://127.0.0.1:8080")
 		V.httpClient = &http.Client{
 			Timeout: 20 * time.Second,
 			Transport: &http.Transport{
 				MaxIdleConns:        32,
 				MaxIdleConnsPerHost: 8,
 				IdleConnTimeout:     90 * time.Second,
+				//Proxy:               http.ProxyURL(proxyURL),
+				//TLSClientConfig: &tls.Config{
+				//	InsecureSkipVerify: true,
+				//},
 			},
 		}
 

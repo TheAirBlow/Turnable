@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/mlkem"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -17,29 +18,31 @@ import (
 // ClientConfig represents a client configuration URL
 type ClientConfig struct {
 	UserUUID string `json:"user_uuid"` // User's unique UIID
-	Username string `json:"username"`  // Username to use in the call
+	Username string `json:"username"`  // [-] Username to use in the call
 
-	PlatformID string `json:"platform_id"` // ID of the platform
-	CallID     string `json:"call_id"`     // ID of the call on the platform
+	PlatformID string `json:"platform_id"` // [-] ID of the platform
+	CallID     string `json:"call_id"`     // [-] ID of the call on the platform
 
 	RouteID         string `json:"route_id"`         // Route's unique ID
 	Socket          string `json:"socket"`           // Socket protocol to use (UDP/TCP)
-	Gateway         string `json:"gateway"`          // Gateway's IP and port (for Relay)
-	GatewayUsername string `json:"gateway_username"` // Gateway's username in the call (for P2P)
+	Gateway         string `json:"gateway"`          // [-] Gateway's IP and port (for Relay)
+	GatewayUsername string `json:"gateway_username"` // [-] Gateway's username in the call (for P2P)
 
 	Type      string `json:"type"`      // Connection type
-	ForceTurn bool   `json:"forceturn"` // Force TURN connection in P2P mode
-	Peers     int    `json:"peers"`     // How many peer connections to open per session
+	ForceTurn bool   `json:"forceturn"` // [-] Force TURN connection in P2P mode
+	Peers     int    `json:"peers"`     // [-] How many peer connections to open per session
 
-	Proto     string `json:"proto"`          // Protocol to use
-	Cloak     string `json:"cloak"`          // Cloak method to use
-	Transport string `json:"transport"`      // Transport protocol to use
-	Conn      string `json:"conn,omitempty"` // Connection type (optional)
+	Proto     string `json:"proto"`          // [-] Protocol to use
+	Cloak     string `json:"cloak"`          // [-] Cloak method to use
+	Transport string `json:"transport"`      // [-] Transport protocol to use
+	Conn      string `json:"conn,omitempty"` // [-] Connection type (optional)
 
-	PubKey     string `json:"pub_key"`    // Public key of the server
+	PubKey     string `json:"pub_key"`    // [-] Public key of the server
 	Encryption string `json:"encryption"` // Encryption mode
 
-	Name string `json:"name"` // Display name of the config
+	Name string `json:"name"` // [-] Display name of the config
+
+	Interactive bool `json:"-"` // [-] Allow interactive operations
 }
 
 // Validate checks that the ClientConfig contains all required fields.
@@ -127,6 +130,16 @@ func (c *ClientConfig) Validate() error {
 	return nil
 }
 
+// NewClientConfigFromJSON creates a new ClientConfig from a config JSON
+func NewClientConfigFromJSON(baseJSON string) (*ClientConfig, error) {
+	var s ClientConfig
+	if err := json.Unmarshal([]byte(baseJSON), &s); err != nil {
+		return nil, fmt.Errorf("failed to parse client config: %w", err)
+	}
+
+	return &s, nil
+}
+
 // NewClientConfigFromURL parses a VPN connection URL into a ClientConfig.
 func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 	u, err := url.Parse(raw)
@@ -211,7 +224,7 @@ func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 }
 
 // ToURL serialises the ClientConfig back into a VPN connection URL.
-func (c *ClientConfig) ToURL(stripped bool) string {
+func (c *ClientConfig) ToURL() string {
 	u := &url.URL{
 		Scheme: "turnable",
 		Host:   c.PlatformID,
@@ -228,10 +241,10 @@ func (c *ClientConfig) ToURL(stripped bool) string {
 	}
 	params := make([]queryParam, 0, 12)
 
-	if !stripped && !common.IsNullOrWhiteSpace(c.PubKey) {
+	if !common.IsNullOrWhiteSpace(c.PubKey) {
 		params = append(params, queryParam{key: "pub_key", value: c.PubKey})
 	}
-	if !stripped && !common.IsNullOrWhiteSpace(c.Username) {
+	if !common.IsNullOrWhiteSpace(c.Username) {
 		params = append(params, queryParam{key: "username", value: c.Username})
 	}
 	if !common.IsNullOrWhiteSpace(c.Type) {
@@ -240,34 +253,34 @@ func (c *ClientConfig) ToURL(stripped bool) string {
 	if !common.IsNullOrWhiteSpace(c.Encryption) && c.Encryption != "none" {
 		params = append(params, queryParam{key: "encryption", value: c.Encryption})
 	}
-	if !stripped && !common.IsNullOrWhiteSpace(c.Transport) && c.Transport != "none" {
+	if !common.IsNullOrWhiteSpace(c.Transport) && c.Transport != "none" {
 		params = append(params, queryParam{key: "transport", value: c.Transport})
 	}
-	if !stripped && !common.IsNullOrWhiteSpace(c.Gateway) {
+	if !common.IsNullOrWhiteSpace(c.Gateway) {
 		params = append(params, queryParam{key: "gateway", value: c.Gateway})
 	}
 	if !common.IsNullOrWhiteSpace(c.Socket) {
 		params = append(params, queryParam{key: "socket", value: c.Socket})
 	}
-	if !stripped && !common.IsNullOrWhiteSpace(c.GatewayUsername) {
+	if !common.IsNullOrWhiteSpace(c.GatewayUsername) {
 		params = append(params, queryParam{key: "gateway_username", value: c.GatewayUsername})
 	}
-	if !stripped && !common.IsNullOrWhiteSpace(c.Proto) {
+	if !common.IsNullOrWhiteSpace(c.Proto) {
 		params = append(params, queryParam{key: "proto", value: c.Proto})
 	}
-	if !stripped && !common.IsNullOrWhiteSpace(c.Cloak) && c.Cloak != "none" {
+	if !common.IsNullOrWhiteSpace(c.Cloak) && c.Cloak != "none" {
 		params = append(params, queryParam{key: "cloak", value: c.Cloak})
 	}
-	if !stripped && !common.IsNullOrWhiteSpace(c.Conn) && c.Conn != "unknown" {
+	if !common.IsNullOrWhiteSpace(c.Conn) && c.Conn != "unknown" {
 		params = append(params, queryParam{key: "conn", value: c.Conn})
 	}
-	if !stripped && !common.IsNullOrWhiteSpace(c.Name) {
+	if !common.IsNullOrWhiteSpace(c.Name) {
 		params = append(params, queryParam{key: "name", value: c.Name})
 	}
-	if !stripped && c.ForceTurn {
+	if c.ForceTurn {
 		params = append(params, queryParam{key: "forceturn", value: "true"})
 	}
-	if !stripped && c.Peers > 1 {
+	if c.Peers > 1 {
 		params = append(params, queryParam{key: "peers", value: strconv.Itoa(c.Peers)})
 	}
 
@@ -285,4 +298,35 @@ func (c *ClientConfig) ToURL(stripped bool) string {
 	}
 
 	return u.String()
+}
+
+// ToJSON serializes this ClientConfig to JSON, optionally stripping transport-only fields
+func (c *ClientConfig) ToJSON(stripped bool) (string, error) {
+	if stripped {
+		data := struct {
+			UserUUID   string `json:"user_uuid"`
+			RouteID    string `json:"route_id"`
+			Socket     string `json:"socket"`
+			Type       string `json:"type"`
+			Encryption string `json:"encryption"`
+		}{
+			UserUUID:   c.UserUUID,
+			RouteID:    c.RouteID,
+			Socket:     c.Socket,
+			Type:       c.Type,
+			Encryption: c.Encryption,
+		}
+
+		b, err := json.Marshal(data)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

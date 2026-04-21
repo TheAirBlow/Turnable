@@ -617,14 +617,15 @@ func newSRTPConn(raw net.PacketConn, remote net.Addr, dtlsConn *dtls.Conn, incom
 	}
 
 	return &srtpConn{
-		raw:      raw,
-		remote:   remote,
-		dtlsConn: dtlsConn,
-		encCtx:   encCtx,
-		decCtx:   decCtx,
-		incoming: incoming,
-		ssrc:     binary.BigEndian.Uint32(ssrcBuf[:]),
-		closed:   make(chan struct{}),
+		raw:        raw,
+		remote:     remote,
+		dtlsConn:   dtlsConn,
+		encCtx:     encCtx,
+		decCtx:     decCtx,
+		incoming:   incoming,
+		ssrc:       binary.BigEndian.Uint32(ssrcBuf[:]),
+		closed:     make(chan struct{}),
+		deadlineCh: make(chan struct{}),
 	}, nil
 }
 
@@ -645,11 +646,19 @@ type srtpConn struct {
 	closeOnce sync.Once
 	onClose   func()
 	underlay  net.PacketConn
+
+	deadlineMu   sync.Mutex
+	deadlineCh   chan struct{}
+	deadlineStop func()
 }
 
 // Read decrypts an incoming SRTP packet and returns its payload
 func (c *srtpConn) Read(b []byte) (int, error) {
 	for {
+		c.deadlineMu.Lock()
+		dlCh := c.deadlineCh
+		c.deadlineMu.Unlock()
+
 		select {
 		case pkt, ok := <-c.incoming:
 			if !ok {
@@ -667,6 +676,8 @@ func (c *srtpConn) Read(b []byte) (int, error) {
 			return copy(b, decrypted[hdrLen:]), nil
 		case <-c.closed:
 			return 0, net.ErrClosed
+		case <-dlCh:
+			return 0, errors.New("i/o timeout")
 		}
 	}
 }
@@ -731,11 +742,33 @@ func (c *srtpConn) LocalAddr() net.Addr { return c.raw.LocalAddr() }
 // RemoteAddr returns the remote peer address
 func (c *srtpConn) RemoteAddr() net.Addr { return c.remote }
 
-// SetDeadline is a stub that returns an error
-func (c *srtpConn) SetDeadline(_ time.Time) error { return nil }
+// SetDeadline sets both the read and write deadline
+func (c *srtpConn) SetDeadline(t time.Time) error { return c.SetReadDeadline(t) }
 
-// SetReadDeadline is a stub that returns an error
-func (c *srtpConn) SetReadDeadline(_ time.Time) error { return nil }
+// SetReadDeadline sets the deadline for future Read calls
+func (c *srtpConn) SetReadDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
 
-// SetWriteDeadline is a stub that returns an error
+	if c.deadlineStop != nil {
+		c.deadlineStop()
+		c.deadlineStop = nil
+	}
+
+	c.deadlineCh = make(chan struct{})
+	if !t.IsZero() {
+		d := time.Until(t)
+		if d <= 0 {
+			close(c.deadlineCh)
+			return nil
+		}
+		ch := c.deadlineCh
+		timer := time.AfterFunc(d, func() { close(ch) })
+		c.deadlineStop = func() { timer.Stop() }
+	}
+
+	return nil
+}
+
+// SetWriteDeadline is a stub which does nothing since UDP is non-blocking
 func (c *srtpConn) SetWriteDeadline(_ time.Time) error { return nil }

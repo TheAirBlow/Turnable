@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	relayHandshakeVersion byte = 1
+	relayHandshakeVersion byte = 2
 
 	relayHelloTypePrimary   byte = 1
 	relayHelloTypeSecondary byte = 2
@@ -461,6 +461,7 @@ func (D *RelayHandler) connectClientSession() error {
 	connectAndEncrypt := func(idx int, ctx context.Context) (raw, enc net.Conn, err error) {
 		h, _ := protocol.GetHandler(cfg.Proto)
 		h.SetLogger(slog.With("peer_idx", idx))
+
 		connCtx, connCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer connCancel()
 
@@ -469,12 +470,16 @@ func (D *RelayHandler) connectClientSession() error {
 			return
 		}
 
+		_ = raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
+
 		enc, err = wrapClientEncryptedConn(raw, cfg.PubKey)
 		if err != nil {
 			_ = raw.Close()
 			raw = nil
 			return
 		}
+
+		_ = raw.SetDeadline(time.Time{})
 
 		return
 	}
@@ -534,9 +539,11 @@ func (D *RelayHandler) connectClientSession() error {
 			if err != nil {
 				return nil, err
 			}
+
 			_ = raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
 			err = doClientSecondaryHandshake(enc, assignedUUID, cfg.UserUUID, cfg.RouteID)
 			_ = raw.SetDeadline(time.Time{})
+
 			if err != nil {
 				_ = raw.Close()
 				var ackErr *ErrAckRejected
@@ -560,8 +567,17 @@ primaryLoop:
 			_ = platformHandler.Disconnect()
 			return sessionCtx.Err()
 		case p := <-connCh:
+
 			_ = p.raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
-			uuidBytes, hErr := doClientPrimaryHandshake(p.enc, cfg.ToURL(true))
+			cfgJson, err := cfg.ToJSON(true)
+			if err != nil {
+				_ = p.raw.Close()
+				slog.Warn("primary handshake failed, retrying", "peer_idx", p.idx, "error", err)
+				spawnPeer(p.idx)
+				continue
+			}
+
+			uuidBytes, hErr := doClientPrimaryHandshake(p.enc, cfgJson)
 			_ = p.raw.SetDeadline(time.Time{})
 			if hErr != nil {
 				_ = p.raw.Close()
@@ -753,16 +769,16 @@ func (D *RelayHandler) handlePrimaryPeer(
 	serverCfg *config.ServerConfig,
 	out chan<- ServerClient,
 ) error {
-	configURL, err := parsePrimaryHello(helloPayload)
+	configJSON, err := parsePrimaryHello(helloPayload)
 	if err != nil {
-		_ = client.Conn.Close()
+		_ = encConn.Close()
 		return fmt.Errorf("parse primary hello: %w", err)
 	}
 
-	clientCfg, user, route, err := validateRelayConfigURL(*serverCfg, configURL)
+	clientCfg, user, route, err := validateClientConfig(*serverCfg, configJSON)
 	if err != nil {
 		_ = writePrimaryAck(encConn, [16]byte{}, err.Error())
-		_ = client.Conn.Close()
+		_ = encConn.Close()
 		return err
 	}
 
@@ -771,11 +787,11 @@ func (D *RelayHandler) handlePrimaryPeer(
 	copy(sessionUUIDBin[:], sessionUUID[:])
 
 	if err := writePrimaryAck(encConn, sessionUUIDBin, ""); err != nil {
-		_ = client.Conn.Close()
+		_ = encConn.Close()
 		return fmt.Errorf("write primary ack: %w", err)
 	}
 
-	_ = client.Conn.SetDeadline(time.Time{})
+	_ = encConn.SetDeadline(time.Time{})
 
 	sessionUUIDStr := sessionUUID.String()
 	slog.Info("relay handshake started", "addr", client.Address)
@@ -875,7 +891,7 @@ func (D *RelayHandler) handleSecondaryPeer(
 ) error {
 	sessionUUIDBin, userUUID, routeID, err := parseSecondaryHello(helloPayload)
 	if err != nil {
-		_ = client.Conn.Close()
+		_ = encConn.Close()
 		return fmt.Errorf("parse secondary hello: %w", err)
 	}
 
@@ -884,7 +900,7 @@ func (D *RelayHandler) handleSecondaryPeer(
 	existing, loaded := D.sessions.Load(sessionUUIDStr)
 	if !loaded {
 		_ = writeSecondaryAck(encConn, "session not found")
-		_ = client.Conn.Close()
+		_ = encConn.Close()
 		return fmt.Errorf("secondary peer: session %s not found", sessionUUIDStr)
 	}
 
@@ -892,16 +908,16 @@ func (D *RelayHandler) handleSecondaryPeer(
 
 	if sess.userUUID != userUUID || sess.routeID != routeID {
 		_ = writeSecondaryAck(encConn, "session not found")
-		_ = client.Conn.Close()
+		_ = encConn.Close()
 		return fmt.Errorf("secondary peer: session mismatch for %s", sessionUUIDStr)
 	}
 
 	if err := writeSecondaryAck(encConn, ""); err != nil {
-		_ = client.Conn.Close()
+		_ = encConn.Close()
 		return fmt.Errorf("write secondary ack: %w", err)
 	}
 
-	_ = client.Conn.SetDeadline(time.Time{})
+	_ = encConn.SetDeadline(time.Time{})
 
 	var conn net.Conn
 	if sess.fullEnc {
@@ -911,7 +927,7 @@ func (D *RelayHandler) handleSecondaryPeer(
 	}
 
 	if err := sess.peerConn.AddPeer(conn, nil); err != nil {
-		_ = client.Conn.Close()
+		_ = encConn.Close()
 		return err
 	}
 
@@ -936,11 +952,11 @@ func watchPlatform(ctx context.Context, events <-chan platformpkg.Event) {
 	}
 }
 
-// validateRelayConfigURL parses the client config URL, validates it and authorizes access to the requested route.
-func validateRelayConfigURL(serverCfg config.ServerConfig, configURL string) (*config.ClientConfig, *config.User, *config.Route, error) {
-	clientCfg, err := config.NewClientConfigFromURL(configURL)
+// validateClientConfig parses the client config JSON, validates it and authorizes access to the requested route.
+func validateClientConfig(serverCfg config.ServerConfig, configJSON string) (*config.ClientConfig, *config.User, *config.Route, error) {
+	clientCfg, err := config.NewClientConfigFromJSON(configJSON)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to parse client config url: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to parse client config json: %w", err)
 	}
 
 	if common.IsNullOrWhiteSpace(clientCfg.UserUUID) {
@@ -988,8 +1004,8 @@ func validateRelayConfigURL(serverCfg config.ServerConfig, configURL string) (*c
 }
 
 // writePrimaryHello sends a primary handshake hello packet
-func writePrimaryHello(w io.Writer, challenge [8]byte, configURL string) error {
-	configBytes := []byte(configURL)
+func writePrimaryHello(w io.Writer, challenge [8]byte, configJSON string) error {
+	configBytes := []byte(configJSON)
 	buf := make([]byte, 0, 1+8+1+4+len(configBytes))
 	buf = append(buf, relayHelloTypePrimary)
 	buf = append(buf, challenge[:]...)
@@ -1010,7 +1026,7 @@ func parsePrimaryHello(data []byte) (string, error) {
 	}
 	configLen := binary.BigEndian.Uint32(data[1:5])
 	if configLen == 0 {
-		return "", errors.New("primary hello: empty config URL")
+		return "", errors.New("primary hello: empty config JSON")
 	}
 	if len(data) < 5+int(configLen) {
 		return "", errors.New("primary hello: truncated config")
@@ -1142,12 +1158,12 @@ func parseSecondaryAck(data []byte) (string, error) {
 }
 
 // doClientPrimaryHandshake performs the full client primary handshake
-func doClientPrimaryHandshake(conn net.Conn, configURL string) ([16]byte, error) {
+func doClientPrimaryHandshake(conn net.Conn, configJSON string) ([16]byte, error) {
 	var challenge [8]byte
 	if _, err := io.ReadFull(conn, challenge[:]); err != nil {
 		return [16]byte{}, fmt.Errorf("read challenge: %w", err)
 	}
-	if err := writePrimaryHello(conn, challenge, configURL); err != nil {
+	if err := writePrimaryHello(conn, challenge, configJSON); err != nil {
 		return [16]byte{}, fmt.Errorf("write primary hello: %w", err)
 	}
 	buf := make([]byte, 1024)
