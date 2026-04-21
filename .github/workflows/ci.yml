@@ -10,6 +10,56 @@ on:
     branches: ["main"]
 
 jobs:
+  version:
+    name: Compute version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      bump: ${{ steps.version.outputs.bump }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute version
+        id: version
+        run: |
+          COMMIT_MSG="$(git log -1 --format='%s')"
+
+          if echo "$COMMIT_MSG" | grep -qiF "(major)"; then
+            BUMP=major
+          elif echo "$COMMIT_MSG" | grep -qiF "(minor)"; then
+            BUMP=minor
+          elif echo "$COMMIT_MSG" | grep -qiF "(patch)"; then
+            BUMP=patch
+          else
+            BUMP=none
+          fi
+
+          if [ "$BUMP" = "none" ]; then
+            VERSION="$(git rev-parse --short=8 HEAD)"
+          else
+            LATEST="$(git tag -l | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
+            if [ -z "$LATEST" ]; then
+              MAJOR=0; MINOR=0; PATCH=0
+            else
+              IFS=. read -r MAJOR MINOR PATCH <<< "$LATEST"
+            fi
+
+            case "$BUMP" in
+              major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH+1)) ;;
+            esac
+
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "Build version: $VERSION"
+
   lint:
     name: Lint & fmt-check
     runs-on: ubuntu-latest
@@ -44,6 +94,7 @@ jobs:
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
+    needs: [version]
     strategy:
       matrix:
         include:
@@ -79,43 +130,6 @@ jobs:
           ndk-version: r26d
           add-to-path: false
 
-      - name: Compute build version
-        id: version
-        run: |
-          COMMIT_MSG="$(git log -1 --format='%s')"
-
-          if echo "$COMMIT_MSG" | grep -qiF "(major)"; then
-            BUMP=major
-          elif echo "$COMMIT_MSG" | grep -qiF "(minor)"; then
-            BUMP=minor
-          elif echo "$COMMIT_MSG" | grep -qiF "(patch)"; then
-            BUMP=patch
-          else
-            BUMP=none
-          fi
-
-          if [ "$BUMP" = "none" ]; then
-            VERSION="$(git rev-parse --short=8 HEAD)"
-          else
-            LATEST="$(git tag -l | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
-            if [ -z "$LATEST" ]; then
-              MAJOR=0; MINOR=0; PATCH=0
-            else
-              IFS=. read -r MAJOR MINOR PATCH <<< "$LATEST"
-            fi
-
-            case "$BUMP" in
-              major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
-              minor) MINOR=$((MINOR+1)); PATCH=0 ;;
-              patch) PATCH=$((PATCH+1)) ;;
-            esac
-
-            VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Build version: $VERSION"
-
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
@@ -143,7 +157,7 @@ jobs:
           EXT=""
           [ "$GOOS" = "windows" ] && EXT=".exe"
 
-          go build -ldflags "-s -w -X main.buildVersion=${{ steps.version.outputs.version }}" -trimpath \
+          go build -ldflags "-s -w -X main.buildVersion=${{ needs.version.outputs.version }}" -trimpath \
             -o "dist/turnable-${GOOS}-${GOARCH}${EXT}" \
             ./cmd
 
@@ -155,72 +169,26 @@ jobs:
 
   release:
     name: Release
-    needs: [lint, build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [version, lint, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.version.outputs.bump != 'none'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Determine bump type
-        id: bump
-        run: |
-          COMMIT_MSG="$(git log -1 --format='%s')"
-          echo "Commit: $COMMIT_MSG"
-
-          if echo "$COMMIT_MSG" | grep -qiF "(major)"; then
-            echo "type=major" >> "$GITHUB_OUTPUT"
-          elif echo "$COMMIT_MSG" | grep -qiF "(minor)"; then
-            echo "type=minor" >> "$GITHUB_OUTPUT"
-          elif echo "$COMMIT_MSG" | grep -qiF "(patch)"; then
-            echo "type=patch" >> "$GITHUB_OUTPUT"
-          else
-            echo "type=none" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Compute next version
-        if: steps.bump.outputs.type != 'none'
-        id: version
-        run: |
-          LATEST="$(git tag -l | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
-          if [ -z "$LATEST" ]; then
-            MAJOR=0; MINOR=0; PATCH=0
-          else
-            IFS=. read -r MAJOR MINOR PATCH <<< "$LATEST"
-          fi
-
-          case "${{ steps.bump.outputs.type }}" in
-            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH+1)) ;;
-          esac
-
-          NEXT="${MAJOR}.${MINOR}.${PATCH}"
-          echo "tag=$NEXT" >> "$GITHUB_OUTPUT"
-          echo "Next version: $NEXT"
 
       - name: Download all artifacts
-        if: steps.bump.outputs.type != 'none'
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
       - name: Create GitHub Release
-        if: steps.bump.outputs.type != 'none'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: "Turnable ${{ steps.version.outputs.tag }}"
+          tag_name: ${{ needs.version.outputs.version }}
+          name: "Turnable ${{ needs.version.outputs.version }}"
           target_commitish: ${{ github.sha }}
           files: dist/**
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: No release
-        if: steps.bump.outputs.type == 'none'
-        run: echo "No (major)/(minor)/(patch) keyword in commit message - skipping release."
