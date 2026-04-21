@@ -73,6 +73,16 @@ type captchaCheck struct {
 	ShowType     string
 }
 
+// captchaShowTypeError tells solveCaptcha to switch to another solver
+type captchaShowTypeError struct {
+	ShowType string
+}
+
+// Error returns error text
+func (e *captchaShowTypeError) Error() string {
+	return "captcha show type mismatch: " + e.ShowType
+}
+
 // sliderPuzzle stores one parsed slider captcha puzzle
 type sliderPuzzle struct {
 	Image    image.Image
@@ -137,18 +147,19 @@ func (V *VKHandler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string
 		return "", errors.New("failed to find PoW settings")
 	}
 
-	settings := ""
+	sliderSettings := ""
 	for _, setting := range page.Init.Data.CaptchaSettings {
-		if setting.Type == page.Init.Data.ShowCaptchaType {
-			settings = setting.Settings
+		if setting.Type == "slider" {
+			sliderSettings = setting.Settings
 		}
 	}
 
-	if page.Init.Data.ShowCaptchaType == "slider" && settings == "" {
+	if page.Init.Data.ShowCaptchaType == "slider" && sliderSettings == "" {
 		return "", errors.New("failed to find slider captcha settings")
 	}
 
 	slog.Debug("vk captcha solving pow", "difficulty", page.PowDifficulty)
+
 	hash := solveCaptchaPoW(page.PowInput, page.PowDifficulty)
 	if hash == "" {
 		return "", errors.New("captcha pow failed")
@@ -165,8 +176,6 @@ func (V *VKHandler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string
 	if _, err := V.captchaRequest(ctx, "captchaNotRobot.settings", base); err != nil {
 		return "", fmt.Errorf("captcha settings failed: %w", err)
 	}
-
-	slog.Info("vk captcha settings received", "show_type", page.Init.Data.ShowCaptchaType)
 
 	r := rand.New(rand.NewSource(rand.Int63()))
 	b := make([]byte, 16)
@@ -188,18 +197,29 @@ func (V *VKHandler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string
 	}
 
 	var token string
+	showType := page.Init.Data.ShowCaptchaType
+	for {
+		slog.Info("vk captcha solving", "show_type", showType)
 
-	switch page.Init.Data.ShowCaptchaType {
-	case "slider":
-		token, err = V.solveSliderCaptcha(ctx, apiErr.SessionToken, apiErr.AdFP, browserFP, hash, settings, debugInfo)
-	case "checkbox":
-		token, err = V.solveCheckboxCaptcha(ctx, apiErr.SessionToken, apiErr.AdFP, browserFP, hash, debugInfo)
-	default:
-		token, err = "", fmt.Errorf("unsupported captcha type: %s", page.Init.Data.ShowCaptchaType)
-	}
+		switch showType {
+		case "slider":
+			token, err = V.solveSliderCaptcha(ctx, apiErr.SessionToken, apiErr.AdFP, browserFP, hash, sliderSettings, debugInfo)
+		case "checkbox":
+			token, err = V.solveCheckboxCaptcha(ctx, apiErr.SessionToken, apiErr.AdFP, browserFP, hash, debugInfo)
+		default:
+			return "", fmt.Errorf("unsupported captcha type: %s", showType)
+		}
 
-	if err != nil {
-		return "", err
+		if err == nil {
+			break
+		}
+
+		var showTypeErr *captchaShowTypeError
+		if !errors.As(err, &showTypeErr) || showTypeErr.ShowType == "" {
+			return "", err
+		}
+
+		showType = showTypeErr.ShowType
 	}
 
 	_, _ = V.captchaRequest(ctx, "captchaNotRobot.endSession", base)
@@ -417,6 +437,10 @@ func (V *VKHandler) solveCheckboxCaptcha(
 	check, err := V.performCaptchaCheck(ctx, sessionToken, adFP, browserFP, hash, "{}", cursor, debugInfo)
 	if err != nil {
 		return "", err
+	}
+
+	if check.ShowType != "" && !strings.EqualFold(check.ShowType, "checkbox") {
+		return "", &captchaShowTypeError{ShowType: check.ShowType}
 	}
 
 	if strings.EqualFold(check.Status, "error_limit") {

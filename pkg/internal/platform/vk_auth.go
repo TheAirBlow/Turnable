@@ -126,7 +126,7 @@ func endVKAuth(key string) {
 }
 
 // Authorize authorizes with VK and fetches the signaling and TURN session state
-func (V *VKHandler) Authorize(callID string, username string) error {
+func (V *VKHandler) Authorize(callID string, username string, interactive bool) error {
 	if strings.TrimSpace(callID) == "" {
 		return errors.New("call ID is required")
 	}
@@ -150,6 +150,7 @@ func (V *VKHandler) Authorize(callID string, username string) error {
 	V.callID = normalizedCallID
 	V.joinURL = joinURL
 	V.username = name
+	V.interactive = interactive
 	V.mu.Unlock()
 
 	cacheKey := normalizedCallID + "|" + name
@@ -286,7 +287,14 @@ func (V *VKHandler) authorizeAnonymous(ctx context.Context, joinURL, username st
 			slog.Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
 
 			solveStartedAt := time.Now()
-			successToken, solveErr := V.solveCaptchaWithRetry(ctx, apiErr)
+			var successToken string
+			var solveErr error
+			if attempt+1 == vkCaptchaRetries {
+				successToken, solveErr = V.solveManualCaptcha(ctx, apiErr)
+			} else {
+				successToken, solveErr = V.solveCaptchaWithRetry(ctx, apiErr)
+			}
+
 			if solveErr != nil {
 				slog.Warn("vk captcha solve failed", "duration_ms", time.Since(solveStartedAt).Milliseconds(), "error", solveErr)
 				if errors.Is(solveErr, errCaptchaRateLimit) {

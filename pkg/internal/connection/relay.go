@@ -366,7 +366,7 @@ func (D *RelayHandler) connectClientSession() error {
 	if err != nil {
 		return err
 	}
-	if err := platformHandler.Authorize(cfg.CallID, cfg.Username); err != nil {
+	if err := platformHandler.Authorize(cfg.CallID, cfg.Username, cfg.Interactive); err != nil {
 		return err
 	}
 

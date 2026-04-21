@@ -13,7 +13,7 @@ type Handler interface {
 	ID() string                                                        // Returns the unique ID of this handler
 	GetConfig() Config                                                 // Returns the platform configuration
 	GetTURNInfo() TURNInfo                                             // Returns the latest TURN server credentials
-	Authorize(callID string, username string) error                    // Authorizes with the platform's servers
+	Authorize(callID string, username string, interactive bool) error  // Authorizes with the platform's servers
 	Connect() error                                                    // Connects to the signaling server
 	Disconnect() error                                                 // Gracefully disconnects from the signaling server
 	Close() error                                                      // Forcibly closes the current signaling connection
