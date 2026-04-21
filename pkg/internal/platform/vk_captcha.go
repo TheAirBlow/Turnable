@@ -28,6 +28,8 @@ import (
 )
 
 var (
+	deviceInfo = `{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1036,"innerWidth":1920,"innerHeight":949,"devicePixelRatio":1,"language":"en-US","languages":["en-US"],"webdriver":false,"hardwareConcurrency":12,"deviceMemory":8,"connectionEffectiveType":"4g","notificationsPermission":"denied"}`
+
 	reCaptchaPowInput   = regexp.MustCompile(`const\s+powInput\s*=\s*"([^"]+)"`)             // Extracts PoW input from captcha HTML
 	reCaptchaDifficulty = regexp.MustCompile(`const\s+difficulty\s*=\s*(\d+)`)               // Extracts PoW difficulty from captcha HTML
 	reCaptchaWindowInit = regexp.MustCompile(`(?s)window\.init\s*=\s*(\{.*?})\s*;`)          // Extracts captcha settings bootstrap JSON
@@ -311,29 +313,6 @@ func (V *VKHandler) captchaRequest(ctx context.Context, method string, form *com
 	})
 }
 
-// generateDeviceInfo generates a device info JSON string
-func generateDeviceInfo() string {
-	device := map[string]interface{}{
-		"screenWidth":             1920,
-		"screenHeight":            1080,
-		"screenAvailWidth":        1920,
-		"screenAvailHeight":       1036,
-		"innerWidth":              1920,
-		"innerHeight":             949,
-		"devicePixelRatio":        1,
-		"language":                "en-US",
-		"languages":               []string{"en-US"},
-		"webdriver":               false,
-		"hardwareConcurrency":     12,
-		"deviceMemory":            8,
-		"connectionEffectiveType": "4g",
-		"notificationsPermission": "denied",
-	}
-
-	jsonBytes, _ := json.Marshal(device)
-	return string(jsonBytes)
-}
-
 // performCaptchaCheck submits captcha answer and returns status payload
 func (V *VKHandler) performCaptchaCheck(
 	ctx context.Context,
@@ -412,7 +391,7 @@ func (V *VKHandler) solveCheckboxCaptcha(
 		"domain", "vk.com",
 		"adFp", adFP,
 		"browser_fp", browserFP,
-		"device", generateDeviceInfo(),
+		"device", deviceInfo,
 		"access_token", "",
 	)); err != nil {
 		return "", fmt.Errorf("captcha componentDone failed: %w", err)
@@ -526,7 +505,7 @@ func (V *VKHandler) solveSliderCaptcha(
 		"adFp", adFP,
 		"access_token", "",
 		"browser_fp", browserFP,
-		"device", generateDeviceInfo(),
+		"device", deviceInfo,
 	)); err != nil {
 		return "", fmt.Errorf("captcha componentDone failed: %w", err)
 	}

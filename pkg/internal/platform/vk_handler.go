@@ -2,8 +2,11 @@ package platform
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
@@ -251,6 +254,16 @@ func (V *VKHandler) ensureInit() {
 				IdleConnTimeout:       90 * time.Second,
 				DisableCompression:    false,
 			},
+		}
+
+		proxyStr := os.Getenv("VK_PROXY")
+		if !common.IsNullOrWhiteSpace(proxyStr) {
+			proxyURL, _ := url.Parse(proxyStr)
+			transport, _ := V.httpClient.Transport.(*http.Transport)
+			transport.Proxy = http.ProxyURL(proxyURL)
+			transport.TLSClientConfig = &tls.Config{
+				InsecureSkipVerify: true,
+			}
 		}
 
 		V.profile = common.RandomBrowserProfile()
