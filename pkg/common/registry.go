@@ -52,11 +52,8 @@ func (r *Registry[T]) Register(item T) {
 	r.items[item.ID()] = itemType
 }
 
-// Get fetches a RegistryItem by its string ID, with empty string being treated as "none".
+// Get fetches a RegistryItem by its string ID
 func (r *Registry[T]) Get(name string) (T, error) {
-	if name == "" {
-		name = "none"
-	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

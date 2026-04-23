@@ -45,6 +45,7 @@ func init() {
 	common.ProtocolsHolder = Handlers
 	Handlers.Register(&DTLSHandler{})
 	Handlers.Register(&SRTPHandler{})
+	Handlers.Register(&NoneHandler{})
 }
 
 // GetHandler fetches a protocol Handler by its string ID.

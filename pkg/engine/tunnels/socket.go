@@ -135,11 +135,12 @@ func (S *SocketHandler) acceptUDP(ctx context.Context) (<-chan AcceptedClient, e
 			if !exists {
 				pCtx, pCancel := context.WithCancel(ctx)
 				p := &udpPeerStream{
-					ctx:    pCtx,
-					cancel: pCancel,
-					conn:   conn,
-					peer:   addr,
-					readCh: make(chan []byte, 64),
+					ctx:       pCtx,
+					cancel:    pCancel,
+					conn:      conn,
+					peer:      addr,
+					readCh:    make(chan []byte, 1024),
+					idleTimer: time.NewTimer(udpIdleTimeout),
 				}
 				p.removeFn = func() {
 					mu.Lock()
@@ -173,18 +174,24 @@ func (S *SocketHandler) acceptUDP(ctx context.Context) (<-chan AcceptedClient, e
 
 // udpPeerStream is a virtual stream representing one UDP peer
 type udpPeerStream struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	conn     *net.UDPConn
-	peer     *net.UDPAddr
-	readCh   chan []byte
-	removeFn func()
+	ctx       context.Context
+	cancel    context.CancelFunc
+	conn      *net.UDPConn
+	peer      *net.UDPAddr
+	readCh    chan []byte
+	removeFn  func()
+	idleTimer *time.Timer
 }
 
 // Read returns the next datagram from this peer, or an error after udpIdleTimeout of inactivity
 func (u *udpPeerStream) Read(p []byte) (int, error) {
-	timer := time.NewTimer(udpIdleTimeout)
-	defer timer.Stop()
+	if !u.idleTimer.Stop() {
+		select {
+		case <-u.idleTimer.C:
+		default:
+		}
+	}
+	u.idleTimer.Reset(udpIdleTimeout)
 	select {
 	case <-u.ctx.Done():
 		return 0, io.EOF
@@ -193,7 +200,7 @@ func (u *udpPeerStream) Read(p []byte) (int, error) {
 			return 0, io.EOF
 		}
 		return copy(p, packet), nil
-	case <-timer.C:
+	case <-u.idleTimer.C:
 		return 0, &net.OpError{Op: "read", Net: "udp", Source: u.peer, Err: os.ErrDeadlineExceeded}
 	}
 }

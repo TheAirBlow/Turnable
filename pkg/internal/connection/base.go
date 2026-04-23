@@ -17,11 +17,11 @@ type Handler interface {
 	ID() string                                                     // Returns the unique ID of this handler
 	Start(config config.ServerConfig) error                         // Starts the server listener
 	Stop() error                                                    // Stops the server listener
+	AcceptClients(ctx context.Context) (<-chan ServerClient, error) // Accepts and emits new authenticated server clients
 	Connect(config config.ClientConfig) error                       // Connects to a remote server
 	OpenChannel() (net.Conn, error)                                 // Opens a new logical data channel
 	Disconnect() error                                              // Gracefully disconnects from the current remote server
 	Close() error                                                   // Forcibly closes the current remove server connection
-	AcceptClients(ctx context.Context) (<-chan ServerClient, error) // Accepts and emits new authenticated server clients
 }
 
 // ServerClient represents a server client

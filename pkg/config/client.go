@@ -57,11 +57,14 @@ func (c *ClientConfig) Validate() error {
 		return errors.New("route_id (path) is required")
 	}
 
-	if c.Transport == "none" {
-		c.Transport = ""
+	if c.Proto == "" {
+		c.Proto = "none"
 	}
-	if c.Cloak == "none" {
-		c.Cloak = ""
+	if c.Transport == "" {
+		c.Transport = "none"
+	}
+	if c.Cloak == "" {
+		c.Cloak = "none"
 	}
 
 	_, err := uuid.Parse(c.UserUUID)
@@ -88,7 +91,7 @@ func (c *ClientConfig) Validate() error {
 		return fmt.Errorf("invalid socket: %s (must be tcp or udp)", c.Socket)
 	}
 
-	if c.Socket == "tcp" && c.Transport == "" {
+	if c.Socket == "tcp" && c.Transport == "none" {
 		return fmt.Errorf("transport is required for tcp to work reliably")
 	}
 
@@ -213,11 +216,14 @@ func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 		cfg.Encryption = v
 	}
 
-	if cfg.Transport == "none" {
-		cfg.Transport = ""
+	if cfg.Proto == "" {
+		cfg.Transport = "none"
 	}
-	if cfg.Cloak == "none" {
-		cfg.Cloak = ""
+	if cfg.Transport == "" {
+		cfg.Transport = "none"
+	}
+	if cfg.Cloak == "" {
+		cfg.Cloak = "none"
 	}
 
 	return cfg, nil
@@ -250,10 +256,10 @@ func (c *ClientConfig) ToURL() string {
 	if !common.IsNullOrWhiteSpace(c.Type) {
 		params = append(params, queryParam{key: "type", value: c.Type})
 	}
-	if !common.IsNullOrWhiteSpace(c.Encryption) && c.Encryption != "none" {
+	if !common.IsNullOrWhiteSpace(c.Encryption) {
 		params = append(params, queryParam{key: "encryption", value: c.Encryption})
 	}
-	if !common.IsNullOrWhiteSpace(c.Transport) && c.Transport != "none" {
+	if !common.IsNullOrWhiteSpace(c.Transport) {
 		params = append(params, queryParam{key: "transport", value: c.Transport})
 	}
 	if !common.IsNullOrWhiteSpace(c.Gateway) {
@@ -268,10 +274,10 @@ func (c *ClientConfig) ToURL() string {
 	if !common.IsNullOrWhiteSpace(c.Proto) {
 		params = append(params, queryParam{key: "proto", value: c.Proto})
 	}
-	if !common.IsNullOrWhiteSpace(c.Cloak) && c.Cloak != "none" {
+	if !common.IsNullOrWhiteSpace(c.Cloak) {
 		params = append(params, queryParam{key: "cloak", value: c.Cloak})
 	}
-	if !common.IsNullOrWhiteSpace(c.Conn) && c.Conn != "unknown" {
+	if !common.IsNullOrWhiteSpace(c.Conn) {
 		params = append(params, queryParam{key: "conn", value: c.Conn})
 	}
 	if !common.IsNullOrWhiteSpace(c.Name) {

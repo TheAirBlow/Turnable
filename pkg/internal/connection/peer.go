@@ -3,7 +3,6 @@ package connection
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -23,6 +22,7 @@ const (
 	peerReconnectMax    = 10 * time.Second // maximum back-off delay between peer reconnect attempts
 	peerQuotaBackoff    = 10 * time.Second // delay when TURN allocation quota is exhausted
 	peerIncomingBufSize = 1024             // channel buffer size for packets arriving from all peers
+	peerWriteSendBuf    = 256              // per-peer outbound write queue depth
 )
 
 // peerEntry holds one live connection inside PeerConn
@@ -30,6 +30,7 @@ type peerEntry struct {
 	mu        sync.Mutex
 	conn      net.Conn
 	connected atomic.Bool
+	sendCh    chan []byte
 }
 
 // PeerConn aggregates multiple per-peer connections into one logical net.Conn
@@ -47,7 +48,7 @@ type PeerConn struct {
 	onAllPeersGone func()
 }
 
-// NewPeerConn creates an empty PeerConn derived from the given context; add peers with AddPeer
+// NewPeerConn creates an empty PeerConn derived from the given context
 func NewPeerConn(ctx context.Context) *PeerConn {
 	ctx, cancel := context.WithCancel(ctx)
 	p := &PeerConn{
@@ -66,7 +67,7 @@ func (m *PeerConn) SetOnAllPeersGone(fn func()) {
 	m.mu.Unlock()
 }
 
-// SetLogger sets the logger; if nil, resets to slog.Default()
+// SetLogger sets the logger
 func (m *PeerConn) SetLogger(l *slog.Logger) {
 	if l == nil {
 		l = slog.Default()
@@ -74,21 +75,48 @@ func (m *PeerConn) SetLogger(l *slog.Logger) {
 	m.log = l
 }
 
-// AddPeer adds a peer connection and starts its read loop
+// AddPeer adds a peer connection and starts its read and write loops
 func (m *PeerConn) AddPeer(conn net.Conn, reconnectFn func(context.Context) (net.Conn, error)) error {
 	if m.closed.Load() {
 		return errors.New("peer: conn is closed")
 	}
 	m.allGone.Store(false)
-	entry := &peerEntry{conn: conn}
+	entry := &peerEntry{
+		conn:   conn,
+		sendCh: make(chan []byte, peerWriteSendBuf),
+	}
 	entry.connected.Store(true)
 	m.mu.Lock()
 	idx := len(m.peers)
 	m.peers = append(m.peers, entry)
 	m.mu.Unlock()
 	m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
+	go m.peerWriteLoop(entry)
 	go m.peerReadLoop(idx, entry, reconnectFn)
 	return nil
+}
+
+// peerWriteLoop drains the per-peer send queue and writes each packet to the connection
+func (m *PeerConn) peerWriteLoop(entry *peerEntry) {
+	for {
+		select {
+		case pkt, ok := <-entry.sendCh:
+			if !ok {
+				return
+			}
+			if !entry.connected.Load() {
+				continue
+			}
+			entry.mu.Lock()
+			conn := entry.conn
+			entry.mu.Unlock()
+			if conn != nil {
+				_, _ = conn.Write(pkt)
+			}
+		case <-m.ctx.Done():
+			return
+		}
+	}
 }
 
 // peerReadLoop reads packets from one peer and feeds them into the incoming channel
@@ -174,7 +202,7 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 	}
 }
 
-// countOnline returns the number of currently connected peer slots.
+// countOnline returns the number of currently connected peer slots
 func (m *PeerConn) countOnline() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -187,14 +215,14 @@ func (m *PeerConn) countOnline() int {
 	return n
 }
 
-// totalSlots returns the total number of peer slots (including disconnected ones).
+// totalSlots returns the total number of peer slots, including disconnected ones
 func (m *PeerConn) totalSlots() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.peers)
 }
 
-// removePeer removes the peer at idx and cancels the conn if all peers are gone.
+// removePeer removes the peer at idx and cancels the conn if all peers are gone
 func (m *PeerConn) removePeer(idx int) {
 	m.mu.Lock()
 	if idx < len(m.peers) {
@@ -207,7 +235,7 @@ func (m *PeerConn) removePeer(idx int) {
 	}
 }
 
-// notifyAllPeersGone closes the peer context and fires the callback once.
+// notifyAllPeersGone closes the peer context and fires the callback once
 func (m *PeerConn) notifyAllPeersGone() {
 	if !m.allGone.CompareAndSwap(false, true) {
 		return
@@ -233,7 +261,7 @@ func (m *PeerConn) Read(p []byte) (int, error) {
 	}
 }
 
-// Write sends one packet to the next live peer in round-robin order.
+// Write enqueues one packet to the next live peer's send channel in round-robin order
 func (m *PeerConn) Write(p []byte) (int, error) {
 	m.mu.RLock()
 	peers := m.peers
@@ -245,31 +273,36 @@ func (m *PeerConn) Write(p []byte) (int, error) {
 	}
 
 	start := m.writeIdx.Add(1) - 1
+	buf := make([]byte, len(p))
+	copy(buf, p)
 
-	var err error
-	start = start % total
+	// Fast path: non-blocking enqueue to the next live peer
 	for i := uint64(0); i < total; i++ {
-		idx := (start + i) % total
-		entry := peers[idx]
+		entry := peers[(start+i)%total]
 		if entry == nil || !entry.connected.Load() {
 			continue
 		}
-		entry.mu.Lock()
-		conn := entry.conn
-		entry.mu.Unlock()
-		if conn == nil {
-			continue
+		select {
+		case entry.sendCh <- buf:
+			return len(p), nil
+		default:
 		}
-		n, werr := conn.Write(p)
-		if werr == nil {
-			return n, nil
-		}
-		err = werr
 	}
 
-	if err != nil {
-		return 0, fmt.Errorf("peer: all peers failed: %w", err)
+	// Slow path: block on first live peer until a slot opens or context is done
+	for i := uint64(0); i < total; i++ {
+		entry := peers[(start+i)%total]
+		if entry == nil || !entry.connected.Load() {
+			continue
+		}
+		select {
+		case entry.sendCh <- buf:
+			return len(p), nil
+		case <-m.ctx.Done():
+			return 0, io.EOF
+		}
 	}
+
 	return 0, errors.New("peer: no live peers")
 }
 
@@ -311,7 +344,7 @@ func (m *PeerConn) SetReadDeadline(t time.Time) error { return nil }
 // SetWriteDeadline is a no-op
 func (m *PeerConn) SetWriteDeadline(t time.Time) error { return nil }
 
-// peerDummyAddr is a placeholder net.Addr returned by PeerConn's LocalAddr/RemoteAddr
+// peerDummyAddr is a placeholder net.Addr for PeerConn
 type peerDummyAddr struct{}
 
 // Network returns the network name for this dummy address

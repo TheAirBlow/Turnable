@@ -17,8 +17,8 @@ Turnable is a VPN core that tunnels TCP/UDP traffic through [TURN](https://en.wi
 ## How it works
 There are two methods of establishing a tunnel with a remote server that Turnable supports. Both of them allow to establish multiple TCP/UDP connections via multiplexing, with traffic being spread through multiple peer connections to bypass platform ratelimits.
 
-### Relay - direct tunnel via TURN
-The server allocates a relay address on the platform's TURN server. The client connects to it, and from there the server forwards traffic to the configured destination. Simple and stable, but is usually heavily throttled and can be detected.
+### Relay - tunnel via TURN with an intermediate
+The client allocates a relay address on the platform's TURN server, connects to the Turnable server, and from there it forwards traffic to the configured destination. Simple and stable, but is usually heavily throttled and can be detected.
 
 ```mermaid
 sequenceDiagram
@@ -37,6 +37,27 @@ sequenceDiagram
         TS->>Dest: Forwarded data
         Dest-->>TS: TCP/UDP data
         TS->>TC: Relay
+        TC-->>App: Forwarded data
+    end
+```
+
+### Direct Relay - direct tunnel via TURN
+The client allocates a relay address on the platform's TURN server and connects to the destination server directly. Does not require a Turnable server. **⚠️ Not recommended and is dangerous to use.**
+
+```mermaid
+sequenceDiagram
+    participant App as Source
+    participant TC as Turnable Client
+    participant TURN as TURN Server
+    participant Dest as Destination
+
+    TC->>TURN: Join call, allocate relay endpoint
+    Note over TC,Dest: Dedicated tunnel established
+
+    loop Traffic
+        App->>TC: TCP/UDP data
+        TC->>Dest: Forwarded data
+        Dest-->>TC: TCP/UDP data
         TC-->>App: Forwarded data
     end
 ```
@@ -237,16 +258,18 @@ Configure your proxy/VPN client application to use `127.0.0.1:1080` (or whatever
 | `vk.com` | Authenticates anonymously through [VKontakte](https://vk.com) and joins a meeting. [Usage guide](docs/VK.md). |
 
 ### Connection types
-| Type    | Description                                                                                                          |
-|---------|----------------------------------------------------------------------------------------------------------------------|
-| `relay` | Tunnels traffic through the platform's TURN servers directly to the server gateway.                                  |
-| `p2p`   | Hides traffic inside fake screencasts routed through the platform's SFU. Requires SRTP and enabled Cloak. **⚠️ WIP** |
+| Type     | Description                                                                                                                                    |
+|----------|------------------------------------------------------------------------------------------------------------------------------------------------|
+| `relay`  | Tunnels traffic through the platform's TURN server to the Turnable server gateway.                                                             |
+| `direct` | Tunnels traffic through the platform's TURN server directly to the destination server gateway. **⚠️ Not recommended and is dangerous to use.** |
+| `p2p`    | Hides traffic inside fake screencasts routed through the platform's SFU. Requires SRTP and enabled Cloak. **⚠️ WIP**                           |
 
 ### Protocols
-| Protocol | Description                                                      |
-|----------|------------------------------------------------------------------|
-| `dtls`   | Raw DTLS. Simple but detectable. Only supported in `relay` mode. |
-| `srtp`   | DTLS+SRTP. Mimics real media traffic. Required for `p2p` mode.   |
+| Protocol | Description                                                         |
+|----------|---------------------------------------------------------------------|
+| `none`   | No protocol at all. **⚠️ Not recommended and is dangerous to use.** |
+| `dtls`   | Raw DTLS. Simple but detectable. Only supported in `relay` mode.    |
+| `srtp`   | DTLS+SRTP. Mimics real media traffic. Forced in `p2p` mode.         |
 
 ### Transports
 | Transport | Description                                                                                                                                      |

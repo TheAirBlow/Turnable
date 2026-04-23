@@ -110,6 +110,10 @@ func (s *ServerConfig) Validate() error {
 		return fmt.Errorf("invalid platform id: %s", s.PlatformID)
 	}
 
+	if s.Relay.Proto == "" {
+		s.Relay.Proto = "none"
+	}
+
 	if !common.IsNullOrWhiteSpace(s.Relay.PublicIP) {
 		host, _, err := net.SplitHostPort(s.Relay.PublicIP)
 		if err != nil {
@@ -160,12 +164,16 @@ func (r *Route) Validate() error {
 		return fmt.Errorf("route %q has invalid socket type %q (must be tcp or udp)", r.ID, r.Socket)
 	}
 
-	if r.Transport == "none" {
-		r.Transport = ""
+	if r.Transport == "" {
+		r.Transport = "none"
 	}
 
 	if r.Transport != "" && !common.TransportsHolder.Exists(r.Transport) {
 		return fmt.Errorf("route %q has invalid transport: %s", r.ID, r.Transport)
+	}
+
+	if r.Socket == "tcp" && r.Transport == "none" {
+		return fmt.Errorf("transport is required for tcp to work reliably")
 	}
 
 	if net.ParseIP(r.Address) == nil {

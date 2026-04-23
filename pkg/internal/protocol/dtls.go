@@ -6,14 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
-	"github.com/pion/turn/v5"
-	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/config"
 )
 
@@ -161,17 +158,25 @@ func (D *DTLSHandler) Connect(ctx context.Context, dest net.Addr, relay RelayInf
 	if D.log == nil {
 		D.log = slog.Default()
 	}
-
 	if dest == nil {
 		return nil, errors.New("dtls connect requires destination address")
 	}
 
 	if forceTURN {
 		D.log.Debug("dtls connect using forced turn relay")
-		return D.connectViaTURN(ctx, relay, dest)
+		underlay, remoteAddr, err := connectViaTURN(relay, dest, "dtls", D.log)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := D.connectPacketConn(ctx, underlay, remoteAddr)
+		if err != nil {
+			_ = underlay.Close()
+			return nil, err
+		}
+		return conn, nil
 	}
 
-	underlay, remoteAddr, err := D.openDirectUnderlay(dest)
+	underlay, remoteAddr, err := openDirectUnderlay(dest, "dtls", D.log)
 	if err != nil {
 		return nil, err
 	}
@@ -189,9 +194,14 @@ func (D *DTLSHandler) Connect(ctx context.Context, dest net.Addr, relay RelayInf
 	}
 
 	D.log.Info("dtls direct connect failed, falling back to turn", "error", err)
-	conn, turnErr := D.connectViaTURN(ctx, relay, dest)
+	turnUnderlay, turnRemote, turnErr := connectViaTURN(relay, dest, "dtls", D.log)
 	if turnErr != nil {
 		return nil, errors.Join(err, turnErr)
+	}
+	conn, connErr := D.connectPacketConn(ctx, turnUnderlay, turnRemote)
+	if connErr != nil {
+		_ = turnUnderlay.Close()
+		return nil, errors.Join(err, connErr)
 	}
 
 	D.log.Debug("dtls connect established via turn relay")
@@ -205,141 +215,6 @@ func (D *DTLSHandler) SetLogger(log *slog.Logger) {
 	if D.log == nil {
 		D.log = slog.Default()
 	}
-}
-
-// connectViaTURN attempts to connect to the remote server via one of the provided TURN servers
-func (D *DTLSHandler) connectViaTURN(ctx context.Context, relay RelayInfo, dest net.Addr) (net.Conn, error) {
-	servers := relay.Addresses
-
-	if len(servers) == 0 {
-		return nil, errors.New("dtls turn fallback requires turn address")
-	}
-	D.log.Debug("dtls trying turn servers", "count", len(servers), "servers", strings.Join(servers, ","))
-
-	var lastErr error
-	for i, address := range servers {
-		candidate := relay
-		candidate.Address = address
-		D.log.Debug("dtls trying turn candidate", "index", i+1, "count", len(servers), "server", address, "dest", dest.String())
-
-		underlay, remoteAddr, err := D.openTURNUnderlay(candidate, dest)
-		if err != nil {
-			lastErr = err
-			D.log.Warn("dtls turn candidate failed", "index", i+1, "count", len(servers), "server", address, "error", err)
-			continue
-		}
-
-		conn, err := D.connectPacketConn(ctx, underlay, remoteAddr)
-		if err != nil {
-			_ = underlay.Close()
-			lastErr = err
-			D.log.Warn("dtls turn candidate handshake failed", "index", i+1, "count", len(servers), "server", address, "error", err)
-			continue
-		}
-
-		D.log.Debug("dtls turn candidate selected", "index", i+1, "count", len(servers), "server", address)
-		return conn, nil
-	}
-
-	if lastErr == nil {
-		lastErr = errors.New("failed to establish dtls over turn")
-	}
-	if strings.Contains(lastErr.Error(), "Allocation Quota Reached") {
-		return nil, fmt.Errorf("%w: %w", ErrQuotaReached, lastErr)
-	}
-	return nil, lastErr
-}
-
-// openDirectUnderlay opens an unconnected UDP socket for use with the DTLS client
-func (D *DTLSHandler) openDirectUnderlay(dest net.Addr) (net.PacketConn, net.Addr, error) {
-	udpAddr, ok := dest.(*net.UDPAddr)
-	if !ok {
-		resolved, err := net.ResolveUDPAddr("udp", dest.String())
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to resolve udp destination: %w", err)
-		}
-		udpAddr = resolved
-	}
-
-	network := "udp4"
-	if udpAddr.IP != nil && udpAddr.IP.To4() == nil {
-		network = "udp6"
-	}
-
-	underlay, err := net.ListenUDP(network, nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open direct udp underlay: %w", err)
-	}
-	slog.Debug("dtls direct underlay opened", "local", underlay.LocalAddr().String(), "remote", udpAddr.String())
-
-	return underlay, udpAddr, nil
-}
-
-// openTURNUnderlay allocates a TURN relay socket for use with the DTLS client
-func (D *DTLSHandler) openTURNUnderlay(relay RelayInfo, dest net.Addr) (net.PacketConn, net.Addr, error) {
-	if relay.Address == "" {
-		return nil, nil, errors.New("dtls turn fallback requires turn address")
-	}
-	if relay.Username == "" {
-		return nil, nil, errors.New("dtls turn fallback requires turn username")
-	}
-	if relay.Password == "" {
-		return nil, nil, errors.New("dtls turn fallback requires turn password")
-	}
-
-	network := "udp4"
-	if udpAddr, ok := dest.(*net.UDPAddr); ok && udpAddr.IP != nil && udpAddr.IP.To4() == nil {
-		network = "udp6"
-	}
-
-	underlay, err := net.ListenPacket(network, "")
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open local udp socket for turn: %w", err)
-	}
-	D.log.Debug("dtls turn base socket opened", "network", network, "local", underlay.LocalAddr().String(), "turn_server", relay.Address)
-
-	infoLevel := slog.LevelInfo
-	client, err := turn.NewClient(&turn.ClientConfig{
-		STUNServerAddr: relay.Address,
-		TURNServerAddr: relay.Address,
-		Username:       relay.Username,
-		Password:       relay.Password,
-		Conn:           underlay,
-		LoggerFactory:  &common.SlogLoggerFactory{Log: D.log, Level: &infoLevel},
-	})
-	if err != nil {
-		_ = underlay.Close()
-		return nil, nil, fmt.Errorf("failed to create turn client: %w", err)
-	}
-
-	if err := client.Listen(); err != nil {
-		client.Close()
-		_ = underlay.Close()
-		return nil, nil, fmt.Errorf("failed to start turn client listener: %w", err)
-	}
-
-	D.log.Debug("dtls turn client listener started", "turn_server", relay.Address)
-	allocation, err := client.Allocate()
-	if err != nil {
-		client.Close()
-		_ = underlay.Close()
-		return nil, nil, fmt.Errorf("failed to allocate turn relay: %w", err)
-	}
-
-	D.log.Debug("dtls turn allocation created", "turn_server", relay.Address)
-	if err := client.CreatePermission(dest); err != nil {
-		_ = allocation.Close()
-		client.Close()
-		_ = underlay.Close()
-		return nil, nil, fmt.Errorf("failed to create turn permission for %s: %w", dest.String(), err)
-	}
-
-	D.log.Debug("dtls turn permission created", "peer", dest.String(), "turn_server", relay.Address)
-	return &turnPacketConn{
-		PacketConn: allocation,
-		underlay:   underlay,
-		client:     client,
-	}, dest, nil
 }
 
 // connectPacketConn upgrades a packet underlay into an established DTLS session
@@ -380,7 +255,7 @@ func (D *DTLSHandler) connectPacketConn(ctx context.Context, underlay net.Packet
 	}, nil
 }
 
-// dtlsClientConn represents a DTLS connection that automatically closes the underlay
+// dtlsClientConn wraps a DTLS connection and closes the underlay on Close
 type dtlsClientConn struct {
 	*dtls.Conn
 	underlay  net.PacketConn
@@ -392,29 +267,6 @@ func (c *dtlsClientConn) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
 		err = errors.Join(c.Conn.Close(), c.underlay.Close())
-	})
-	return err
-}
-
-// turnPacketConn represents a TURN packet connection that automatically closes the client and the underlay
-type turnPacketConn struct {
-	net.PacketConn
-	underlay  net.PacketConn
-	client    *turn.Client
-	closeOnce sync.Once
-}
-
-// Close closes the TURN packet connection, the client and the underlay
-func (c *turnPacketConn) Close() error {
-	var err error
-	c.closeOnce.Do(func() {
-		err = c.PacketConn.Close()
-		if c.client != nil {
-			c.client.Close()
-		}
-		if c.underlay != nil {
-			err = errors.Join(err, c.underlay.Close())
-		}
 	})
 	return err
 }

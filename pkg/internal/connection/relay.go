@@ -167,6 +167,10 @@ func (D *RelayHandler) Connect(cfg config.ClientConfig) error {
 		return errors.New("no gateway address was provided")
 	}
 
+	if cfg.Proto == "none" {
+		slog.Warn("using no protocol is dangerous, please reconsider!")
+	}
+
 	reconnectCtx, reconnectCancel := context.WithCancel(context.Background())
 
 	D.clientConfig = &cfg
