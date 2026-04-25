@@ -58,24 +58,22 @@ func (c *VPNClient) Start(tunnelHandler tunnels.Handler) error {
 	}()
 
 	if tunnelHandler == nil {
-		c.running.Store(false)
 		return fmt.Errorf("tunnel handler is required")
 	}
+
+	tunnelHandler.SetLogger(c.log)
 
 	c.log.Info("starting vpn client", "connection_type", c.Config.Type)
 
 	connHandler, err := connection.GetHandler(c.Config.Type)
 	if err != nil {
-		c.running.Store(false)
 		return fmt.Errorf("get connection handler: %w", err)
 	}
 
-	tunnelHandler.SetLogger(c.log)
 	connHandler.SetLogger(c.log)
 
 	if err := connHandler.Connect(c.Config); err != nil {
 		_ = connHandler.Close()
-		c.running.Store(false)
 		return fmt.Errorf("connect: %w", err)
 	}
 
@@ -84,7 +82,6 @@ func (c *VPNClient) Start(tunnelHandler tunnels.Handler) error {
 	acceptCh, err := tunnelHandler.Open(c.ctx, c.Config.Socket)
 	if err != nil {
 		_ = connHandler.Close()
-		c.running.Store(false)
 		return fmt.Errorf("open tunnel: %w", err)
 	}
 

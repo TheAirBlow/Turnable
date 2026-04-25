@@ -12,6 +12,7 @@ import (
 	config2 "github.com/theairblow/turnable/pkg/config"
 	"github.com/theairblow/turnable/pkg/config/providers"
 	"github.com/theairblow/turnable/pkg/engine"
+	"github.com/theairblow/turnable/pkg/tunnels"
 )
 
 // serverOptions holds CLI flags for the server subcommand
@@ -70,8 +71,10 @@ func serverMain(opts *serverOptions) error {
 		return fmt.Errorf("failed to validate server config: %w", err)
 	}
 
+	tunnelHandler := &tunnels.SocketHandler{}
+
 	server := engine.NewVPNServer(*config)
-	if err := server.Start(); err != nil {
+	if err := server.Start(tunnelHandler); err != nil {
 		return fmt.Errorf("failed to start VPN server: %w", err)
 	}
 

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 
@@ -44,7 +45,7 @@ func NewVPNServer(cfg config.ServerConfig) *VPNServer {
 }
 
 // Start starts all enabled connection handlers
-func (s *VPNServer) Start() error {
+func (s *VPNServer) Start(tunnelHandler tunnels.Handler) error {
 	if !s.running.CompareAndSwap(false, true) {
 		return errors.New("already running")
 	}
@@ -56,8 +57,13 @@ func (s *VPNServer) Start() error {
 		}
 	}()
 
+	if tunnelHandler == nil {
+		return fmt.Errorf("tunnel handler is required")
+	}
+
+	tunnelHandler.SetLogger(s.log)
+
 	if s.Config.P2P.Enabled {
-		s.running.Store(false)
 		return errors.New("P2P mode is not supported")
 	}
 
@@ -74,13 +80,12 @@ func (s *VPNServer) Start() error {
 
 		if err := connHandler.Start(s.Config); err != nil {
 			s.log.Error("failed to start relay handler", "error", err)
-			s.running.Store(false)
 			return err
 		}
 
 		s.handlers = append(s.handlers, connHandler)
 
-		go s.acceptClients(connHandler)
+		go s.acceptClients(connHandler, tunnelHandler)
 	}
 
 	success = true
@@ -111,7 +116,7 @@ func (s *VPNServer) Stop() error {
 }
 
 // acceptClients accepts authenticated clients and handles them
-func (s *VPNServer) acceptClients(handler connection.Handler) {
+func (s *VPNServer) acceptClients(handler connection.Handler, tunnelHandler tunnels.Handler) {
 	clientCh, err := handler.AcceptClients(s.ctx)
 	if err != nil {
 		s.log.Warn("accept clients failed", "error", err)
@@ -125,15 +130,12 @@ func (s *VPNServer) acceptClients(handler connection.Handler) {
 			continue
 		}
 
-		go s.handleClient(client)
+		go s.handleClient(client, tunnelHandler)
 	}
 }
 
 // handleClient dials the backend route and pipes the tinymux channel through it
-func (s *VPNServer) handleClient(client connection.ServerClient) {
-	tunnelHandler := tunnels.SocketHandler{}
-	tunnelHandler.SetLogger(s.log)
-
+func (s *VPNServer) handleClient(client connection.ServerClient, tunnelHandler tunnels.Handler) {
 	routeCtx, routeCancel := context.WithCancel(s.ctx)
 	defer routeCancel()
 
