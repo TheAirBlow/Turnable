@@ -37,6 +37,7 @@ var (
 	globalIdx     atomic.Uint64
 )
 
+// init initializes clients for all DoH providers
 func init() {
 	for _, p := range dohProviders {
 		for _, ip := range p.ips {
@@ -60,17 +61,20 @@ func newDohClient(dohURL, hostname, pinnedIP string) *dohClient {
 			if err != nil {
 				return nil, err
 			}
+
 			tlsConn := tls.Client(conn, &tls.Config{ServerName: hostname})
 			if err := tlsConn.HandshakeContext(ctx); err != nil {
 				conn.Close()
 				return nil, err
 			}
+
 			return tlsConn, nil
 		},
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 8 * time.Second,
 		IdleConnTimeout:       30 * time.Second,
 	}
+
 	return &dohClient{
 		url:    dohURL,
 		client: &http.Client{Transport: transport, Timeout: 10 * time.Second},
@@ -121,9 +125,11 @@ func parseIPs(msg []byte) ([]net.IP, error) {
 	if len(msg) < 12 {
 		return nil, fmt.Errorf("dns: response too short")
 	}
+
 	if rcode := int(binary.BigEndian.Uint16(msg[2:4])) & 0xF; rcode == 2 {
 		return nil, fmt.Errorf("dns: SERVFAIL")
 	}
+
 	qdcount := int(binary.BigEndian.Uint16(msg[4:6]))
 	ancount := int(binary.BigEndian.Uint16(msg[6:8]))
 
@@ -142,18 +148,23 @@ func parseIPs(msg []byte) ([]net.IP, error) {
 		if off, err = skipName(msg, off); err != nil {
 			return nil, err
 		}
+
 		if off+10 > len(msg) {
 			return nil, fmt.Errorf("dns: record header truncated")
 		}
+
 		rrType := binary.BigEndian.Uint16(msg[off:])
 		off += 8 // TYPE(2) + CLASS(2) + TTL(4)
 		rdlen := int(binary.BigEndian.Uint16(msg[off:]))
 		off += 2
+
 		if off+rdlen > len(msg) {
 			return nil, fmt.Errorf("dns: rdata truncated")
 		}
+
 		rdata := msg[off : off+rdlen]
 		off += rdlen
+
 		switch rrType {
 		case dnsTypeA:
 			if rdlen == 4 {
@@ -179,19 +190,34 @@ func (c *dohClient) query(name string, qtype uint16) ([]net.IP, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
+
 	return parseIPs(data)
 }
 
-// Lookup resolves a hostname to IP addresses using DoH with round-robin and failback
+// Lookup resolves a hostname to IP addresses using native resolver with fallback to DoH
 func Lookup(host string) ([]net.IP, error) {
+	resolver := &net.Resolver{}
+	if ips4, err := resolver.LookupIP(context.Background(), "ip4", host); err == nil && len(ips4) > 0 {
+		if ips6, err := resolver.LookupIP(context.Background(), "ip6", host); err == nil {
+			return append(ips4, ips6...), nil
+		}
+		return ips4, nil
+	}
+
+	if ips6, err := resolver.LookupIP(context.Background(), "ip6", host); err == nil && len(ips6) > 0 {
+		return ips6, nil
+	}
+
 	if len(globalClients) == 0 {
 		return nil, fmt.Errorf("no DoH clients configured")
 	}
+
 	start := int(globalIdx.Add(1)-1) % len(globalClients)
 	var lastErr error
 	for i := 0; i < len(globalClients); i++ {
@@ -201,31 +227,38 @@ func Lookup(host string) ([]net.IP, error) {
 			lastErr = err
 			continue
 		}
+
 		if ips6, err := c.query(host, dnsTypeAAAA); err == nil {
 			ips = append(ips, ips6...)
 		}
+
 		return ips, nil
 	}
+
 	return nil, fmt.Errorf("lookup %q: %w", host, lastErr)
 }
 
-// ResolveUDPAddr resolves addr to a *net.UDPAddr using the DoH resolver for hostname lookup
+// ResolveUDPAddr resolves an address using the global resolver for hostname lookup
 func ResolveUDPAddr(addr string) (*net.UDPAddr, error) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
+
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid port %q: %w", portStr, err)
 	}
+
 	if ip := net.ParseIP(host); ip != nil {
 		return &net.UDPAddr{IP: ip, Port: port}, nil
 	}
+
 	ips, err := Lookup(host)
 	if err != nil {
 		return nil, err
 	}
+
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("no addresses for %s", host)
 	}
@@ -240,16 +273,20 @@ func ResolverDialContext() func(ctx context.Context, network, addr string) (net.
 		if err != nil {
 			return nil, err
 		}
+
 		if net.ParseIP(host) != nil {
 			return dialer.DialContext(ctx, network, addr)
 		}
+
 		ips, err := Lookup(host)
 		if err != nil {
 			return nil, err
 		}
+
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("no addresses for %s", host)
 		}
+
 		var conn net.Conn
 		for _, ip := range ips {
 			conn, err = dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
@@ -257,6 +294,7 @@ func ResolverDialContext() func(ctx context.Context, network, addr string) (net.
 				return conn, nil
 			}
 		}
+
 		return nil, err
 	}
 }

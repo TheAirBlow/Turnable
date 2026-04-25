@@ -175,7 +175,7 @@ func handleConvertClientConfig(req *pb.ConvertClientConfigRequest) (*pb.ConvertC
 		if err != nil {
 			return nil, fmt.Errorf("convert to json: %w", err)
 		}
-		
+
 		return &pb.ConvertClientConfigResponse{Config: out}, nil
 	}
 
