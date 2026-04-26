@@ -330,7 +330,7 @@ func (s *ServerConfig) ToJSON() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		
+
 		if cfg != nil {
 			s.Provider = cfg
 		}
