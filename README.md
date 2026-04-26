@@ -180,20 +180,20 @@ Turnable provides end-to-end encryption, user and route management for your conv
 }
 ```
 
-| Field                              | Description                                         |
-|------------------------------------|-----------------------------------------------------|
-| `routes[].id`                      | Unique route identifier                             |
-| `routes[].address`                 | Destination address to forward traffic to           |
-| `routes[].port`                    | Destination port                                    |
-| `routes[].socket`                  | Socket type (`tcp` / `udp`)                         |
-| `routes[].transport`               | Transport layer - use `kcp` for TCP, `none` for UDP |
-| `routes[].client_prefs.username`   | Username to use in the call                         |
-| `routes[].client_prefs.type`       | Connection type (`relay` / `p2p`)                   |
-| `routes[].client_prefs.encryption` | Encryption mode (`handshake` / `full`)              |
-| `routes[].client_prefs.name`       | Human-readable display name for this route          |
-| `routes[].client_prefs.peers`      | Number of peer connections to establish             |
-| `users[].uuid`                     | Unique user identifier                              |
-| `users[].allowed_routes`           | List of route IDs this user is permitted to access  |
+| Field                              | Description                                                              |
+|------------------------------------|--------------------------------------------------------------------------|
+| `routes[].id`                      | Unique route identifier                                                  |
+| `routes[].address`                 | Destination address to forward traffic to                                |
+| `routes[].port`                    | Destination port                                                         |
+| `routes[].socket`                  | Socket type (`tcp` / `udp`)                                              |
+| `routes[].transport`               | Transport layer - use `kcp` for TCP, `none` for UDP                      |
+| `routes[].client_prefs.username`   | Username to use in the call                                              |
+| `routes[].client_prefs.type`       | Connection type (`relay` / `p2p`)                                        |
+| `routes[].client_prefs.encryption` | Encryption mode (`handshake` / `full`)                                   |
+| `routes[].client_prefs.name`       | Human-readable display name for this route                               |
+| `routes[].client_prefs.peers`      | Number of peer connections to establish                                  |
+| `users[].uuid`                     | Unique user identifier ([generate here](https://www.uuidgenerator.net/)) |
+| `users[].allowed_routes`           | List of route IDs this user is permitted to access                       |
 
 > [!WARNING]
 > Do not share the user UUID willy-nilly, as it is used for authentication!
