@@ -17,7 +17,9 @@ Turnable is a VPN core that tunnels TCP/UDP traffic through [TURN](https://en.wi
 ## How it works
 There are two methods of establishing a tunnel with a remote server that Turnable supports. Both of them allow to establish multiple TCP/UDP connections via multiplexing, with traffic being spread through multiple peer connections to bypass platform ratelimits.
 
-### Relay - tunnel via TURN with an intermediate
+<details>
+<summary>Relay - tunnel via TURN with an intermediate</summary>
+
 The client allocates a relay address on the platform's TURN server, connects to the Turnable server, and from there it forwards traffic to the configured destination. Simple and stable, but is usually heavily throttled and can be detected.
 
 ```mermaid
@@ -40,8 +42,11 @@ sequenceDiagram
         TC-->>App: Forwarded data
     end
 ```
+</details>
 
-### Direct Relay - direct tunnel via TURN
+<details>
+<summary>Direct Relay - direct tunnel via TURN</summary>
+
 The client allocates a relay address on the platform's TURN server and connects to the destination server directly. Does not require a Turnable server. **⚠️ Not recommended and is dangerous to use.**
 
 ```mermaid
@@ -62,7 +67,11 @@ sequenceDiagram
     end
 ```
 
-### P2P - fake screencast via SFU ⚠️ WIP
+</details>
+
+<details>
+<summary>P2P - fake screencast via SFU ⚠️ WIP</summary>
+
 The client and server communicate through the platform's SFU, disguising all traffic as a screencast stream.
 
 ```mermaid
@@ -95,6 +104,8 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 ---
 
 ## Building
@@ -110,12 +121,15 @@ Check out the [ci.yml](https://github.com/TheAirBlow/Turnable/blob/main/.github/
 ---
 
 ## Setup
-### Server
+
+<details>
+<summary>Turnable Server</summary>
+
 Turnable provides end-to-end encryption, user and route management for your convenience. You need a VPS with a public IP and an internet connection, on which you are able to open ports freely. Keep in mind that Turnable is just a tunnel - you still need to set up a VPN/Proxy server. It is recommended that you use [WireGuard](https://www.wireguard.com/quickstart/).
 
 #### 1. Generate a key pair
 ```bash
-./turnable keygen
+./turnable config keygen
 # priv_key=whH/S/GPFJ37zGv8n...
 # pub_key=BWEx0ygunbFJFCrIN...
 ```
@@ -136,6 +150,10 @@ Turnable provides end-to-end encryption, user and route management for your conv
     },
     "p2p": {
         "enabled": false
+    },
+    "provider": {
+        "type": "json",
+        "path": "store.json"
     }
 }
 ```
@@ -151,6 +169,8 @@ Turnable provides end-to-end encryption, user and route management for your conv
 | `relay.public_ip`      | Public IP address of this server                            |
 | `relay.port`           | UDP port for the DTLS/SRTP listener                         |
 | `p2p.enabled`          | P2P mode enabled flag **⚠️ WIP**                            |
+| `provider.type`        | User and Route provider type (`json`/`raw`)                 |
+| `provider.path`        | JSON file path relative to working directory (`json`)       |
 
 #### 3. Write `store.json`
 ```json
@@ -212,7 +232,7 @@ Flags:
 
 #### 5. Generate client config
 ```bash
-./turnable config <route-id> <user-uuid>
+./turnable config generate <route-id> <user-uuid>
 # turnable://uuid:call@vk.com/route?pub_key=...
 ```
 
@@ -225,9 +245,11 @@ Flags:
 
 Produced config URL or JSON is the only thing you need to provide to your users.
 
----
+</details>
 
-### Client
+<details>
+<summary>Turnable Client</summary>
+
 Setting up a Turnable client is almost effortless. On android, its recommended that you use [Termux](https://f-droid.org/en/packages/com.termux/). Keep in mind that Turnable is just a tunnel - you still need to set up a VPN/Proxy client. It is recommended that you use [WireGuard](https://www.wireguard.com/quickstart/).
 
 #### 1. Obtain a client config
@@ -238,7 +260,7 @@ Ask a Turnable server operator for a client config.
 If you would like to, you can directly connect to a remote UDP server if you do not care about stability, fast recovery, muxing, encryption, user management or anything that a Turnable server provides. **⚠️ Not recommended and is dangerous to use.**
 
 ```bash
-./turnable direct-config <platform-id> <call-id> <username> <gateway-addr> -n [peers]
+./turnable config direct <platform-id> <call-id> <username> <gateway-addr> -n [peers]
 # turnable://INSECURE-DIRECT-RELAY:call@vk.com/?username=...&type=direct&...
 ```
 
@@ -259,6 +281,8 @@ You can either specify a path to the JSON file, or the configuration URL.
 
 #### 3. Point your app at the local address
 Configure your proxy/VPN client application to use `127.0.0.1:1080` (or whatever address you chose)
+
+</details>
 
 ---
 
