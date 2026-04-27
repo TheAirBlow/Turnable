@@ -7,15 +7,13 @@ import (
 	"github.com/theairblow/turnable/pkg/config"
 	"github.com/theairblow/turnable/pkg/engine"
 	pb "github.com/theairblow/turnable/pkg/service/proto"
-	"github.com/theairblow/turnable/pkg/tunnels"
 )
 
 // Instance represents a managed Turnable server or client
 type Instance struct {
-	ID       string
-	server   *engine.TurnableServer
-	client   *engine.TurnableClient
-	provider config.Provider
+	ID     string
+	server *engine.TurnableServer
+	client *engine.TurnableClient
 }
 
 // Stop stops the instance
@@ -41,69 +39,18 @@ func (i *Instance) Info() *pb.InstanceInfo {
 	return info
 }
 
-// buildTunnelHandler constructs a tunnel handler from a protobuf config
-func buildTunnelHandler(cfg *pb.TunnelHandlerConfig) (tunnels.Handler, error) {
-	if cfg == nil {
-		return &engine.SocketHandler{}, nil
-	}
-
-	switch cfg.Id {
-	case "socket", "":
-		h := &engine.SocketHandler{}
-		if v := cfg.Args["local_addr"]; v != nil {
-			if sv, ok := v.Value.(*pb.ParamValue_StringVal); ok {
-				h.LocalAddr = sv.StringVal
-			}
-		}
-		return h, nil
-	default:
-		return nil, fmt.Errorf("unknown tunnel handler: %s", cfg.Id)
-	}
-}
-
-// buildProviderConfig constructs a config provider from a ProviderConfig proto message
-func buildProviderConfig(cfg *pb.ProviderConfig) (config.Provider, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("provider config is required")
-	}
-
-	switch cfg.Id {
-	case "json":
-		var data string
-		if v := cfg.Args["data"]; v != nil {
-			if sv, ok := v.Value.(*pb.ParamValue_StringVal); ok {
-				data = sv.StringVal
-			}
-		}
-
-		p, err := config.NewJSONProviderFromJSON(data)
-		if err != nil {
-			return nil, fmt.Errorf("create json provider: %w", err)
-		}
-
-		return p, nil
-	default:
-		return nil, fmt.Errorf("unknown provider type %q", cfg.Id)
-	}
-}
-
 // buildServerInstance returns a TurnableServer and its provider from a StartServerRequest
-func buildServerInstance(req *pb.StartServerRequest) (*engine.TurnableServer, config.Provider, error) {
-	provider, err := buildProviderConfig(req.Provider)
+func buildServerInstance(req *pb.StartServerRequest) (*engine.TurnableServer, error) {
+	cfg, err := config.NewServerConfigFromJSON(req.Config)
 	if err != nil {
-		return nil, nil, err
-	}
-
-	cfg, err := config.NewServerConfigFromJSON(req.Config, provider)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse server config: %w", err)
+		return nil, fmt.Errorf("parse server config: %w", err)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("validate server config: %w", err)
+		return nil, fmt.Errorf("validate server config: %w", err)
 	}
 
-	return engine.NewTurnableServer(*cfg), provider, nil
+	return engine.NewTurnableServer(*cfg), nil
 }
 
 // buildClientInstance returns a TurnableClient from a StartClientRequest
@@ -131,12 +78,7 @@ func parseClientConfig(raw string) (*config.ClientConfig, error) {
 
 // handleValidateServerConfig validates a server config against a provider config
 func handleValidateServerConfig(req *pb.ValidateServerConfigRequest) *pb.ValidateServerConfigResponse {
-	provider, err := buildProviderConfig(req.Provider)
-	if err != nil {
-		return &pb.ValidateServerConfigResponse{Error: err.Error()}
-	}
-
-	cfg, err := config.NewServerConfigFromJSON(req.Config, provider)
+	cfg, err := config.NewServerConfigFromJSON(req.Config)
 	if err != nil {
 		return &pb.ValidateServerConfigResponse{Error: err.Error()}
 	}

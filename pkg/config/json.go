@@ -177,7 +177,7 @@ func (j *JSONProvider) AddUser(user *User) error {
 	return nil
 }
 
-// Close closes the provider connection
-func (j *JSONProvider) Close() error {
+// Stop stops the provider connection
+func (j *JSONProvider) Stop() error {
 	return nil
 }

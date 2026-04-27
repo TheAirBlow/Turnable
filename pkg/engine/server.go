@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 
@@ -58,13 +59,15 @@ func (s *TurnableServer) Start() error {
 	socket := SocketHandler{}
 	socket.SetLogger(s.log)
 
+	if err := s.Config.UpdateProvider(); err != nil {
+		return fmt.Errorf("failed to update provider: %w", err)
+	}
+
 	if s.Config.P2P.Enabled {
 		return errors.New("P2P mode is not supported")
 	}
 
 	if s.Config.Relay.Enabled {
-		s.log.Info("starting turnable server relay handler")
-
 		connHandler, err := connection.GetHandler("relay")
 		if err != nil {
 			s.log.Error("failed to get relay handler", "error", err)
@@ -98,7 +101,6 @@ func (s *TurnableServer) Stop() error {
 		return errors.New("not running")
 	}
 
-	s.log.Info("stopping turnable server", "handlers", len(s.handlers))
 	s.cancel()
 
 	var err error
@@ -106,13 +108,7 @@ func (s *TurnableServer) Stop() error {
 		err = errors.Join(err, handler.Stop())
 	}
 
-	if err != nil {
-		s.log.Warn("turnable server stopped with errors", "error", err)
-	} else {
-		s.log.Info("turnable server stopped")
-	}
-
-	return err
+	return errors.Join(err, s.Config.StopProvider())
 }
 
 // acceptClients accepts authenticated clients and handles them

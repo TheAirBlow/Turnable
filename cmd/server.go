@@ -59,10 +59,13 @@ func serverMain(opts *serverOptions) error {
 		return fmt.Errorf("failed to validate server cfg: %w", err)
 	}
 
+	slog.Info("starting turnable server")
 	server := engine.NewTurnableServer(*cfg)
 	if err := server.Start(); err != nil {
 		return fmt.Errorf("failed to start VPN server: %w", err)
 	}
+
+	slog.Info("turnable server started")
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -76,6 +79,7 @@ func serverMain(opts *serverOptions) error {
 		os.Exit(130)
 	}()
 
+	slog.Info("stopping turnable server")
 	if err := server.Stop(); err != nil {
 		return fmt.Errorf("failed to stop VPN server: %w", err)
 	}

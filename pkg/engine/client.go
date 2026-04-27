@@ -59,8 +59,6 @@ func (c *TurnableClient) Start(listenAddr string) error {
 	socket := SocketHandler{}
 	socket.SetLogger(c.log)
 
-	c.log.Info("starting turnable client", "connection_type", c.Config.Type)
-
 	connHandler, err := connection.GetHandler(c.Config.Type)
 	if err != nil {
 		return fmt.Errorf("get connection handler: %w", err)
@@ -83,7 +81,6 @@ func (c *TurnableClient) Start(listenAddr string) error {
 
 	go c.acceptClients(acceptCh)
 
-	c.log.Info("turnable client started", "connection_type", c.Config.Type)
 	success = true
 	return nil
 }
@@ -99,18 +96,11 @@ func (c *TurnableClient) Stop() error {
 		return errors.New("not running")
 	}
 
-	c.log.Info("stopping turnable client")
 	c.cancel()
 
 	var err error
 	if c.handler != nil {
 		err = c.handler.Disconnect()
-	}
-
-	if err != nil {
-		c.log.Warn("turnable client stopped with errors", "error", err)
-	} else {
-		c.log.Info("turnable client stopped")
 	}
 
 	return err

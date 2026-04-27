@@ -16,7 +16,7 @@ type Provider interface {
 	AddRoute(route *Route) error         // Adds or updates a route
 	AddUser(user *User) error            // Adds or updates a user
 	GetAllRoutes() []Route               // Fetches all available routes
-	Close() error                        // Closes the provider connection
+	Stop() error                         // Stops the provider connection
 }
 
 // Providers represents a Provider registry

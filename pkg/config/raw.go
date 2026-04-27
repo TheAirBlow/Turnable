@@ -161,7 +161,7 @@ func (j *RawProvider) AddUser(user *User) error {
 	return nil
 }
 
-// Close closes the provider connection
-func (j *RawProvider) Close() error {
+// Stop stops the provider connection
+func (j *RawProvider) Stop() error {
 	return nil
 }

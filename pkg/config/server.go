@@ -94,17 +94,17 @@ func NewServerConfigFromJSON(baseJSON string) (*ServerConfig, error) {
 	return &s, nil
 }
 
-// RefreshProvider refreshes current provider
-func (s *ServerConfig) RefreshProvider() error {
+// ReplaceProvider replaces current provider in case it successfully initializes
+func (s *ServerConfig) ReplaceProvider(cfgRaw json.RawMessage) error {
 	if s.provider != nil {
-		err := s.provider.Close()
+		err := s.provider.Stop()
 		if err != nil {
 			slog.Warn("failed to close provider connection: %v", err)
 		}
 	}
 
 	var cfg ProviderConfig
-	if err := json.Unmarshal(s.Provider, &cfg); err != nil {
+	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
 		return fmt.Errorf("failed to parse provider config: %w", err)
 	}
 
@@ -113,12 +113,23 @@ func (s *ServerConfig) RefreshProvider() error {
 		return fmt.Errorf("provider does not exist: %s", cfg.Type)
 	}
 
-	if err := provider.Update(s.Provider); err != nil {
+	if err := s.provider.Update(s.Provider); err != nil {
 		return fmt.Errorf("failed to update provider config: %w", err)
 	}
 
+	s.Provider = cfgRaw
 	s.provider = provider
 	return nil
+}
+
+// UpdateProvider initializes or updates provider configuration
+func (s *ServerConfig) UpdateProvider() error {
+	return s.ReplaceProvider(s.Provider)
+}
+
+// StopProvider stops the current provider connection
+func (s *ServerConfig) StopProvider() error {
+	return s.provider.Stop()
 }
 
 // Validate validates the ServerConfig
@@ -285,7 +296,7 @@ func (s *ServerConfig) GetClientConfig(user *User, route *Route) (*ClientConfig,
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("generated client config is invalid: %w", err)
+		return nil, err
 	}
 
 	return cfg, nil
@@ -319,12 +330,7 @@ func (s *ServerConfig) GetAllRoutes() []Route {
 }
 
 // ToJSON serializes this ServerConfig to a JSON file
-func (s *ServerConfig) ToJSON() (string, error) {
-	b, err := json.Marshal(s)
-	if err != nil {
-		return "", err
-	}
-
+func (s *ServerConfig) ToJSON(indented bool) (string, error) {
 	if s.provider != nil {
 		cfg, err := s.provider.ToJSON()
 		if err != nil {
@@ -334,6 +340,19 @@ func (s *ServerConfig) ToJSON() (string, error) {
 		if cfg != nil {
 			s.Provider = cfg
 		}
+	}
+
+	var b []byte
+	var err error
+
+	if indented {
+		b, err = json.MarshalIndent(s, "", "    ")
+	} else {
+		b, err = json.Marshal(s)
+	}
+
+	if err != nil {
+		return "", err
 	}
 
 	return string(b), nil

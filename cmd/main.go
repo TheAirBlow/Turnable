@@ -26,6 +26,7 @@ func main() {
 	root.AddCommand(newServerCommand())
 	root.AddCommand(newClientCommand())
 	root.AddCommand(newConfigCommand())
+	root.AddCommand(newServiceCommand())
 
 	if err := root.Execute(); err != nil {
 		slog.Error(err.Error())

@@ -4,28 +4,6 @@ package turnable.service.v1;
 
 option go_package = "github.com/theairblow/turnable/pkg/service/proto;servicepb";
 
-// ParamValue holds a typed tunnel handler parameter value
-message ParamValue {
-  oneof value {
-    string string_val = 1;
-    int64  int_val    = 2;
-    bool   bool_val   = 3;
-    double double_val = 4;
-  }
-}
-
-// TunnelHandlerConfig represents a tunnel handler and its config
-message TunnelHandlerConfig {
-  string id = 1;
-  map<string, ParamValue> args = 2;
-}
-
-// ProviderConfig represents a config provider and its config
-message ProviderConfig {
-  string id = 1;
-  map<string, ParamValue> args = 2;
-}
-
 // InstanceType identifies whether a managed instance is a server or client
 enum InstanceType {
   INSTANCE_TYPE_UNSPECIFIED = 0;
@@ -71,8 +49,6 @@ message ClientHello {
 // StartServerRequest starts a new Turnable server instance
 message StartServerRequest {
   string config = 1;
-  ProviderConfig provider = 2;
-  TunnelHandlerConfig tunnel = 3;
 }
 
 // StartServerResponse carries the new server instance ID or an error
@@ -84,7 +60,7 @@ message StartServerResponse {
 // StartClientRequest starts a new Turnable client instance
 message StartClientRequest {
   string config = 1;
-  TunnelHandlerConfig tunnel = 2;
+  string listenAddr = 2;
 }
 
 // StartClientResponse carries the new client instance ID or an error
@@ -106,7 +82,7 @@ message StopInstanceResponse {
 // UpdateProviderRequest updates config provider data for a running server
 message UpdateProviderRequest {
   string instance_id = 1;
-  ProviderConfig provider = 2;
+  string provider_config = 2;
 }
 
 // UpdateProviderResponse is sent in reply to UpdateProviderRequest
@@ -123,7 +99,6 @@ message ListInstancesResponse {
 // ValidateServerConfigRequest validates a server config
 message ValidateServerConfigRequest {
   string config = 1;
-  ProviderConfig provider = 2;
 }
 
 // ValidateServerConfigResponse reports whether the server config is valid

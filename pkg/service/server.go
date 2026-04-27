@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/theairblow/turnable/pkg/common"
@@ -16,11 +17,14 @@ import (
 
 // Server manages Turnable server or client instances and exposes management via a custom protocol
 type Server struct {
+	running   atomic.Bool
 	mu        sync.RWMutex
 	instances map[string]*Instance
 
-	log         *slog.Logger
-	relay       *LogRelayHandler
+	log   *slog.Logger
+	relay *LogRelayHandler
+
+	cfg         config.ServiceConfig
 	keyPair     *KeyPair
 	allowedKeys [][]byte
 
@@ -29,21 +33,22 @@ type Server struct {
 }
 
 // NewServer creates a new Server instance
-func NewServer(serverPubB64, serverPrivB64 string, allowedClientKeysB64 ...string) (*Server, error) {
+func NewServer(cfg *config.ServiceConfig) (*Server, error) {
 	var kp *KeyPair
-	if serverPubB64 != "" || serverPrivB64 != "" {
+	if cfg.PubKey != "" || cfg.PrivKey != "" {
 		var err error
-		kp, err = NewKeyPair(serverPubB64, serverPrivB64)
+		kp, err = NewKeyPair(cfg.PubKey, cfg.PrivKey)
 		if err != nil {
 			return nil, fmt.Errorf("parse server keypair: %w", err)
 		}
 	}
-	if len(allowedClientKeysB64) > 0 && kp == nil {
+
+	if len(cfg.AllowedKeys) > 0 && kp == nil {
 		return nil, errors.New("allowed client keys require a server keypair")
 	}
 
-	allowedKeys := make([][]byte, 0, len(allowedClientKeysB64))
-	for _, k := range allowedClientKeysB64 {
+	allowedKeys := make([][]byte, 0, len(cfg.AllowedKeys))
+	for _, k := range cfg.AllowedKeys {
 		b, err := base64.StdEncoding.DecodeString(k)
 		if err != nil {
 			return nil, fmt.Errorf("decode allowed client key: %w", err)
@@ -53,17 +58,51 @@ func NewServer(serverPubB64, serverPrivB64 string, allowedClientKeysB64 ...strin
 
 	relay := newLogRelayHandler(slog.Default().Handler())
 	common.SetLogHandler(relay)
+
 	return &Server{
 		instances:   make(map[string]*Instance),
 		log:         slog.Default(),
 		relay:       relay,
 		keyPair:     kp,
 		allowedKeys: allowedKeys,
+		cfg:         *cfg,
 	}, nil
 }
 
-// ListenTCP accepts service connections on the given TCP address
-func (s *Server) ListenTCP(addr string) error {
+// Start starts the service server
+func (s *Server) Start() error {
+	if !s.running.CompareAndSwap(false, true) {
+		return errors.New("already running")
+	}
+
+	success := false
+	defer func() {
+		if !success {
+			s.running.Store(false)
+		}
+	}()
+
+	if s.cfg.ListenAddr != "" {
+		err := s.listenTCP(s.cfg.ListenAddr)
+		if err != nil {
+			return err
+		}
+	}
+
+	if s.cfg.UnixSocket != "" {
+		err := s.listenUnix(s.cfg.UnixSocket)
+		if err != nil {
+			_ = s.Stop()
+			return err
+		}
+	}
+
+	success = true
+	return nil
+}
+
+// listenTCP accepts service connections on the given TCP address
+func (s *Server) listenTCP(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen tcp: %w", err)
@@ -76,8 +115,8 @@ func (s *Server) ListenTCP(addr string) error {
 	return nil
 }
 
-// ListenUnix accepts service connections on the given Unix socket path
-func (s *Server) ListenUnix(path string) error {
+// listenUnix accepts service connections on the given Unix socket path
+func (s *Server) listenUnix(path string) error {
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return fmt.Errorf("listen unix: %w", err)
@@ -90,12 +129,22 @@ func (s *Server) ListenUnix(path string) error {
 	return nil
 }
 
+// IsRunning returns whether the service server is currently running
+func (s *Server) IsRunning() bool {
+	return s.running.Load()
+}
+
 // Stop closes all listeners and stops all managed instances
-func (s *Server) Stop() {
+func (s *Server) Stop() error {
+	if !s.running.CompareAndSwap(true, false) {
+		return errors.New("not running")
+	}
+
 	s.listenersMu.Lock()
 	for _, ln := range s.listeners {
 		_ = ln.Close()
 	}
+
 	s.listeners = nil
 	s.listenersMu.Unlock()
 
@@ -104,6 +153,8 @@ func (s *Server) Stop() {
 	for _, inst := range s.instances {
 		_ = inst.Stop()
 	}
+
+	return nil
 }
 
 // accept accepts incoming connections from a listener and serves each one
@@ -120,24 +171,19 @@ func (s *Server) accept(ln net.Listener) {
 
 // startServer creates and starts a Turnable server instance
 func (s *Server) startServer(req *pb.StartServerRequest) (string, error) {
-	srv, provider, err := buildServerInstance(req)
-	if err != nil {
-		return "", err
-	}
-
-	tunnel, err := buildTunnelHandler(req.Tunnel)
+	srv, err := buildServerInstance(req)
 	if err != nil {
 		return "", err
 	}
 
 	id := uuid.New().String()
 	srv.SetLogger(s.log.With("server_id", id))
-	if err := srv.Start(tunnel); err != nil {
+	if err := srv.Start(); err != nil {
 		return "", fmt.Errorf("start server: %w", err)
 	}
 
 	s.mu.Lock()
-	s.instances[id] = &Instance{ID: id, server: srv, provider: provider}
+	s.instances[id] = &Instance{ID: id, server: srv}
 	s.mu.Unlock()
 	return id, nil
 }
@@ -149,14 +195,9 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 		return "", err
 	}
 
-	tunnel, err := buildTunnelHandler(req.Tunnel)
-	if err != nil {
-		return "", err
-	}
-
 	id := uuid.New().String()
 	cli.SetLogger(s.log.With("client_id", id))
-	if err := cli.Start(tunnel); err != nil {
+	if err := cli.Start(req.ListenAddr); err != nil {
 		return "", fmt.Errorf("start client: %w", err)
 	}
 
@@ -180,7 +221,7 @@ func (s *Server) stopInstance(id string) error {
 }
 
 // updateProvider updates config provider for an instance
-func (s *Server) updateProvider(id string, cfg *pb.ProviderConfig) error {
+func (s *Server) updateProvider(id string, cfg string) error {
 	s.mu.RLock()
 	inst, ok := s.instances[id]
 	s.mu.RUnlock()
@@ -188,21 +229,7 @@ func (s *Server) updateProvider(id string, cfg *pb.ProviderConfig) error {
 		return fmt.Errorf("instance %q not found", id)
 	}
 
-	var data string
-	if cfg != nil {
-		if v := cfg.Args["data"]; v != nil {
-			if sv, ok := v.Value.(*pb.ParamValue_StringVal); ok {
-				data = sv.StringVal
-			}
-		}
-	}
-
-	switch p := inst.provider.(type) {
-	case *config.RawProvider:
-		return p.UpdateFromJSON(data)
-	default:
-		return fmt.Errorf("current config provider does not support updating")
-	}
+	return inst.server.Config.ReplaceProvider([]byte(cfg))
 }
 
 // listInstances returns info for all managed instances
@@ -320,7 +347,7 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 
 		return &pb.Response{Payload: &pb.Response_StopInstance{StopInstance: resp}}, nil
 	case *pb.Request_UpdateProvider:
-		if err := c.svc.updateProvider(p.UpdateProvider.InstanceId, p.UpdateProvider.Provider); err != nil {
+		if err := c.svc.updateProvider(p.UpdateProvider.InstanceId, p.UpdateProvider.ProviderConfig); err != nil {
 			return nil, err
 		}
 

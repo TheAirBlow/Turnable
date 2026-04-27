@@ -63,13 +63,11 @@ func (c *Client) sendRequest(req *pb.Request) (*pb.Response, error) {
 }
 
 // StartServer requests a new server instance
-func (c *Client) StartServer(config string, provider *pb.ProviderConfig, tunnel *pb.TunnelHandlerConfig) (string, error) {
+func (c *Client) StartServer(config string) (string, error) {
 	req := &pb.Request{
 		Payload: &pb.Request_StartServer{
 			StartServer: &pb.StartServerRequest{
-				Config:   config,
-				Provider: provider,
-				Tunnel:   tunnel,
+				Config: config,
 			},
 		},
 	}
@@ -90,12 +88,12 @@ func (c *Client) StartServer(config string, provider *pb.ProviderConfig, tunnel 
 }
 
 // StartClient requests a new client instance
-func (c *Client) StartClient(config string, tunnel *pb.TunnelHandlerConfig) (string, error) {
+func (c *Client) StartClient(config string, listenAddr string) (string, error) {
 	req := &pb.Request{
 		Payload: &pb.Request_StartClient{
 			StartClient: &pb.StartClientRequest{
-				Config: config,
-				Tunnel: tunnel,
+				Config:     config,
+				ListenAddr: listenAddr,
 			},
 		},
 	}
@@ -141,12 +139,12 @@ func (c *Client) StopInstance(instanceID string) error {
 }
 
 // UpdateProvider requests to update a provider config
-func (c *Client) UpdateProvider(instanceID string, provider *pb.ProviderConfig) error {
+func (c *Client) UpdateProvider(instanceID string, cfg string) error {
 	req := &pb.Request{
 		Payload: &pb.Request_UpdateProvider{
 			UpdateProvider: &pb.UpdateProviderRequest{
-				InstanceId: instanceID,
-				Provider:   provider,
+				InstanceId:     instanceID,
+				ProviderConfig: cfg,
 			},
 		},
 	}
@@ -184,12 +182,11 @@ func (c *Client) ListInstances() ([]*pb.InstanceInfo, error) {
 }
 
 // ValidateServerConfig requests server config validation
-func (c *Client) ValidateServerConfig(config string, provider *pb.ProviderConfig) (bool, error) {
+func (c *Client) ValidateServerConfig(config string) (bool, error) {
 	req := &pb.Request{
 		Payload: &pb.Request_ValidateServerConfig{
 			ValidateServerConfig: &pb.ValidateServerConfigRequest{
-				Config:   config,
-				Provider: provider,
+				Config: config,
 			},
 		},
 	}
