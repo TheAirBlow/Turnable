@@ -69,6 +69,15 @@ func NewServer(cfg *config.ServiceConfig) (*Server, error) {
 	}, nil
 }
 
+// SetLogger changes the slog logger instance
+func (s *Server) SetLogger(log *slog.Logger) {
+	if log == nil {
+		log = slog.Default()
+	}
+
+	s.log = log
+}
+
 // Start starts the service server
 func (s *Server) Start() error {
 	if !s.running.CompareAndSwap(false, true) {
@@ -247,6 +256,7 @@ func (s *Server) listInstances() []*pb.InstanceInfo {
 type clientConn struct {
 	svc     *Server
 	nc      net.Conn
+	remote  net.Addr
 	writeCh chan *pb.Response
 }
 
@@ -255,23 +265,32 @@ func newClientConn(svc *Server, nc net.Conn) *clientConn {
 	return &clientConn{
 		svc:     svc,
 		nc:      nc,
+		remote:  nc.RemoteAddr(),
 		writeCh: make(chan *pb.Response, 64),
 	}
 }
 
 // serve performs the handshake, subscribes to logs, then runs the IO loops
 func (c *clientConn) serve() {
-	defer c.svc.relay.broadcast.unsubscribe(c)
 	defer c.nc.Close()
 
-	wrapped, err := serverHandshake(c.nc, c.svc.keyPair, c.svc.allowedKeys)
+	c.svc.log.Debug("client initiating handshake", "remote", c.remote)
+
+	wrapped, pubKey, err := serverHandshake(c.nc, c.svc.keyPair, c.svc.allowedKeys)
 	if err != nil {
-		c.svc.log.Warn("service handshake failed", "remote", c.nc.RemoteAddr(), "error", err)
+		c.svc.log.Warn("service handshake failed", "remote", c.remote, "error", err)
 		return
 	}
 	c.nc = wrapped
-	c.svc.relay.broadcast.subscribe(c)
 
+	pubKeyB64 := base64.StdEncoding.EncodeToString(pubKey)
+	c.svc.log.Info("client connected", "remote", c.remote, "pubkey", pubKeyB64)
+	defer func() {
+		c.svc.relay.broadcast.unsubscribe(c)
+		c.svc.log.Info("client disconnected", "remote", c.remote, "pubkey", pubKeyB64)
+	}()
+
+	c.svc.relay.broadcast.subscribe(c)
 	go c.writeLoop()
 	c.readLoop()
 }
@@ -327,7 +346,10 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 		id, err := c.svc.startServer(p.StartServer)
 		resp := &pb.StartServerResponse{InstanceId: id}
 		if err != nil {
+			c.svc.log.Warn("failed to start server instance", "remote", c.remote, "error", err)
 			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("started server instance", "remote", c.remote, "id", id)
 		}
 
 		return &pb.Response{Payload: &pb.Response_StartServer{StartServer: resp}}, nil
@@ -335,32 +357,43 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 		id, err := c.svc.startClient(p.StartClient)
 		resp := &pb.StartClientResponse{InstanceId: id}
 		if err != nil {
+			c.svc.log.Warn("failed to start client instance", "remote", c.remote, "error", err)
 			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("started client instance", "remote", c.remote, "id", id)
 		}
 
 		return &pb.Response{Payload: &pb.Response_StartClient{StartClient: resp}}, nil
 	case *pb.Request_StopInstance:
 		resp := &pb.StopInstanceResponse{}
 		if err := c.svc.stopInstance(p.StopInstance.InstanceId); err != nil {
+			c.svc.log.Warn("failed to stop instance", "remote", c.remote, "id", p.StopInstance.InstanceId, "error", err)
 			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("stopped instance", "remote", c.remote, "id", p.StopInstance.InstanceId)
 		}
 
 		return &pb.Response{Payload: &pb.Response_StopInstance{StopInstance: resp}}, nil
 	case *pb.Request_UpdateProvider:
 		if err := c.svc.updateProvider(p.UpdateProvider.InstanceId, p.UpdateProvider.ProviderConfig); err != nil {
+			c.svc.log.Warn("failed to update provider", "remote", c.remote, "id", p.UpdateProvider.InstanceId, "error", err)
 			return nil, err
 		}
 
+		c.svc.log.Info("updated provider", "remote", c.remote, "id", p.UpdateProvider.InstanceId)
 		return &pb.Response{Payload: &pb.Response_UpdateProvider{UpdateProvider: &pb.UpdateProviderResponse{}}}, nil
 	case *pb.Request_ListInstances:
+		c.svc.log.Debug("listed instances", "remote", c.remote)
 		return &pb.Response{Payload: &pb.Response_ListInstances{ListInstances: &pb.ListInstancesResponse{
 			Instances: c.svc.listInstances(),
 		}}}, nil
 	case *pb.Request_ValidateServerConfig:
+		c.svc.log.Debug("validated server config", "remote", c.remote)
 		return &pb.Response{Payload: &pb.Response_ValidateServerConfig{
 			ValidateServerConfig: handleValidateServerConfig(p.ValidateServerConfig),
 		}}, nil
 	case *pb.Request_ValidateClientConfig:
+		c.svc.log.Debug("validated client config", "remote", c.remote)
 		return &pb.Response{Payload: &pb.Response_ValidateClientConfig{
 			ValidateClientConfig: handleValidateClientConfig(p.ValidateClientConfig),
 		}}, nil
@@ -370,6 +403,7 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 			return nil, err
 		}
 
+		c.svc.log.Debug("converted client config", "remote", c.remote)
 		return &pb.Response{Payload: &pb.Response_ConvertClientConfig{ConvertClientConfig: resp}}, nil
 	default:
 		return nil, fmt.Errorf("unknown request type")

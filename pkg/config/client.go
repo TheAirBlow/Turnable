@@ -35,7 +35,6 @@ type ClientConfig struct {
 	Proto     string `json:"proto,omitempty"`     // [-] Protocol to use
 	Cloak     string `json:"cloak,omitempty"`     // [-] Cloak method to use
 	Transport string `json:"transport,omitempty"` // [-] Transport protocol to use
-	Conn      string `json:"conn,omitempty"`      // [-] Connection type (optional)
 
 	PubKey     string `json:"pub_key,omitempty"`    // [-] Public key of the server
 	Encryption string `json:"encryption,omitempty"` // Encryption mode
@@ -163,7 +162,6 @@ func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 		Cloak:      "none",
 		Transport:  "none",
 		Proto:      "dtls",
-		Conn:       "unknown",
 		Peers:      1,
 	}
 
@@ -197,9 +195,6 @@ func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 	}
 	if v := q.Get("transport"); v != "" {
 		cfg.Transport = v
-	}
-	if v := q.Get("conn"); v != "" {
-		cfg.Conn = v
 	}
 	if v := q.Get("name"); v != "" {
 		cfg.Name = v
@@ -277,9 +272,6 @@ func (c *ClientConfig) ToURL() string {
 	}
 	if !common.IsNullOrWhiteSpace(c.Cloak) {
 		params = append(params, queryParam{key: "cloak", value: c.Cloak})
-	}
-	if !common.IsNullOrWhiteSpace(c.Conn) {
-		params = append(params, queryParam{key: "conn", value: c.Conn})
 	}
 	if !common.IsNullOrWhiteSpace(c.Name) {
 		params = append(params, queryParam{key: "name", value: c.Name})

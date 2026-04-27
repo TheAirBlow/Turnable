@@ -48,8 +48,8 @@ func readFramed(nc net.Conn, msg proto.Message) error {
 	return proto.Unmarshal(data, msg)
 }
 
-// serverHandshake sends ServerHello and negotiates encryption, returns wrapped conn
-func serverHandshake(nc net.Conn, kp *KeyPair, allowedKeys [][]byte) (net.Conn, error) {
+// serverHandshake sends ServerHello and negotiates encryption, returns wrapped conn and client public key
+func serverHandshake(nc net.Conn, kp *KeyPair, allowedKeys [][]byte) (net.Conn, []byte, error) {
 	hello := &pb.ServerHello{
 		Magic:        "TSVC",
 		Version:      serviceVersion,
@@ -60,15 +60,15 @@ func serverHandshake(nc net.Conn, kp *KeyPair, allowedKeys [][]byte) (net.Conn, 
 	}
 
 	if err := writeFramed(nc, hello); err != nil {
-		return nil, fmt.Errorf("write server hello: %w", err)
+		return nil, nil, fmt.Errorf("write server hello: %w", err)
 	}
 	if kp == nil {
-		return nc, nil
+		return nc, nil, nil
 	}
 
 	var clientHello pb.ClientHello
 	if err := readFramed(nc, &clientHello); err != nil {
-		return nil, fmt.Errorf("read client hello: %w", err)
+		return nil, nil, fmt.Errorf("read client hello: %w", err)
 	}
 
 	if len(allowedKeys) > 0 {
@@ -89,17 +89,17 @@ func serverHandshake(nc net.Conn, kp *KeyPair, allowedKeys [][]byte) (net.Conn, 
 			}
 		}
 		if !allowed {
-			return nil, fmt.Errorf("client public key not in allowlist")
+			return nil, nil, fmt.Errorf("client public key not in allowlist")
 		}
 	}
 
 	sharedKey, err := kp.privKey.Decapsulate(clientHello.Ciphertext)
 	if err != nil {
-		return nil, fmt.Errorf("decapsulate: %w", err)
+		return nil, nil, fmt.Errorf("decapsulate: %w", err)
 	}
 
 	encLayer := newServiceEncLayer(sharedKey, false)
-	return newEncryptedConn(nc, encLayer), nil
+	return newEncryptedConn(nc, encLayer), clientHello.PublicKey, nil
 }
 
 // clientHandshake reads ServerHello and negotiates encryption, returns wrapped conn

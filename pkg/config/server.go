@@ -273,7 +273,6 @@ func (s *ServerConfig) GetClientConfig(user *User, route *Route) (*ClientConfig,
 		// From Route Identity
 		RouteID: route.ID,
 		Socket:  route.Socket,
-		Conn:    route.Conn,
 
 		// From Client Prefs
 		Type:       p.Type,

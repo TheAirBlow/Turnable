@@ -8,10 +8,28 @@ import (
 	pb "github.com/theairblow/turnable/pkg/service/proto"
 )
 
+// EventKind represents a service client event type
+type EventKind int
+
+const (
+	EventLog          EventKind = iota // server emitted a log record
+	EventDisconnected                  // connection was lost or closed
+)
+
+// Event is emitted by the client read loop to signal logs or disconnects
+type Event struct {
+	Kind EventKind
+	Log  *pb.LogRecord
+	Err  error
+}
+
 // Client communicates with a Turnable service server over a custom protocol
 type Client struct {
-	conn net.Conn
-	mu   sync.Mutex
+	conn    net.Conn
+	writeMu sync.Mutex
+	respCh  chan *pb.Response
+	eventCh chan Event
+	done    chan struct{}
 }
 
 // NewClient connects to a remote Turnable service server
@@ -23,7 +41,6 @@ func NewClient(network, addr string, clientPrivB64, clientPubB64 string) (*Clien
 
 	var kp *KeyPair
 	if clientPrivB64 != "" || clientPubB64 != "" {
-		var err error
 		kp, err = NewKeyPair(clientPubB64, clientPrivB64)
 		if err != nil {
 			_ = nc.Close()
@@ -37,7 +54,14 @@ func NewClient(network, addr string, clientPrivB64, clientPubB64 string) (*Clien
 		return nil, err
 	}
 
-	return &Client{conn: wrapped}, nil
+	c := &Client{
+		conn:    wrapped,
+		respCh:  make(chan *pb.Response, 1),
+		eventCh: make(chan Event, 256),
+		done:    make(chan struct{}),
+	}
+	go c.readLoop()
+	return c, nil
 }
 
 // Close closes the client connection
@@ -45,21 +69,59 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// sendRequest sends a proto request and blocks for response
-func (c *Client) sendRequest(req *pb.Request) (*pb.Response, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// WatchEvents returns a channel that receives events from the server
+func (c *Client) WatchEvents() <-chan Event {
+	return c.eventCh
+}
 
-	if err := writeFramed(c.conn, req); err != nil {
+// readLoop demuxes incoming frames into responses and logs/errors
+func (c *Client) readLoop() {
+	defer close(c.done)
+	for {
+		var resp pb.Response
+		if err := readFramed(c.conn, &resp); err != nil {
+			select {
+			case c.eventCh <- Event{Kind: EventDisconnected, Err: err}:
+			default:
+			}
+			close(c.eventCh)
+			return
+		}
+
+		switch {
+		case resp.GetLogRecord() != nil:
+			select {
+			case c.eventCh <- Event{Kind: EventLog, Log: resp.GetLogRecord()}:
+			default:
+			}
+		case resp.GetError() != nil:
+			select {
+			case c.eventCh <- Event{Kind: EventDisconnected, Err: fmt.Errorf("%s", resp.GetError().Message)}:
+			default:
+			}
+			close(c.eventCh)
+			return
+		default:
+			c.respCh <- &resp
+		}
+	}
+}
+
+// sendRequest sends a proto request and waits for a response via the read loop
+func (c *Client) sendRequest(req *pb.Request) (*pb.Response, error) {
+	c.writeMu.Lock()
+	err := writeFramed(c.conn, req)
+	c.writeMu.Unlock()
+	if err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	var resp pb.Response
-	if err := readFramed(c.conn, &resp); err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+	select {
+	case resp := <-c.respCh:
+		return resp, nil
+	case <-c.done:
+		return nil, fmt.Errorf("connection closed")
 	}
-
-	return &resp, nil
 }
 
 // StartServer requests a new server instance
