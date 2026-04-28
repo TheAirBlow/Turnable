@@ -57,4 +57,4 @@ EOF
 
 chmod +x update.sh
 
-echo "Client successfully installed!"
+echo "Client successfully installed!"[]

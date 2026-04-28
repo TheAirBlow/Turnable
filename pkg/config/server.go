@@ -113,7 +113,7 @@ func (s *ServerConfig) ReplaceProvider(cfgRaw json.RawMessage) error {
 		return fmt.Errorf("provider does not exist: %s", cfg.Type)
 	}
 
-	if err := s.provider.Update(s.Provider); err != nil {
+	if err := provider.Update(cfgRaw); err != nil {
 		return fmt.Errorf("failed to update provider config: %w", err)
 	}
 
