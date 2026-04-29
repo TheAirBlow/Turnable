@@ -1,0 +1,63 @@
+name: "Запрос функции / Помощь"
+description: Предложить новую функцию, улучшение или обратиться за помощью с настройкой и использованием.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Есть идея или нужна помощь? Заполните форму ниже!
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Тип запроса
+      options:
+        - Новая функция
+        - Улучшение существующей функции
+        - Помощь / вопрос по использованию
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Компонент
+      description: Какой части Turnable это касается?
+      options:
+        - Клиент
+        - Сервер
+        - Режим Relay
+        - Режим P2P
+        - Конфигурация / CLI
+        - Документация
+        - Другое
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Проблема
+      description: Какую проблему вы пытаетесь решить, или с чем столкнулись?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Предлагаемое решение
+      description: Опишите желаемую функцию или изменение, или то, с чем вам нужна помощь.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Рассмотренные альтернативы
+      description: Какие другие подходы вы обдумывали или пробовали?
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Дополнительный контекст
+      description: Всё остальное - скриншоты, ссылки, связанные issues и т.д.

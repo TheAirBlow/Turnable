@@ -1,0 +1,93 @@
+name: "Bug Report"
+description: Report a bug or unexpected behavior in Turnable.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the sections below as thoroughly as possible.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Turnable is affected?
+      options:
+        - Client
+        - Server
+        - Relay mode
+        - P2P mode
+        - Config / CLI
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Linux
+        - Windows
+        - macOS
+        - Android
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Turnable Version
+      description: Binary version or commit SHA.
+      placeholder: "e.g. v1.2.3 or abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Step-by-step instructions to reproduce the issue.
+      placeholder: |
+        1. Run `./turnable ...`
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste any relevant logs here (use `--verbose` flag). Sensitive info will be redacted by maintainers.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional Context
+      description: Anything else that might be relevant (config snippets, network setup, etc). **Do not paste your user UUIDs or private keys.**

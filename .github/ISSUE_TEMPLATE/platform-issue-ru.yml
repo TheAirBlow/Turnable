@@ -1,0 +1,70 @@
+name: "Проблема с платформой"
+description: Сообщить о проблеме или поломке, специфичной для модуля платформы (например, ВКонтакте)
+labels: ["platform"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Используйте этот шаблон для проблем, связанных с конкретной платформой (например, авторизация VK, сбои при подключении к звонку)
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Платформа
+      description: Какая платформа затронута?
+      options:
+        - vk.com
+        - Другая / Неизвестно
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Режим подключения
+      options:
+        - Режим Relay
+        - Режим P2P
+        - Все / Неизвестно
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия Turnable
+      description: Версия бинарника или commit SHA.
+      placeholder: "например, v1.2.3 или abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Описание проблемы
+      description: Опишите, что сломано или ведёт себя неожиданно на этой платформе.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Шаги для воспроизведения
+      placeholder: |
+        1. Запустить `./turnable client ...`
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи
+      description: Вставьте соответствующие логи (используйте `--verbose`). Чувствительная информация будет скрыта мейнтейнерами.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Дополнительный контекст
+      description: Сообщения об ошибках API, логи HTTP, объявления платформы об изменениях API и т.д.

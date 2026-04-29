@@ -1,0 +1,70 @@
+name: "Platform Issue"
+description: Report a problem or breakage specific to a platform module (e.g. VK)
+labels: ["platform"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for issues that are specific to a platform integration (e.g. VK authentication, call joining failures)
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Which platform is affected?
+      options:
+        - vk.com
+        - Other / Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Connection Mode
+      options:
+        - Relay mode
+        - P2P mode
+        - All / Unknown
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Turnable Version
+      description: Binary version or commit SHA.
+      placeholder: "e.g. v1.2.3 or abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Issue Description
+      description: Describe what is broken or behaving unexpectedly on this platform.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Run `./turnable client ...`
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant logs (use `--verbose`). Sensitive info will be redacted by maintainers.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional Context
+      description: API error messages, HTTP responses, platform announcements about API changes, etc.

@@ -1,0 +1,93 @@
+name: "Отчёт об ошибке"
+description: Сообщить об ошибке или неожиданном поведении в Turnable.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что нашли время сообщить об ошибке! Пожалуйста, заполните все разделы как можно подробнее.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Компонент
+      description: Какая часть Turnable затронута?
+      options:
+        - Клиент
+        - Сервер
+        - Режим Relay
+        - Режим P2P
+        - Конфигурация / CLI
+        - Другое
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Операционная система
+      options:
+        - Linux
+        - Windows
+        - macOS
+        - Android
+        - Другое
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия Turnable
+      description: Версия бинарника или commit SHA.
+      placeholder: "например, v1.2.3 или abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Описание ошибки
+      description: Чёткое и понятное описание того, в чём заключается баг.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Шаги для воспроизведения
+      description: Пошаговая инструкция для воспроизведения проблемы.
+      placeholder: |
+        1. Запустить `./turnable ...`
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+      description: Что должно было произойти?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Фактическое поведение
+      description: Что произошло на самом деле?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи
+      description: Вставьте сюда соответствующие логи (используйте флаг `--verbose`). Чувствительная информация будет скрыта мейнтейнерами.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Дополнительный контекст
+      description: Всё, что может быть полезным (конфигурация, настройки сети и т.д). **Не вставляйте UUID пользователей или приватные ключи.**
