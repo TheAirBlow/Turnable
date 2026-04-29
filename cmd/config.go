@@ -125,6 +125,10 @@ func configMain(opts *configGenerateOptions) error {
 		return fmt.Errorf("failed to validate server config: %w", err)
 	}
 
+	if err := serverCfg.UpdateProvider(); err != nil {
+		return fmt.Errorf("failed to update provider: %w", err)
+	}
+
 	user, err := serverCfg.GetUser(opts.userUUID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve user: %w", err)
