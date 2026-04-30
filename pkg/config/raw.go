@@ -168,6 +168,40 @@ func (j *RawProvider) AddUser(user *User) error {
 	return nil
 }
 
+// DeleteRoute removes a route by ID
+func (j *RawProvider) DeleteRoute(id string) error {
+	if id == "" {
+		return fmt.Errorf("route id is required")
+	}
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if _, ok := j.data.Routes[id]; !ok {
+		return fmt.Errorf("route '%s' not found", id)
+	}
+
+	delete(j.data.Routes, id)
+	return nil
+}
+
+// DeleteUser removes a user by UUID
+func (j *RawProvider) DeleteUser(uuid string) error {
+	if uuid == "" {
+		return fmt.Errorf("user uuid is required")
+	}
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if _, ok := j.data.Users[uuid]; !ok {
+		return fmt.Errorf("user '%s' not found", uuid)
+	}
+
+	delete(j.data.Users, uuid)
+	return nil
+}
+
 // Stop stops the provider connection
 func (j *RawProvider) Stop() error {
 	return nil

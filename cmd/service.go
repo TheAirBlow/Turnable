@@ -27,6 +27,7 @@ import (
 // serviceServerOptions holds CLI flags for the service server subcommand
 type serviceServerOptions struct {
 	configPath string
+	persistDir string
 	verbose    bool
 }
 
@@ -64,6 +65,7 @@ func newServiceServerCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "service.json", "service config JSON file path")
+	cmd.Flags().StringVarP(&opts.persistDir, "persist", "p", "", "directory to persist instance configs for auto-restart on startup")
 	return cmd
 }
 
@@ -114,6 +116,10 @@ func serviceServerMain(opts *serviceServerOptions) error {
 	server, err := service.NewServer(cfg)
 	if err != nil {
 		return fmt.Errorf("invalid service cfg: %w", err)
+	}
+
+	if opts.persistDir != "" {
+		server.SetPersistDir(resolve(opts.persistDir))
 	}
 
 	if err := server.Start(); err != nil {
@@ -204,11 +210,31 @@ func serviceClientMain(opts *serviceClientOptions) error {
 					if logsEnabled {
 						printLogRecord(event.Log)
 					}
+				case service.EventInstanceStarted:
+					ev := event.InstanceEvent
+					itype := "server"
+					if ev.InstanceType == pb.InstanceType_INSTANCE_TYPE_CLIENT {
+						itype = "client"
+					}
+
+					fmt.Printf("\n[instance started: id=%s name=%s type=%s]\n", ev.InstanceId, ev.Name, itype)
+				case service.EventInstanceStopped:
+					ev := event.InstanceEvent
+					itype := "server"
+					if ev.InstanceType == pb.InstanceType_INSTANCE_TYPE_CLIENT {
+						itype = "client"
+					}
+
+					fmt.Printf("\n[instance stopped: id=%s name=%s type=%s]\n", ev.InstanceId, ev.Name, itype)
+				case service.EventProviderUpdated:
+					ev := event.InstanceEvent
+					fmt.Printf("\n[provider updated: id=%s name=%s]\n", ev.InstanceId, ev.Name)
 				case service.EventDisconnected:
 					clientMu.Lock()
 					if client == activeClient {
 						client = nil
 					}
+
 					clientMu.Unlock()
 					if event.Err != nil && !errors.Is(event.Err, net.ErrClosed) {
 						fmt.Printf("\n[disconnected: %v]\n", event.Err)
@@ -265,10 +291,15 @@ func serviceClientMain(opts *serviceClientOptions) error {
 		),
 		readline.PcItem("disconnect"),
 		readline.PcItem("list"),
+		readline.PcItem("get", readline.PcItemDynamic(instanceIDs)),
 		readline.PcItem("start-server"),
 		readline.PcItem("start-client"),
 		readline.PcItem("stop", readline.PcItemDynamic(instanceIDs)),
 		readline.PcItem("update-provider", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("add-route", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("delete-route", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("add-user", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("delete-user", readline.PcItemDynamic(instanceIDs)),
 		readline.PcItem("validate-server"),
 		readline.PcItem("validate-client"),
 		readline.PcItem("convert"),
@@ -417,9 +448,53 @@ func serviceClientMain(opts *serviceClientOptions) error {
 					status = "running"
 				}
 
-				fmt.Printf("%-36s  type=%-6s  %s\n", inst.Id, typeName, status)
+				name := inst.Name
+				if name == "" {
+					name = "Unnamed"
+				}
+
+				fmt.Printf("%-36s  type=%-6s  %-8s  name=%s\n",
+					inst.Id, typeName, status, name)
 			}
+
 			cachedInstances = instances
+		case "get":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 2 {
+				fmt.Println("usage: get <id>")
+				continue
+			}
+
+			detail, err := c.GetInstance(parts[1])
+			if err != nil {
+				fmt.Println("Failed to get instance:", err)
+				continue
+			}
+
+			typeName := "server"
+			if detail.Info.Type == pb.InstanceType_INSTANCE_TYPE_CLIENT {
+				typeName = "client"
+			}
+
+			status := "stopped"
+			if detail.Info.Running {
+				status = "running"
+			}
+
+			fmt.Printf("ID:       %s\n", detail.Info.Id)
+			fmt.Printf("Name:     %s\n", detail.Info.Name)
+			fmt.Printf("Type:     %s\n", typeName)
+			fmt.Printf("Status:   %s\n", status)
+			if detail.ListenAddr != "" {
+				fmt.Printf("Listen:   %s\n", detail.ListenAddr)
+			}
+
+			fmt.Printf("Config:   %s\n", detail.Config)
 		case "start-server":
 			c := getClient()
 			if c == nil {
@@ -428,11 +503,20 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 2 {
-				fmt.Println("usage: start-server <config_json>")
+				fmt.Println("usage: start-server <config_json> [instance_id] [name]")
 				continue
 			}
 
-			id, err := c.StartServer(parts[1])
+			var instanceID, name string
+			if len(parts) >= 3 {
+				instanceID = parts[2]
+			}
+
+			if len(parts) >= 4 {
+				name = parts[3]
+			}
+
+			id, err := c.StartServer(parts[1], instanceID, name)
 			if err != nil {
 				fmt.Println("Failed to start server:", err)
 				continue
@@ -448,11 +532,19 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 3 {
-				fmt.Println("usage: start-client <config_json_or_url> <listen_addr>")
+				fmt.Println("usage: start-client <config_json_or_url> <listen_addr> [instance_id] [name]")
 				continue
 			}
 
-			id, err := c.StartClient(parts[1], parts[2])
+			var instanceID, name string
+			if len(parts) >= 4 {
+				instanceID = parts[3]
+			}
+			if len(parts) >= 5 {
+				name = parts[4]
+			}
+
+			id, err := c.StartClient(parts[1], parts[2], instanceID, name)
 			if err != nil {
 				fmt.Println("Failed to start client:", err)
 				continue
@@ -497,6 +589,78 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			fmt.Println("Updated provider for instance:", parts[1])
+		case "add-route":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Println("usage: add-route <instance_id> <route_json>")
+				continue
+			}
+
+			if err := c.AddRoute(parts[1], parts[2]); err != nil {
+				fmt.Println("Failed to add route:", err)
+				continue
+			}
+
+			fmt.Println("Added/updated route on instance:", parts[1])
+		case "delete-route":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Println("usage: delete-route <instance_id> <route_id>")
+				continue
+			}
+
+			if err := c.DeleteRoute(parts[1], parts[2]); err != nil {
+				fmt.Println("Failed to delete route:", err)
+				continue
+			}
+
+			fmt.Println("Deleted route", parts[2], "from instance:", parts[1])
+		case "add-user":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Println("usage: add-user <instance_id> <user_json>")
+				continue
+			}
+
+			if err := c.AddUser(parts[1], parts[2]); err != nil {
+				fmt.Println("Failed to add user:", err)
+				continue
+			}
+
+			fmt.Println("Added/updated user on instance:", parts[1])
+		case "delete-user":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Println("usage: delete-user <instance_id> <user_uuid>")
+				continue
+			}
+
+			if err := c.DeleteUser(parts[1], parts[2]); err != nil {
+				fmt.Println("Failed to delete user:", err)
+				continue
+			}
+
+			fmt.Println("Deleted user", parts[2], "from instance:", parts[1])
 		case "validate-server":
 			c := getClient()
 			if c == nil {
@@ -579,19 +743,24 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 		case "help":
 			fmt.Println("Available commands:")
-			fmt.Println("  connect <tcp/unix> <addr> [priv_key] [pub_key]    connect to service")
-			fmt.Println("  disconnect                                        close current connection")
-			fmt.Println("  list                                              list all managed instances")
-			fmt.Println("  start-server <config_json>                        start a server instance")
-			fmt.Println("  start-client <config_json_or_url> <listen_addr>   start a client instance")
-			fmt.Println("  stop <id>                                         stop an instance")
-			fmt.Println("  update-provider <id> <config>                     update provider config")
-			fmt.Println("  validate-server <config>                          validate a server config")
-			fmt.Println("  validate-client <config>                          validate a client config")
-			fmt.Println("  convert <config>                                  convert config between JSON and URL")
-			fmt.Println("  logs <true/false>                                 toggle server log forwarding")
-			fmt.Println("  help                                              show this help")
-			fmt.Println("  exit / quit                                       exit the CLI")
+			fmt.Println("  connect <tcp/unix> <addr> [priv_key] [pub_key]              connect to service")
+			fmt.Println("  disconnect                                                  close current connection")
+			fmt.Println("  list                                                        list all managed instances")
+			fmt.Println("  get <id>                                                    get full details + config for an instance")
+			fmt.Println("  start-server <config_json> [id] [name]                      start a server instance")
+			fmt.Println("  start-client <config_json_or_url> <listen_addr> [id] [name] start a client instance")
+			fmt.Println("  stop <id>                                                   stop an instance")
+			fmt.Println("  update-provider <id> <config>                               update provider config")
+			fmt.Println("  add-route <id> <route_json>                                 add or update a route on a server instance")
+			fmt.Println("  delete-route <id> <route_id>                                remove a route from a server instance")
+			fmt.Println("  add-user <id> <user_json>                                   add or update a user on a server instance")
+			fmt.Println("  delete-user <id> <user_uuid>                                remove a user from a server instance")
+			fmt.Println("  validate-server <config>                                    validate a server config")
+			fmt.Println("  validate-client <config>                                    validate a client config")
+			fmt.Println("  convert <config>                                            convert config between JSON and URL")
+			fmt.Println("  logs <true/false>                                           toggle server log forwarding")
+			fmt.Println("  help                                                        show this help")
+			fmt.Println("  exit / quit                                                 exit the CLI")
 		case "exit", "quit":
 			fmt.Println("Goodbye!")
 			if c := getClient(); c != nil {

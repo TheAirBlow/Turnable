@@ -11,9 +11,12 @@ import (
 
 // Instance represents a managed Turnable server or client
 type Instance struct {
-	ID     string
-	server *engine.TurnableServer
-	client *engine.TurnableClient
+	ID         string
+	Name       string
+	config     string
+	listenAddr string
+	server     *engine.TurnableServer
+	client     *engine.TurnableClient
 }
 
 // Stop stops the instance
@@ -27,7 +30,11 @@ func (i *Instance) Stop() error {
 
 // Info returns a protobuf description of this instance
 func (i *Instance) Info() *pb.InstanceInfo {
-	info := &pb.InstanceInfo{Id: i.ID}
+	info := &pb.InstanceInfo{
+		Id:   i.ID,
+		Name: i.Name,
+	}
+
 	if i.server != nil {
 		info.Type = pb.InstanceType_INSTANCE_TYPE_SERVER
 		info.Running = i.server.IsRunning()

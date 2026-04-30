@@ -16,6 +16,8 @@ type ServiceConfig struct {
 	PrivKey string `json:"priv_key,omitempty"` // Private key
 
 	AllowedKeys []string `json:"allowed_keys,omitempty"` // List of allowed private keys
+
+	PersistDir string `json:"persist_dir,omitempty"` // Instance config persistence directory
 }
 
 // NewServiceConfigFromJSON creates a new ServiceConfig from a JSON

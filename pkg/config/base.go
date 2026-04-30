@@ -15,6 +15,8 @@ type Provider interface {
 	GetUser(uuid string) (*User, error)  // Fetches a User based on their UUID
 	AddRoute(route *Route) error         // Adds or updates a route
 	AddUser(user *User) error            // Adds or updates a user
+	DeleteRoute(id string) error         // Removes a route by ID
+	DeleteUser(uuid string) error        // Removes a user by UUID
 	GetAllRoutes() []Route               // Fetches all available routes
 	Stop() error                         // Stops the provider connection
 }

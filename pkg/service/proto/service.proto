@@ -11,11 +11,29 @@ enum InstanceType {
   INSTANCE_TYPE_CLIENT = 2;
 }
 
+// InstanceEventType describes what happened to an instance
+enum InstanceEventType {
+  INSTANCE_EVENT_TYPE_UNSPECIFIED = 0;
+  INSTANCE_EVENT_TYPE_STARTED = 1;
+  INSTANCE_EVENT_TYPE_STOPPED = 2;
+  INSTANCE_EVENT_TYPE_PROVIDER_UPDATED = 3;
+}
+
 // InstanceInfo describes a managed instance
 message InstanceInfo {
   string id = 1;
   InstanceType type = 2;
   bool running = 3;
+  string name = 4;
+}
+
+// InstanceEvent is broadcast to all connected clients when an instance starts,
+// stops, or its provider configuration changes
+message InstanceEvent {
+  string instance_id = 1;
+  string name = 2;
+  InstanceType instance_type = 3;
+  InstanceEventType event_type = 4;
 }
 
 // LogAttr is a single structured log attribute key/value pair
@@ -49,6 +67,8 @@ message ClientHello {
 // StartServerRequest starts a new Turnable server instance
 message StartServerRequest {
   string config = 1;
+  string instance_id = 2;
+  string name = 3;
 }
 
 // StartServerResponse carries the new server instance ID or an error
@@ -61,6 +81,8 @@ message StartServerResponse {
 message StartClientRequest {
   string config = 1;
   string listenAddr = 2;
+  string instance_id = 3;
+  string name = 4;
 }
 
 // StartClientResponse carries the new client instance ID or an error
@@ -128,6 +150,63 @@ message ConvertClientConfigResponse {
   string config = 1;
 }
 
+// GetInstanceRequest requests the full details of a single instance
+message GetInstanceRequest {
+  string instance_id = 1;
+}
+
+// GetInstanceResponse returns full details including the raw config
+message GetInstanceResponse {
+  InstanceInfo info = 1;
+  string config = 2;
+  string listen_addr = 3;
+  string error = 4;
+}
+
+// AddRouteRequest adds or updates a route on a server instance (route_json is a Route JSON object)
+message AddRouteRequest {
+  string instance_id = 1;
+  string route_json = 2;
+}
+
+// AddRouteResponse is sent in reply to AddRouteRequest
+message AddRouteResponse {
+  string error = 1;
+}
+
+// DeleteRouteRequest removes a route from a server instance
+message DeleteRouteRequest {
+  string instance_id = 1;
+  string route_id = 2;
+}
+
+// DeleteRouteResponse is sent in reply to DeleteRouteRequest
+message DeleteRouteResponse {
+  string error = 1;
+}
+
+// AddUserRequest adds or updates a user on a server instance (user_json is a User JSON object)
+message AddUserRequest {
+  string instance_id = 1;
+  string user_json = 2;
+}
+
+// AddUserResponse is sent in reply to AddUserRequest
+message AddUserResponse {
+  string error = 1;
+}
+
+// DeleteUserRequest removes a user from a server instance
+message DeleteUserRequest {
+  string instance_id = 1;
+  string user_uuid = 2;
+}
+
+// DeleteUserResponse is sent in reply to DeleteUserRequest
+message DeleteUserResponse {
+  string error = 1;
+}
+
 // ErrorResponse returns a fatal protocol-level error
 message ErrorResponse {
   string message = 1;
@@ -144,6 +223,11 @@ message Request {
     ValidateServerConfigRequest validate_server_config = 6;
     ValidateClientConfigRequest validate_client_config = 7;
     ConvertClientConfigRequest convert_client_config = 8;
+    GetInstanceRequest get_instance = 9;
+    AddRouteRequest add_route = 10;
+    DeleteRouteRequest delete_route = 11;
+    AddUserRequest add_user = 12;
+    DeleteUserRequest delete_user = 13;
   }
 }
 
@@ -160,5 +244,11 @@ message Response {
     ValidateServerConfigResponse validate_server_config = 8;
     ValidateClientConfigResponse validate_client_config = 9;
     ConvertClientConfigResponse convert_client_config = 10;
+    GetInstanceResponse get_instance = 11;
+    InstanceEvent instance_event = 12;
+    AddRouteResponse add_route = 13;
+    DeleteRouteResponse delete_route = 14;
+    AddUserResponse add_user = 15;
+    DeleteUserResponse delete_user = 16;
   }
 }

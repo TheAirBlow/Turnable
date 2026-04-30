@@ -2,10 +2,14 @@ package service
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -28,8 +32,19 @@ type Server struct {
 	keyPair     *KeyPair
 	allowedKeys [][]byte
 
+	persistDir string
+
 	listenersMu sync.Mutex
 	listeners   []net.Listener
+}
+
+// persistRecord is the on-disk representation of a persisted instance
+type persistRecord struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Config     string `json:"config"`
+	ListenAddr string `json:"listen_addr,omitempty"`
 }
 
 // NewServer creates a new Server instance
@@ -66,6 +81,7 @@ func NewServer(cfg *config.ServiceConfig) (*Server, error) {
 		keyPair:     kp,
 		allowedKeys: allowedKeys,
 		cfg:         *cfg,
+		persistDir:  cfg.PersistDir,
 	}, nil
 }
 
@@ -78,7 +94,12 @@ func (s *Server) SetLogger(log *slog.Logger) {
 	s.log = log
 }
 
-// Start starts the service server
+// SetPersistDir overrides the persistence directory
+func (s *Server) SetPersistDir(dir string) {
+	s.persistDir = dir
+}
+
+// Start starts the service server and restores persisted instances
 func (s *Server) Start() error {
 	if !s.running.CompareAndSwap(false, true) {
 		return errors.New("already running")
@@ -104,6 +125,10 @@ func (s *Server) Start() error {
 			_ = s.Stop()
 			return err
 		}
+	}
+
+	if s.persistDir != "" {
+		s.loadPersistedInstances()
 	}
 
 	success = true
@@ -178,41 +203,103 @@ func (s *Server) accept(ln net.Listener) {
 	}
 }
 
+// resolveInstanceID returns the provided ID if non-empty, otherwise generates a new UUID
+func resolveInstanceID(provided string) string {
+	provided = strings.TrimSpace(provided)
+	if provided != "" {
+		return provided
+	}
+	return uuid.New().String()
+}
+
+// resolveInstanceName returns the provided name if non-empty, otherwise "Unnamed"
+func resolveInstanceName(provided string) string {
+	provided = strings.TrimSpace(provided)
+	if provided != "" {
+		return provided
+	}
+	return "Unnamed"
+}
+
 // startServer creates and starts a Turnable server instance
 func (s *Server) startServer(req *pb.StartServerRequest) (string, error) {
+	id := resolveInstanceID(req.InstanceId)
+	name := resolveInstanceName(req.Name)
+
+	s.mu.RLock()
+	_, exists := s.instances[id]
+	s.mu.RUnlock()
+	if exists {
+		return "", fmt.Errorf("instance %q already exists", id)
+	}
+
 	srv, err := buildServerInstance(req)
 	if err != nil {
 		return "", err
 	}
 
-	id := uuid.New().String()
 	srv.SetLogger(s.log.With("server_id", id))
 	if err := srv.Start(); err != nil {
 		return "", fmt.Errorf("start server: %w", err)
 	}
 
+	inst := &Instance{ID: id, Name: name, config: req.Config, server: srv}
 	s.mu.Lock()
-	s.instances[id] = &Instance{ID: id, server: srv}
+	s.instances[id] = inst
 	s.mu.Unlock()
+
+	if s.persistDir != "" {
+		s.savePersisted(inst)
+	}
+
+	s.broadcastEvent(&pb.InstanceEvent{
+		InstanceId:   id,
+		Name:         name,
+		InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
+		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED,
+	})
+
 	return id, nil
 }
 
 // startClient creates and starts a Turnable client instance
 func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
+	id := resolveInstanceID(req.InstanceId)
+	name := resolveInstanceName(req.Name)
+
+	s.mu.RLock()
+	_, exists := s.instances[id]
+	s.mu.RUnlock()
+	if exists {
+		return "", fmt.Errorf("instance %q already exists", id)
+	}
+
 	cli, err := buildClientInstance(req)
 	if err != nil {
 		return "", err
 	}
 
-	id := uuid.New().String()
 	cli.SetLogger(s.log.With("client_id", id))
 	if err := cli.Start(req.ListenAddr); err != nil {
 		return "", fmt.Errorf("start client: %w", err)
 	}
 
+	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddr: req.ListenAddr, client: cli}
 	s.mu.Lock()
-	s.instances[id] = &Instance{ID: id, client: cli}
+	s.instances[id] = inst
 	s.mu.Unlock()
+
+	if s.persistDir != "" {
+		s.savePersisted(inst)
+	}
+
+	s.broadcastEvent(&pb.InstanceEvent{
+		InstanceId:   id,
+		Name:         name,
+		InstanceType: pb.InstanceType_INSTANCE_TYPE_CLIENT,
+		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED,
+	})
+
 	return id, nil
 }
 
@@ -224,12 +311,32 @@ func (s *Server) stopInstance(id string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("instance %q not found", id)
 	}
+
 	delete(s.instances, id)
 	s.mu.Unlock()
-	return inst.Stop()
+
+	if s.persistDir != "" {
+		s.deletePersisted(id)
+	}
+
+	err := inst.Stop()
+
+	itype := pb.InstanceType_INSTANCE_TYPE_CLIENT
+	if inst.server != nil {
+		itype = pb.InstanceType_INSTANCE_TYPE_SERVER
+	}
+
+	s.broadcastEvent(&pb.InstanceEvent{
+		InstanceId:   id,
+		Name:         inst.Name,
+		InstanceType: itype,
+		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STOPPED,
+	})
+
+	return err
 }
 
-// updateProvider updates config provider for an instance
+// updateProvider updates config provider for an instance and persists the change
 func (s *Server) updateProvider(id string, cfg string) error {
 	s.mu.RLock()
 	inst, ok := s.instances[id]
@@ -238,7 +345,152 @@ func (s *Server) updateProvider(id string, cfg string) error {
 		return fmt.Errorf("instance %q not found", id)
 	}
 
-	return inst.server.Config.ReplaceProvider([]byte(cfg))
+	if err := inst.server.Config.ReplaceProvider([]byte(cfg)); err != nil {
+		return err
+	}
+
+	updated, err := inst.server.Config.ToJSON(false)
+	if err == nil {
+		inst.config = updated
+		if s.persistDir != "" {
+			s.savePersisted(inst)
+		}
+	}
+
+	return nil
+}
+
+// addRoute adds or updates a route on a server instance
+func (s *Server) addRoute(id string, routeJSON string) error {
+	s.mu.RLock()
+	inst, ok := s.instances[id]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("instance %q not found", id)
+	}
+
+	if inst.server == nil {
+		return fmt.Errorf("instance %q is not a server instance", id)
+	}
+
+	var route config.Route
+	if err := json.Unmarshal([]byte(routeJSON), &route); err != nil {
+		return fmt.Errorf("parse route JSON: %w", err)
+	}
+
+	if err := route.Validate(); err != nil {
+		return fmt.Errorf("validate route: %w", err)
+	}
+
+	if err := inst.server.Config.AddRoute(&route); err != nil {
+		return err
+	}
+
+	s.persistAndNotifyProvider(inst)
+	return nil
+}
+
+// deleteRoute removes a route from a server instance
+func (s *Server) deleteRoute(id string, routeID string) error {
+	s.mu.RLock()
+	inst, ok := s.instances[id]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("instance %q not found", id)
+	}
+
+	if inst.server == nil {
+		return fmt.Errorf("instance %q is not a server instance", id)
+	}
+
+	if err := inst.server.Config.DeleteRoute(routeID); err != nil {
+		return err
+	}
+
+	s.persistAndNotifyProvider(inst)
+	return nil
+}
+
+// addUser adds or updates a user on a server instance
+func (s *Server) addUser(id string, userJSON string) error {
+	s.mu.RLock()
+	inst, ok := s.instances[id]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("instance %q not found", id)
+	}
+
+	if inst.server == nil {
+		return fmt.Errorf("instance %q is not a server instance", id)
+	}
+
+	var user config.User
+	if err := json.Unmarshal([]byte(userJSON), &user); err != nil {
+		return fmt.Errorf("parse user JSON: %w", err)
+	}
+
+	if user.UUID == "" {
+		return fmt.Errorf("user uuid is required")
+	}
+
+	if err := inst.server.Config.AddUser(&user); err != nil {
+		return err
+	}
+
+	s.persistAndNotifyProvider(inst)
+	return nil
+}
+
+// deleteUser removes a user from a server instance
+func (s *Server) deleteUser(id string, userUUID string) error {
+	s.mu.RLock()
+	inst, ok := s.instances[id]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("instance %q not found", id)
+	}
+
+	if inst.server == nil {
+		return fmt.Errorf("instance %q is not a server instance", id)
+	}
+
+	if err := inst.server.Config.DeleteUser(userUUID); err != nil {
+		return err
+	}
+
+	s.persistAndNotifyProvider(inst)
+	return nil
+}
+
+// persistAndNotifyProvider persists the instance config and broadcasts a ProviderUpdated event
+func (s *Server) persistAndNotifyProvider(inst *Instance) {
+	if inst.server.Config.ProviderID() == "raw" {
+		updated, err := inst.server.Config.ToJSON(false)
+		if err == nil {
+			inst.config = updated
+			if s.persistDir != "" {
+				s.savePersisted(inst)
+			}
+		} else {
+			s.log.Warn("failed to serialize config", "id", inst.ID, "error", err)
+		}
+	}
+
+	s.broadcastEvent(&pb.InstanceEvent{
+		InstanceId:   inst.ID,
+		Name:         inst.Name,
+		InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
+		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_PROVIDER_UPDATED,
+	})
+}
+
+// broadcastEvent sends an InstanceEvent to all connected service clients
+func (s *Server) broadcastEvent(event *pb.InstanceEvent) {
+	s.relay.broadcast.mu.RLock()
+	defer s.relay.broadcast.mu.RUnlock()
+	for c := range s.relay.broadcast.subs {
+		c.sendInstanceEvent(event)
+	}
 }
 
 // listInstances returns info for all managed instances
@@ -250,6 +502,116 @@ func (s *Server) listInstances() []*pb.InstanceInfo {
 		infos = append(infos, inst.Info())
 	}
 	return infos
+}
+
+// getInstance returns the full details for a single instance
+func (s *Server) getInstance(id string) *pb.GetInstanceResponse {
+	s.mu.RLock()
+	inst, ok := s.instances[id]
+	s.mu.RUnlock()
+	if !ok {
+		return &pb.GetInstanceResponse{Error: fmt.Sprintf("instance %q not found", id)}
+	}
+
+	return &pb.GetInstanceResponse{
+		Info:       inst.Info(),
+		Config:     inst.config,
+		ListenAddr: inst.listenAddr,
+	}
+}
+
+// savePersisted writes an instance record to the persist directory
+func (s *Server) savePersisted(inst *Instance) {
+	if err := os.MkdirAll(s.persistDir, 0o750); err != nil {
+		s.log.Warn("persist: failed to create persist dir", "dir", s.persistDir, "error", err)
+		return
+	}
+
+	rec := persistRecord{
+		ID:         inst.ID,
+		Name:       inst.Name,
+		Config:     inst.config,
+		ListenAddr: inst.listenAddr,
+	}
+	if inst.server != nil {
+		rec.Type = "server"
+	} else {
+		rec.Type = "client"
+	}
+
+	data, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		s.log.Warn("persist: failed to marshal record", "id", inst.ID, "error", err)
+		return
+	}
+
+	path := filepath.Join(s.persistDir, inst.ID+".json")
+	if err := os.WriteFile(path, data, 0o640); err != nil {
+		s.log.Warn("persist: failed to write record", "path", path, "error", err)
+	}
+}
+
+// deletePersisted removes a persisted instance record from disk
+func (s *Server) deletePersisted(id string) {
+	path := filepath.Join(s.persistDir, id+".json")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		s.log.Warn("persist: failed to remove record", "path", path, "error", err)
+	}
+}
+
+// loadPersistedInstances reads all records from the persist dir and restores them
+func (s *Server) loadPersistedInstances() {
+	entries, err := os.ReadDir(s.persistDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			s.log.Warn("persist: failed to read persist dir", "dir", s.persistDir, "error", err)
+		}
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+
+		path := filepath.Join(s.persistDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			s.log.Warn("persist: failed to read record", "path", path, "error", err)
+			continue
+		}
+
+		var rec persistRecord
+		if err := json.Unmarshal(data, &rec); err != nil {
+			s.log.Warn("persist: failed to parse record", "path", path, "error", err)
+			continue
+		}
+
+		switch rec.Type {
+		case "server":
+			_, err = s.startServer(&pb.StartServerRequest{
+				Config:     rec.Config,
+				InstanceId: rec.ID,
+				Name:       rec.Name,
+			})
+		case "client":
+			_, err = s.startClient(&pb.StartClientRequest{
+				Config:     rec.Config,
+				ListenAddr: rec.ListenAddr,
+				InstanceId: rec.ID,
+				Name:       rec.Name,
+			})
+		default:
+			s.log.Warn("persist: unknown instance type in record", "path", path, "type", rec.Type)
+			continue
+		}
+
+		if err != nil {
+			s.log.Warn("persist: failed to restore instance", "id", rec.ID, "error", err)
+		} else {
+			s.log.Info("persist: restored instance", "id", rec.ID, "name", rec.Name, "type", rec.Type)
+		}
+	}
 }
 
 // clientConn handles a single service client connection
@@ -334,6 +696,14 @@ func (c *clientConn) sendLog(rec *pb.LogRecord) {
 	}
 }
 
+// sendInstanceEvent enqueues an InstanceEvent without blocking
+func (c *clientConn) sendInstanceEvent(event *pb.InstanceEvent) {
+	select {
+	case c.writeCh <- &pb.Response{Payload: &pb.Response_InstanceEvent{InstanceEvent: event}}:
+	default:
+	}
+}
+
 // sendErr sends a fatal ErrorResponse
 func (c *clientConn) sendErr(err error) {
 	_ = writeFramed(c.nc, &pb.Response{Payload: &pb.Response_Error{Error: &pb.ErrorResponse{Message: err.Error()}}})
@@ -387,6 +757,15 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 		return &pb.Response{Payload: &pb.Response_ListInstances{ListInstances: &pb.ListInstancesResponse{
 			Instances: c.svc.listInstances(),
 		}}}, nil
+	case *pb.Request_GetInstance:
+		resp := c.svc.getInstance(p.GetInstance.InstanceId)
+		if resp.Error != "" {
+			c.svc.log.Warn("get instance failed", "remote", c.remote, "id", p.GetInstance.InstanceId, "error", resp.Error)
+		} else {
+			c.svc.log.Debug("fetched instance", "remote", c.remote, "id", p.GetInstance.InstanceId)
+		}
+
+		return &pb.Response{Payload: &pb.Response_GetInstance{GetInstance: resp}}, nil
 	case *pb.Request_ValidateServerConfig:
 		c.svc.log.Debug("validated server config", "remote", c.remote)
 		return &pb.Response{Payload: &pb.Response_ValidateServerConfig{
@@ -405,6 +784,45 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 
 		c.svc.log.Debug("converted client config", "remote", c.remote)
 		return &pb.Response{Payload: &pb.Response_ConvertClientConfig{ConvertClientConfig: resp}}, nil
+	case *pb.Request_AddRoute:
+		resp := &pb.AddRouteResponse{}
+		if err := c.svc.addRoute(p.AddRoute.InstanceId, p.AddRoute.RouteJson); err != nil {
+			c.svc.log.Warn("failed to add route", "remote", c.remote, "id", p.AddRoute.InstanceId, "error", err)
+			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("added route", "remote", c.remote, "id", p.AddRoute.InstanceId)
+		}
+		return &pb.Response{Payload: &pb.Response_AddRoute{AddRoute: resp}}, nil
+	case *pb.Request_DeleteRoute:
+		resp := &pb.DeleteRouteResponse{}
+		if err := c.svc.deleteRoute(p.DeleteRoute.InstanceId, p.DeleteRoute.RouteId); err != nil {
+			c.svc.log.Warn("failed to delete route", "remote", c.remote, "id", p.DeleteRoute.InstanceId, "route", p.DeleteRoute.RouteId, "error", err)
+			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("deleted route", "remote", c.remote, "id", p.DeleteRoute.InstanceId, "route", p.DeleteRoute.RouteId)
+		}
+
+		return &pb.Response{Payload: &pb.Response_DeleteRoute{DeleteRoute: resp}}, nil
+	case *pb.Request_AddUser:
+		resp := &pb.AddUserResponse{}
+		if err := c.svc.addUser(p.AddUser.InstanceId, p.AddUser.UserJson); err != nil {
+			c.svc.log.Warn("failed to add user", "remote", c.remote, "id", p.AddUser.InstanceId, "error", err)
+			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("added user", "remote", c.remote, "id", p.AddUser.InstanceId)
+		}
+
+		return &pb.Response{Payload: &pb.Response_AddUser{AddUser: resp}}, nil
+	case *pb.Request_DeleteUser:
+		resp := &pb.DeleteUserResponse{}
+		if err := c.svc.deleteUser(p.DeleteUser.InstanceId, p.DeleteUser.UserUuid); err != nil {
+			c.svc.log.Warn("failed to delete user", "remote", c.remote, "id", p.DeleteUser.InstanceId, "uuid", p.DeleteUser.UserUuid, "error", err)
+			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("deleted user", "remote", c.remote, "id", p.DeleteUser.InstanceId, "uuid", p.DeleteUser.UserUuid)
+		}
+
+		return &pb.Response{Payload: &pb.Response_DeleteUser{DeleteUser: resp}}, nil
 	default:
 		return nil, fmt.Errorf("unknown request type")
 	}

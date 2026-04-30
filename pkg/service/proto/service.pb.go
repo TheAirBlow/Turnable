@@ -71,12 +71,66 @@ func (InstanceType) EnumDescriptor() ([]byte, []int) {
 	return file_service_proto_rawDescGZIP(), []int{0}
 }
 
+// InstanceEventType describes what happened to an instance
+type InstanceEventType int32
+
+const (
+	InstanceEventType_INSTANCE_EVENT_TYPE_UNSPECIFIED      InstanceEventType = 0
+	InstanceEventType_INSTANCE_EVENT_TYPE_STARTED          InstanceEventType = 1
+	InstanceEventType_INSTANCE_EVENT_TYPE_STOPPED          InstanceEventType = 2
+	InstanceEventType_INSTANCE_EVENT_TYPE_PROVIDER_UPDATED InstanceEventType = 3
+)
+
+// Enum value maps for InstanceEventType.
+var (
+	InstanceEventType_name = map[int32]string{
+		0: "INSTANCE_EVENT_TYPE_UNSPECIFIED",
+		1: "INSTANCE_EVENT_TYPE_STARTED",
+		2: "INSTANCE_EVENT_TYPE_STOPPED",
+		3: "INSTANCE_EVENT_TYPE_PROVIDER_UPDATED",
+	}
+	InstanceEventType_value = map[string]int32{
+		"INSTANCE_EVENT_TYPE_UNSPECIFIED":      0,
+		"INSTANCE_EVENT_TYPE_STARTED":          1,
+		"INSTANCE_EVENT_TYPE_STOPPED":          2,
+		"INSTANCE_EVENT_TYPE_PROVIDER_UPDATED": 3,
+	}
+)
+
+func (x InstanceEventType) Enum() *InstanceEventType {
+	p := new(InstanceEventType)
+	*p = x
+	return p
+}
+
+func (x InstanceEventType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (InstanceEventType) Descriptor() protoreflect.EnumDescriptor {
+	return file_service_proto_enumTypes[1].Descriptor()
+}
+
+func (InstanceEventType) Type() protoreflect.EnumType {
+	return &file_service_proto_enumTypes[1]
+}
+
+func (x InstanceEventType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use InstanceEventType.Descriptor instead.
+func (InstanceEventType) EnumDescriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{1}
+}
+
 // InstanceInfo describes a managed instance
 type InstanceInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Type          InstanceType           `protobuf:"varint,2,opt,name=type,proto3,enum=turnable.service.v1.InstanceType" json:"type,omitempty"`
 	Running       bool                   `protobuf:"varint,3,opt,name=running,proto3" json:"running,omitempty"`
+	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -132,6 +186,83 @@ func (x *InstanceInfo) GetRunning() bool {
 	return false
 }
 
+func (x *InstanceInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+// InstanceEvent is broadcast to all connected clients when an instance starts,
+// stops, or has its provider config updated
+type InstanceEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	InstanceType  InstanceType           `protobuf:"varint,3,opt,name=instance_type,json=instanceType,proto3,enum=turnable.service.v1.InstanceType" json:"instance_type,omitempty"`
+	EventType     InstanceEventType      `protobuf:"varint,4,opt,name=event_type,json=eventType,proto3,enum=turnable.service.v1.InstanceEventType" json:"event_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InstanceEvent) Reset() {
+	*x = InstanceEvent{}
+	mi := &file_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InstanceEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InstanceEvent) ProtoMessage() {}
+
+func (x *InstanceEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InstanceEvent.ProtoReflect.Descriptor instead.
+func (*InstanceEvent) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *InstanceEvent) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *InstanceEvent) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *InstanceEvent) GetInstanceType() InstanceType {
+	if x != nil {
+		return x.InstanceType
+	}
+	return InstanceType_INSTANCE_TYPE_UNSPECIFIED
+}
+
+func (x *InstanceEvent) GetEventType() InstanceEventType {
+	if x != nil {
+		return x.EventType
+	}
+	return InstanceEventType_INSTANCE_EVENT_TYPE_UNSPECIFIED
+}
+
 // LogAttr is a single structured log attribute key/value pair
 type LogAttr struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -143,7 +274,7 @@ type LogAttr struct {
 
 func (x *LogAttr) Reset() {
 	*x = LogAttr{}
-	mi := &file_service_proto_msgTypes[1]
+	mi := &file_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -155,7 +286,7 @@ func (x *LogAttr) String() string {
 func (*LogAttr) ProtoMessage() {}
 
 func (x *LogAttr) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[1]
+	mi := &file_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -168,7 +299,7 @@ func (x *LogAttr) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogAttr.ProtoReflect.Descriptor instead.
 func (*LogAttr) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{1}
+	return file_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *LogAttr) GetKey() string {
@@ -198,7 +329,7 @@ type LogRecord struct {
 
 func (x *LogRecord) Reset() {
 	*x = LogRecord{}
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -210,7 +341,7 @@ func (x *LogRecord) String() string {
 func (*LogRecord) ProtoMessage() {}
 
 func (x *LogRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -223,7 +354,7 @@ func (x *LogRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogRecord.ProtoReflect.Descriptor instead.
 func (*LogRecord) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{2}
+	return file_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *LogRecord) GetTime() int64 {
@@ -267,7 +398,7 @@ type ServerHello struct {
 
 func (x *ServerHello) Reset() {
 	*x = ServerHello{}
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -279,7 +410,7 @@ func (x *ServerHello) String() string {
 func (*ServerHello) ProtoMessage() {}
 
 func (x *ServerHello) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -292,7 +423,7 @@ func (x *ServerHello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerHello.ProtoReflect.Descriptor instead.
 func (*ServerHello) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{3}
+	return file_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ServerHello) GetMagic() string {
@@ -334,7 +465,7 @@ type ClientHello struct {
 
 func (x *ClientHello) Reset() {
 	*x = ClientHello{}
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -346,7 +477,7 @@ func (x *ClientHello) String() string {
 func (*ClientHello) ProtoMessage() {}
 
 func (x *ClientHello) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -359,7 +490,7 @@ func (x *ClientHello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClientHello.ProtoReflect.Descriptor instead.
 func (*ClientHello) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{4}
+	return file_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ClientHello) GetCiphertext() []byte {
@@ -380,13 +511,15 @@ func (x *ClientHello) GetPublicKey() []byte {
 type StartServerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Config        string                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
+	InstanceId    string                 `protobuf:"bytes,2,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartServerRequest) Reset() {
 	*x = StartServerRequest{}
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -398,7 +531,7 @@ func (x *StartServerRequest) String() string {
 func (*StartServerRequest) ProtoMessage() {}
 
 func (x *StartServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -411,12 +544,26 @@ func (x *StartServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartServerRequest.ProtoReflect.Descriptor instead.
 func (*StartServerRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{5}
+	return file_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *StartServerRequest) GetConfig() string {
 	if x != nil {
 		return x.Config
+	}
+	return ""
+}
+
+func (x *StartServerRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *StartServerRequest) GetName() string {
+	if x != nil {
+		return x.Name
 	}
 	return ""
 }
@@ -432,7 +579,7 @@ type StartServerResponse struct {
 
 func (x *StartServerResponse) Reset() {
 	*x = StartServerResponse{}
-	mi := &file_service_proto_msgTypes[6]
+	mi := &file_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -444,7 +591,7 @@ func (x *StartServerResponse) String() string {
 func (*StartServerResponse) ProtoMessage() {}
 
 func (x *StartServerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[6]
+	mi := &file_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -457,7 +604,7 @@ func (x *StartServerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartServerResponse.ProtoReflect.Descriptor instead.
 func (*StartServerResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{6}
+	return file_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *StartServerResponse) GetInstanceId() string {
@@ -479,13 +626,15 @@ type StartClientRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Config        string                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
 	ListenAddr    string                 `protobuf:"bytes,2,opt,name=listenAddr,proto3" json:"listenAddr,omitempty"`
+	InstanceId    string                 `protobuf:"bytes,3,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartClientRequest) Reset() {
 	*x = StartClientRequest{}
-	mi := &file_service_proto_msgTypes[7]
+	mi := &file_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -497,7 +646,7 @@ func (x *StartClientRequest) String() string {
 func (*StartClientRequest) ProtoMessage() {}
 
 func (x *StartClientRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[7]
+	mi := &file_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -510,7 +659,7 @@ func (x *StartClientRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartClientRequest.ProtoReflect.Descriptor instead.
 func (*StartClientRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{7}
+	return file_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *StartClientRequest) GetConfig() string {
@@ -527,6 +676,20 @@ func (x *StartClientRequest) GetListenAddr() string {
 	return ""
 }
 
+func (x *StartClientRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *StartClientRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
 // StartClientResponse carries the new client instance ID or an error
 type StartClientResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -538,7 +701,7 @@ type StartClientResponse struct {
 
 func (x *StartClientResponse) Reset() {
 	*x = StartClientResponse{}
-	mi := &file_service_proto_msgTypes[8]
+	mi := &file_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -550,7 +713,7 @@ func (x *StartClientResponse) String() string {
 func (*StartClientResponse) ProtoMessage() {}
 
 func (x *StartClientResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[8]
+	mi := &file_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -563,7 +726,7 @@ func (x *StartClientResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartClientResponse.ProtoReflect.Descriptor instead.
 func (*StartClientResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{8}
+	return file_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *StartClientResponse) GetInstanceId() string {
@@ -590,7 +753,7 @@ type StopInstanceRequest struct {
 
 func (x *StopInstanceRequest) Reset() {
 	*x = StopInstanceRequest{}
-	mi := &file_service_proto_msgTypes[9]
+	mi := &file_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -602,7 +765,7 @@ func (x *StopInstanceRequest) String() string {
 func (*StopInstanceRequest) ProtoMessage() {}
 
 func (x *StopInstanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[9]
+	mi := &file_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -615,7 +778,7 @@ func (x *StopInstanceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopInstanceRequest.ProtoReflect.Descriptor instead.
 func (*StopInstanceRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{9}
+	return file_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *StopInstanceRequest) GetInstanceId() string {
@@ -635,7 +798,7 @@ type StopInstanceResponse struct {
 
 func (x *StopInstanceResponse) Reset() {
 	*x = StopInstanceResponse{}
-	mi := &file_service_proto_msgTypes[10]
+	mi := &file_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -647,7 +810,7 @@ func (x *StopInstanceResponse) String() string {
 func (*StopInstanceResponse) ProtoMessage() {}
 
 func (x *StopInstanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[10]
+	mi := &file_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -660,7 +823,7 @@ func (x *StopInstanceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopInstanceResponse.ProtoReflect.Descriptor instead.
 func (*StopInstanceResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{10}
+	return file_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *StopInstanceResponse) GetError() string {
@@ -681,7 +844,7 @@ type UpdateProviderRequest struct {
 
 func (x *UpdateProviderRequest) Reset() {
 	*x = UpdateProviderRequest{}
-	mi := &file_service_proto_msgTypes[11]
+	mi := &file_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -693,7 +856,7 @@ func (x *UpdateProviderRequest) String() string {
 func (*UpdateProviderRequest) ProtoMessage() {}
 
 func (x *UpdateProviderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[11]
+	mi := &file_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -706,7 +869,7 @@ func (x *UpdateProviderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateProviderRequest.ProtoReflect.Descriptor instead.
 func (*UpdateProviderRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{11}
+	return file_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *UpdateProviderRequest) GetInstanceId() string {
@@ -732,7 +895,7 @@ type UpdateProviderResponse struct {
 
 func (x *UpdateProviderResponse) Reset() {
 	*x = UpdateProviderResponse{}
-	mi := &file_service_proto_msgTypes[12]
+	mi := &file_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -744,7 +907,7 @@ func (x *UpdateProviderResponse) String() string {
 func (*UpdateProviderResponse) ProtoMessage() {}
 
 func (x *UpdateProviderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[12]
+	mi := &file_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -757,7 +920,7 @@ func (x *UpdateProviderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateProviderResponse.ProtoReflect.Descriptor instead.
 func (*UpdateProviderResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{12}
+	return file_service_proto_rawDescGZIP(), []int{13}
 }
 
 // ListInstancesRequest requests the list of all managed instances
@@ -769,7 +932,7 @@ type ListInstancesRequest struct {
 
 func (x *ListInstancesRequest) Reset() {
 	*x = ListInstancesRequest{}
-	mi := &file_service_proto_msgTypes[13]
+	mi := &file_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -781,7 +944,7 @@ func (x *ListInstancesRequest) String() string {
 func (*ListInstancesRequest) ProtoMessage() {}
 
 func (x *ListInstancesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[13]
+	mi := &file_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -794,7 +957,7 @@ func (x *ListInstancesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListInstancesRequest.ProtoReflect.Descriptor instead.
 func (*ListInstancesRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{13}
+	return file_service_proto_rawDescGZIP(), []int{14}
 }
 
 // ListInstancesResponse carries the list of all managed instances
@@ -807,7 +970,7 @@ type ListInstancesResponse struct {
 
 func (x *ListInstancesResponse) Reset() {
 	*x = ListInstancesResponse{}
-	mi := &file_service_proto_msgTypes[14]
+	mi := &file_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -819,7 +982,7 @@ func (x *ListInstancesResponse) String() string {
 func (*ListInstancesResponse) ProtoMessage() {}
 
 func (x *ListInstancesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[14]
+	mi := &file_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -832,7 +995,7 @@ func (x *ListInstancesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListInstancesResponse.ProtoReflect.Descriptor instead.
 func (*ListInstancesResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{14}
+	return file_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ListInstancesResponse) GetInstances() []*InstanceInfo {
@@ -852,7 +1015,7 @@ type ValidateServerConfigRequest struct {
 
 func (x *ValidateServerConfigRequest) Reset() {
 	*x = ValidateServerConfigRequest{}
-	mi := &file_service_proto_msgTypes[15]
+	mi := &file_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -864,7 +1027,7 @@ func (x *ValidateServerConfigRequest) String() string {
 func (*ValidateServerConfigRequest) ProtoMessage() {}
 
 func (x *ValidateServerConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[15]
+	mi := &file_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -877,7 +1040,7 @@ func (x *ValidateServerConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateServerConfigRequest.ProtoReflect.Descriptor instead.
 func (*ValidateServerConfigRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{15}
+	return file_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ValidateServerConfigRequest) GetConfig() string {
@@ -898,7 +1061,7 @@ type ValidateServerConfigResponse struct {
 
 func (x *ValidateServerConfigResponse) Reset() {
 	*x = ValidateServerConfigResponse{}
-	mi := &file_service_proto_msgTypes[16]
+	mi := &file_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -910,7 +1073,7 @@ func (x *ValidateServerConfigResponse) String() string {
 func (*ValidateServerConfigResponse) ProtoMessage() {}
 
 func (x *ValidateServerConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[16]
+	mi := &file_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -923,7 +1086,7 @@ func (x *ValidateServerConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateServerConfigResponse.ProtoReflect.Descriptor instead.
 func (*ValidateServerConfigResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{16}
+	return file_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ValidateServerConfigResponse) GetValid() bool {
@@ -950,7 +1113,7 @@ type ValidateClientConfigRequest struct {
 
 func (x *ValidateClientConfigRequest) Reset() {
 	*x = ValidateClientConfigRequest{}
-	mi := &file_service_proto_msgTypes[17]
+	mi := &file_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -962,7 +1125,7 @@ func (x *ValidateClientConfigRequest) String() string {
 func (*ValidateClientConfigRequest) ProtoMessage() {}
 
 func (x *ValidateClientConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[17]
+	mi := &file_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -975,7 +1138,7 @@ func (x *ValidateClientConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateClientConfigRequest.ProtoReflect.Descriptor instead.
 func (*ValidateClientConfigRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{17}
+	return file_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ValidateClientConfigRequest) GetConfig() string {
@@ -996,7 +1159,7 @@ type ValidateClientConfigResponse struct {
 
 func (x *ValidateClientConfigResponse) Reset() {
 	*x = ValidateClientConfigResponse{}
-	mi := &file_service_proto_msgTypes[18]
+	mi := &file_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1008,7 +1171,7 @@ func (x *ValidateClientConfigResponse) String() string {
 func (*ValidateClientConfigResponse) ProtoMessage() {}
 
 func (x *ValidateClientConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[18]
+	mi := &file_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1021,7 +1184,7 @@ func (x *ValidateClientConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateClientConfigResponse.ProtoReflect.Descriptor instead.
 func (*ValidateClientConfigResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{18}
+	return file_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ValidateClientConfigResponse) GetValid() bool {
@@ -1048,7 +1211,7 @@ type ConvertClientConfigRequest struct {
 
 func (x *ConvertClientConfigRequest) Reset() {
 	*x = ConvertClientConfigRequest{}
-	mi := &file_service_proto_msgTypes[19]
+	mi := &file_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1060,7 +1223,7 @@ func (x *ConvertClientConfigRequest) String() string {
 func (*ConvertClientConfigRequest) ProtoMessage() {}
 
 func (x *ConvertClientConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[19]
+	mi := &file_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1073,7 +1236,7 @@ func (x *ConvertClientConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConvertClientConfigRequest.ProtoReflect.Descriptor instead.
 func (*ConvertClientConfigRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{19}
+	return file_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ConvertClientConfigRequest) GetConfig() string {
@@ -1093,7 +1256,7 @@ type ConvertClientConfigResponse struct {
 
 func (x *ConvertClientConfigResponse) Reset() {
 	*x = ConvertClientConfigResponse{}
-	mi := &file_service_proto_msgTypes[20]
+	mi := &file_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1105,7 +1268,7 @@ func (x *ConvertClientConfigResponse) String() string {
 func (*ConvertClientConfigResponse) ProtoMessage() {}
 
 func (x *ConvertClientConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[20]
+	mi := &file_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1118,12 +1281,518 @@ func (x *ConvertClientConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConvertClientConfigResponse.ProtoReflect.Descriptor instead.
 func (*ConvertClientConfigResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{20}
+	return file_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ConvertClientConfigResponse) GetConfig() string {
 	if x != nil {
 		return x.Config
+	}
+	return ""
+}
+
+// GetInstanceRequest requests the full details of a single instance
+type GetInstanceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInstanceRequest) Reset() {
+	*x = GetInstanceRequest{}
+	mi := &file_service_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInstanceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInstanceRequest) ProtoMessage() {}
+
+func (x *GetInstanceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInstanceRequest.ProtoReflect.Descriptor instead.
+func (*GetInstanceRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *GetInstanceRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+// GetInstanceResponse returns full details including the raw config
+type GetInstanceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Info          *InstanceInfo          `protobuf:"bytes,1,opt,name=info,proto3" json:"info,omitempty"`
+	Config        string                 `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
+	ListenAddr    string                 `protobuf:"bytes,3,opt,name=listen_addr,json=listenAddr,proto3" json:"listen_addr,omitempty"`
+	Error         string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInstanceResponse) Reset() {
+	*x = GetInstanceResponse{}
+	mi := &file_service_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInstanceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInstanceResponse) ProtoMessage() {}
+
+func (x *GetInstanceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInstanceResponse.ProtoReflect.Descriptor instead.
+func (*GetInstanceResponse) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *GetInstanceResponse) GetInfo() *InstanceInfo {
+	if x != nil {
+		return x.Info
+	}
+	return nil
+}
+
+func (x *GetInstanceResponse) GetConfig() string {
+	if x != nil {
+		return x.Config
+	}
+	return ""
+}
+
+func (x *GetInstanceResponse) GetListenAddr() string {
+	if x != nil {
+		return x.ListenAddr
+	}
+	return ""
+}
+
+func (x *GetInstanceResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// AddRouteRequest adds or updates a route on a server instance (route_json is a Route JSON object)
+type AddRouteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	RouteJson     string                 `protobuf:"bytes,2,opt,name=route_json,json=routeJson,proto3" json:"route_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddRouteRequest) Reset() {
+	*x = AddRouteRequest{}
+	mi := &file_service_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddRouteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddRouteRequest) ProtoMessage() {}
+
+func (x *AddRouteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddRouteRequest.ProtoReflect.Descriptor instead.
+func (*AddRouteRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *AddRouteRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *AddRouteRequest) GetRouteJson() string {
+	if x != nil {
+		return x.RouteJson
+	}
+	return ""
+}
+
+// AddRouteResponse is sent in reply to AddRouteRequest
+type AddRouteResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddRouteResponse) Reset() {
+	*x = AddRouteResponse{}
+	mi := &file_service_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddRouteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddRouteResponse) ProtoMessage() {}
+
+func (x *AddRouteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddRouteResponse.ProtoReflect.Descriptor instead.
+func (*AddRouteResponse) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *AddRouteResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// DeleteRouteRequest removes a route from a server instance
+type DeleteRouteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	RouteId       string                 `protobuf:"bytes,2,opt,name=route_id,json=routeId,proto3" json:"route_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteRouteRequest) Reset() {
+	*x = DeleteRouteRequest{}
+	mi := &file_service_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRouteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRouteRequest) ProtoMessage() {}
+
+func (x *DeleteRouteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRouteRequest.ProtoReflect.Descriptor instead.
+func (*DeleteRouteRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *DeleteRouteRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *DeleteRouteRequest) GetRouteId() string {
+	if x != nil {
+		return x.RouteId
+	}
+	return ""
+}
+
+// DeleteRouteResponse is sent in reply to DeleteRouteRequest
+type DeleteRouteResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteRouteResponse) Reset() {
+	*x = DeleteRouteResponse{}
+	mi := &file_service_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRouteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRouteResponse) ProtoMessage() {}
+
+func (x *DeleteRouteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRouteResponse.ProtoReflect.Descriptor instead.
+func (*DeleteRouteResponse) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *DeleteRouteResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// AddUserRequest adds or updates a user on a server instance (user_json is a User JSON object)
+type AddUserRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	UserJson      string                 `protobuf:"bytes,2,opt,name=user_json,json=userJson,proto3" json:"user_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddUserRequest) Reset() {
+	*x = AddUserRequest{}
+	mi := &file_service_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddUserRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddUserRequest) ProtoMessage() {}
+
+func (x *AddUserRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddUserRequest.ProtoReflect.Descriptor instead.
+func (*AddUserRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *AddUserRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *AddUserRequest) GetUserJson() string {
+	if x != nil {
+		return x.UserJson
+	}
+	return ""
+}
+
+// AddUserResponse is sent in reply to AddUserRequest
+type AddUserResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddUserResponse) Reset() {
+	*x = AddUserResponse{}
+	mi := &file_service_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddUserResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddUserResponse) ProtoMessage() {}
+
+func (x *AddUserResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddUserResponse.ProtoReflect.Descriptor instead.
+func (*AddUserResponse) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *AddUserResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// DeleteUserRequest removes a user from a server instance
+type DeleteUserRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	UserUuid      string                 `protobuf:"bytes,2,opt,name=user_uuid,json=userUuid,proto3" json:"user_uuid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteUserRequest) Reset() {
+	*x = DeleteUserRequest{}
+	mi := &file_service_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteUserRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteUserRequest) ProtoMessage() {}
+
+func (x *DeleteUserRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteUserRequest.ProtoReflect.Descriptor instead.
+func (*DeleteUserRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *DeleteUserRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *DeleteUserRequest) GetUserUuid() string {
+	if x != nil {
+		return x.UserUuid
+	}
+	return ""
+}
+
+// DeleteUserResponse is sent in reply to DeleteUserRequest
+type DeleteUserResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteUserResponse) Reset() {
+	*x = DeleteUserResponse{}
+	mi := &file_service_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteUserResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteUserResponse) ProtoMessage() {}
+
+func (x *DeleteUserResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteUserResponse.ProtoReflect.Descriptor instead.
+func (*DeleteUserResponse) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *DeleteUserResponse) GetError() string {
+	if x != nil {
+		return x.Error
 	}
 	return ""
 }
@@ -1138,7 +1807,7 @@ type ErrorResponse struct {
 
 func (x *ErrorResponse) Reset() {
 	*x = ErrorResponse{}
-	mi := &file_service_proto_msgTypes[21]
+	mi := &file_service_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1150,7 +1819,7 @@ func (x *ErrorResponse) String() string {
 func (*ErrorResponse) ProtoMessage() {}
 
 func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[21]
+	mi := &file_service_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1163,7 +1832,7 @@ func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorResponse.ProtoReflect.Descriptor instead.
 func (*ErrorResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{21}
+	return file_service_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ErrorResponse) GetMessage() string {
@@ -1186,6 +1855,11 @@ type Request struct {
 	//	*Request_ValidateServerConfig
 	//	*Request_ValidateClientConfig
 	//	*Request_ConvertClientConfig
+	//	*Request_GetInstance
+	//	*Request_AddRoute
+	//	*Request_DeleteRoute
+	//	*Request_AddUser
+	//	*Request_DeleteUser
 	Payload       isRequest_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1193,7 +1867,7 @@ type Request struct {
 
 func (x *Request) Reset() {
 	*x = Request{}
-	mi := &file_service_proto_msgTypes[22]
+	mi := &file_service_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1205,7 +1879,7 @@ func (x *Request) String() string {
 func (*Request) ProtoMessage() {}
 
 func (x *Request) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[22]
+	mi := &file_service_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1218,7 +1892,7 @@ func (x *Request) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Request.ProtoReflect.Descriptor instead.
 func (*Request) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{22}
+	return file_service_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *Request) GetPayload() isRequest_Payload {
@@ -1300,6 +1974,51 @@ func (x *Request) GetConvertClientConfig() *ConvertClientConfigRequest {
 	return nil
 }
 
+func (x *Request) GetGetInstance() *GetInstanceRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Request_GetInstance); ok {
+			return x.GetInstance
+		}
+	}
+	return nil
+}
+
+func (x *Request) GetAddRoute() *AddRouteRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Request_AddRoute); ok {
+			return x.AddRoute
+		}
+	}
+	return nil
+}
+
+func (x *Request) GetDeleteRoute() *DeleteRouteRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Request_DeleteRoute); ok {
+			return x.DeleteRoute
+		}
+	}
+	return nil
+}
+
+func (x *Request) GetAddUser() *AddUserRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Request_AddUser); ok {
+			return x.AddUser
+		}
+	}
+	return nil
+}
+
+func (x *Request) GetDeleteUser() *DeleteUserRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Request_DeleteUser); ok {
+			return x.DeleteUser
+		}
+	}
+	return nil
+}
+
 type isRequest_Payload interface {
 	isRequest_Payload()
 }
@@ -1336,6 +2055,26 @@ type Request_ConvertClientConfig struct {
 	ConvertClientConfig *ConvertClientConfigRequest `protobuf:"bytes,8,opt,name=convert_client_config,json=convertClientConfig,proto3,oneof"`
 }
 
+type Request_GetInstance struct {
+	GetInstance *GetInstanceRequest `protobuf:"bytes,9,opt,name=get_instance,json=getInstance,proto3,oneof"`
+}
+
+type Request_AddRoute struct {
+	AddRoute *AddRouteRequest `protobuf:"bytes,10,opt,name=add_route,json=addRoute,proto3,oneof"`
+}
+
+type Request_DeleteRoute struct {
+	DeleteRoute *DeleteRouteRequest `protobuf:"bytes,11,opt,name=delete_route,json=deleteRoute,proto3,oneof"`
+}
+
+type Request_AddUser struct {
+	AddUser *AddUserRequest `protobuf:"bytes,12,opt,name=add_user,json=addUser,proto3,oneof"`
+}
+
+type Request_DeleteUser struct {
+	DeleteUser *DeleteUserRequest `protobuf:"bytes,13,opt,name=delete_user,json=deleteUser,proto3,oneof"`
+}
+
 func (*Request_StartServer) isRequest_Payload() {}
 
 func (*Request_StartClient) isRequest_Payload() {}
@@ -1352,6 +2091,16 @@ func (*Request_ValidateClientConfig) isRequest_Payload() {}
 
 func (*Request_ConvertClientConfig) isRequest_Payload() {}
 
+func (*Request_GetInstance) isRequest_Payload() {}
+
+func (*Request_AddRoute) isRequest_Payload() {}
+
+func (*Request_DeleteRoute) isRequest_Payload() {}
+
+func (*Request_AddUser) isRequest_Payload() {}
+
+func (*Request_DeleteUser) isRequest_Payload() {}
+
 // Response is a service-to-client message
 type Response struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1367,6 +2116,12 @@ type Response struct {
 	//	*Response_ValidateServerConfig
 	//	*Response_ValidateClientConfig
 	//	*Response_ConvertClientConfig
+	//	*Response_GetInstance
+	//	*Response_InstanceEvent
+	//	*Response_AddRoute
+	//	*Response_DeleteRoute
+	//	*Response_AddUser
+	//	*Response_DeleteUser
 	Payload       isResponse_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1374,7 +2129,7 @@ type Response struct {
 
 func (x *Response) Reset() {
 	*x = Response{}
-	mi := &file_service_proto_msgTypes[23]
+	mi := &file_service_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1386,7 +2141,7 @@ func (x *Response) String() string {
 func (*Response) ProtoMessage() {}
 
 func (x *Response) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[23]
+	mi := &file_service_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1399,7 +2154,7 @@ func (x *Response) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Response.ProtoReflect.Descriptor instead.
 func (*Response) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{23}
+	return file_service_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *Response) GetPayload() isResponse_Payload {
@@ -1499,6 +2254,60 @@ func (x *Response) GetConvertClientConfig() *ConvertClientConfigResponse {
 	return nil
 }
 
+func (x *Response) GetGetInstance() *GetInstanceResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Response_GetInstance); ok {
+			return x.GetInstance
+		}
+	}
+	return nil
+}
+
+func (x *Response) GetInstanceEvent() *InstanceEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*Response_InstanceEvent); ok {
+			return x.InstanceEvent
+		}
+	}
+	return nil
+}
+
+func (x *Response) GetAddRoute() *AddRouteResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Response_AddRoute); ok {
+			return x.AddRoute
+		}
+	}
+	return nil
+}
+
+func (x *Response) GetDeleteRoute() *DeleteRouteResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Response_DeleteRoute); ok {
+			return x.DeleteRoute
+		}
+	}
+	return nil
+}
+
+func (x *Response) GetAddUser() *AddUserResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Response_AddUser); ok {
+			return x.AddUser
+		}
+	}
+	return nil
+}
+
+func (x *Response) GetDeleteUser() *DeleteUserResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Response_DeleteUser); ok {
+			return x.DeleteUser
+		}
+	}
+	return nil
+}
+
 type isResponse_Payload interface {
 	isResponse_Payload()
 }
@@ -1543,6 +2352,30 @@ type Response_ConvertClientConfig struct {
 	ConvertClientConfig *ConvertClientConfigResponse `protobuf:"bytes,10,opt,name=convert_client_config,json=convertClientConfig,proto3,oneof"`
 }
 
+type Response_GetInstance struct {
+	GetInstance *GetInstanceResponse `protobuf:"bytes,11,opt,name=get_instance,json=getInstance,proto3,oneof"`
+}
+
+type Response_InstanceEvent struct {
+	InstanceEvent *InstanceEvent `protobuf:"bytes,12,opt,name=instance_event,json=instanceEvent,proto3,oneof"`
+}
+
+type Response_AddRoute struct {
+	AddRoute *AddRouteResponse `protobuf:"bytes,13,opt,name=add_route,json=addRoute,proto3,oneof"`
+}
+
+type Response_DeleteRoute struct {
+	DeleteRoute *DeleteRouteResponse `protobuf:"bytes,14,opt,name=delete_route,json=deleteRoute,proto3,oneof"`
+}
+
+type Response_AddUser struct {
+	AddUser *AddUserResponse `protobuf:"bytes,15,opt,name=add_user,json=addUser,proto3,oneof"`
+}
+
+type Response_DeleteUser struct {
+	DeleteUser *DeleteUserResponse `protobuf:"bytes,16,opt,name=delete_user,json=deleteUser,proto3,oneof"`
+}
+
 func (*Response_StartServer) isResponse_Payload() {}
 
 func (*Response_StartClient) isResponse_Payload() {}
@@ -1563,15 +2396,35 @@ func (*Response_ValidateClientConfig) isResponse_Payload() {}
 
 func (*Response_ConvertClientConfig) isResponse_Payload() {}
 
+func (*Response_GetInstance) isResponse_Payload() {}
+
+func (*Response_InstanceEvent) isResponse_Payload() {}
+
+func (*Response_AddRoute) isResponse_Payload() {}
+
+func (*Response_DeleteRoute) isResponse_Payload() {}
+
+func (*Response_AddUser) isResponse_Payload() {}
+
+func (*Response_DeleteUser) isResponse_Payload() {}
+
 var File_service_proto protoreflect.FileDescriptor
 
 const file_service_proto_rawDesc = "" +
 	"\n" +
-	"\rservice.proto\x12\x13turnable.service.v1\"o\n" +
+	"\rservice.proto\x12\x13turnable.service.v1\"\x83\x01\n" +
 	"\fInstanceInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x125\n" +
 	"\x04type\x18\x02 \x01(\x0e2!.turnable.service.v1.InstanceTypeR\x04type\x12\x18\n" +
-	"\arunning\x18\x03 \x01(\bR\arunning\"1\n" +
+	"\arunning\x18\x03 \x01(\bR\arunning\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\"\xd3\x01\n" +
+	"\rInstanceEvent\x12\x1f\n" +
+	"\vinstance_id\x18\x01 \x01(\tR\n" +
+	"instanceId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12F\n" +
+	"\rinstance_type\x18\x03 \x01(\x0e2!.turnable.service.v1.InstanceTypeR\finstanceType\x12E\n" +
+	"\n" +
+	"event_type\x18\x04 \x01(\x0e2&.turnable.service.v1.InstanceEventTypeR\teventType\"1\n" +
 	"\aLogAttr\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value\"\x83\x01\n" +
@@ -1591,18 +2444,24 @@ const file_service_proto_rawDesc = "" +
 	"ciphertext\x18\x01 \x01(\fR\n" +
 	"ciphertext\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x02 \x01(\fR\tpublicKey\",\n" +
+	"public_key\x18\x02 \x01(\fR\tpublicKey\"a\n" +
 	"\x12StartServerRequest\x12\x16\n" +
-	"\x06config\x18\x01 \x01(\tR\x06config\"L\n" +
+	"\x06config\x18\x01 \x01(\tR\x06config\x12\x1f\n" +
+	"\vinstance_id\x18\x02 \x01(\tR\n" +
+	"instanceId\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\"L\n" +
 	"\x13StartServerResponse\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"L\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\x81\x01\n" +
 	"\x12StartClientRequest\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\tR\x06config\x12\x1e\n" +
 	"\n" +
 	"listenAddr\x18\x02 \x01(\tR\n" +
-	"listenAddr\"L\n" +
+	"listenAddr\x12\x1f\n" +
+	"\vinstance_id\x18\x03 \x01(\tR\n" +
+	"instanceId\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\"L\n" +
 	"\x13StartClientResponse\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x14\n" +
@@ -1633,9 +2492,43 @@ const file_service_proto_rawDesc = "" +
 	"\x1aConvertClientConfigRequest\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\tR\x06config\"5\n" +
 	"\x1bConvertClientConfigResponse\x12\x16\n" +
-	"\x06config\x18\x01 \x01(\tR\x06config\")\n" +
+	"\x06config\x18\x01 \x01(\tR\x06config\"5\n" +
+	"\x12GetInstanceRequest\x12\x1f\n" +
+	"\vinstance_id\x18\x01 \x01(\tR\n" +
+	"instanceId\"\x9b\x01\n" +
+	"\x13GetInstanceResponse\x125\n" +
+	"\x04info\x18\x01 \x01(\v2!.turnable.service.v1.InstanceInfoR\x04info\x12\x16\n" +
+	"\x06config\x18\x02 \x01(\tR\x06config\x12\x1f\n" +
+	"\vlisten_addr\x18\x03 \x01(\tR\n" +
+	"listenAddr\x12\x14\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\"Q\n" +
+	"\x0fAddRouteRequest\x12\x1f\n" +
+	"\vinstance_id\x18\x01 \x01(\tR\n" +
+	"instanceId\x12\x1d\n" +
+	"\n" +
+	"route_json\x18\x02 \x01(\tR\trouteJson\"(\n" +
+	"\x10AddRouteResponse\x12\x14\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error\"P\n" +
+	"\x12DeleteRouteRequest\x12\x1f\n" +
+	"\vinstance_id\x18\x01 \x01(\tR\n" +
+	"instanceId\x12\x19\n" +
+	"\broute_id\x18\x02 \x01(\tR\arouteId\"+\n" +
+	"\x13DeleteRouteResponse\x12\x14\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error\"N\n" +
+	"\x0eAddUserRequest\x12\x1f\n" +
+	"\vinstance_id\x18\x01 \x01(\tR\n" +
+	"instanceId\x12\x1b\n" +
+	"\tuser_json\x18\x02 \x01(\tR\buserJson\"'\n" +
+	"\x0fAddUserResponse\x12\x14\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error\"Q\n" +
+	"\x11DeleteUserRequest\x12\x1f\n" +
+	"\vinstance_id\x18\x01 \x01(\tR\n" +
+	"instanceId\x12\x1b\n" +
+	"\tuser_uuid\x18\x02 \x01(\tR\buserUuid\"*\n" +
+	"\x12DeleteUserResponse\x12\x14\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error\")\n" +
 	"\rErrorResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"\xe7\x05\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\xd5\b\n" +
 	"\aRequest\x12L\n" +
 	"\fstart_server\x18\x01 \x01(\v2'.turnable.service.v1.StartServerRequestH\x00R\vstartServer\x12L\n" +
 	"\fstart_client\x18\x02 \x01(\v2'.turnable.service.v1.StartClientRequestH\x00R\vstartClient\x12O\n" +
@@ -1644,8 +2537,16 @@ const file_service_proto_rawDesc = "" +
 	"\x0elist_instances\x18\x05 \x01(\v2).turnable.service.v1.ListInstancesRequestH\x00R\rlistInstances\x12h\n" +
 	"\x16validate_server_config\x18\x06 \x01(\v20.turnable.service.v1.ValidateServerConfigRequestH\x00R\x14validateServerConfig\x12h\n" +
 	"\x16validate_client_config\x18\a \x01(\v20.turnable.service.v1.ValidateClientConfigRequestH\x00R\x14validateClientConfig\x12e\n" +
-	"\x15convert_client_config\x18\b \x01(\v2/.turnable.service.v1.ConvertClientConfigRequestH\x00R\x13convertClientConfigB\t\n" +
-	"\apayload\"\xed\x06\n" +
+	"\x15convert_client_config\x18\b \x01(\v2/.turnable.service.v1.ConvertClientConfigRequestH\x00R\x13convertClientConfig\x12L\n" +
+	"\fget_instance\x18\t \x01(\v2'.turnable.service.v1.GetInstanceRequestH\x00R\vgetInstance\x12C\n" +
+	"\tadd_route\x18\n" +
+	" \x01(\v2$.turnable.service.v1.AddRouteRequestH\x00R\baddRoute\x12L\n" +
+	"\fdelete_route\x18\v \x01(\v2'.turnable.service.v1.DeleteRouteRequestH\x00R\vdeleteRoute\x12@\n" +
+	"\badd_user\x18\f \x01(\v2#.turnable.service.v1.AddUserRequestH\x00R\aaddUser\x12I\n" +
+	"\vdelete_user\x18\r \x01(\v2&.turnable.service.v1.DeleteUserRequestH\x00R\n" +
+	"deleteUserB\t\n" +
+	"\apayload\"\xad\n" +
+	"\n" +
 	"\bResponse\x12M\n" +
 	"\fstart_server\x18\x01 \x01(\v2(.turnable.service.v1.StartServerResponseH\x00R\vstartServer\x12M\n" +
 	"\fstart_client\x18\x02 \x01(\v2(.turnable.service.v1.StartClientResponseH\x00R\vstartClient\x12P\n" +
@@ -1658,12 +2559,24 @@ const file_service_proto_rawDesc = "" +
 	"\x16validate_server_config\x18\b \x01(\v21.turnable.service.v1.ValidateServerConfigResponseH\x00R\x14validateServerConfig\x12i\n" +
 	"\x16validate_client_config\x18\t \x01(\v21.turnable.service.v1.ValidateClientConfigResponseH\x00R\x14validateClientConfig\x12f\n" +
 	"\x15convert_client_config\x18\n" +
-	" \x01(\v20.turnable.service.v1.ConvertClientConfigResponseH\x00R\x13convertClientConfigB\t\n" +
+	" \x01(\v20.turnable.service.v1.ConvertClientConfigResponseH\x00R\x13convertClientConfig\x12M\n" +
+	"\fget_instance\x18\v \x01(\v2(.turnable.service.v1.GetInstanceResponseH\x00R\vgetInstance\x12K\n" +
+	"\x0einstance_event\x18\f \x01(\v2\".turnable.service.v1.InstanceEventH\x00R\rinstanceEvent\x12D\n" +
+	"\tadd_route\x18\r \x01(\v2%.turnable.service.v1.AddRouteResponseH\x00R\baddRoute\x12M\n" +
+	"\fdelete_route\x18\x0e \x01(\v2(.turnable.service.v1.DeleteRouteResponseH\x00R\vdeleteRoute\x12A\n" +
+	"\badd_user\x18\x0f \x01(\v2$.turnable.service.v1.AddUserResponseH\x00R\aaddUser\x12J\n" +
+	"\vdelete_user\x18\x10 \x01(\v2'.turnable.service.v1.DeleteUserResponseH\x00R\n" +
+	"deleteUserB\t\n" +
 	"\apayload*a\n" +
 	"\fInstanceType\x12\x1d\n" +
 	"\x19INSTANCE_TYPE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14INSTANCE_TYPE_SERVER\x10\x01\x12\x18\n" +
-	"\x14INSTANCE_TYPE_CLIENT\x10\x02B<Z:github.com/theairblow/turnable/pkg/service/proto;servicepbb\x06proto3"
+	"\x14INSTANCE_TYPE_CLIENT\x10\x02*\xa4\x01\n" +
+	"\x11InstanceEventType\x12#\n" +
+	"\x1fINSTANCE_EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bINSTANCE_EVENT_TYPE_STARTED\x10\x01\x12\x1f\n" +
+	"\x1bINSTANCE_EVENT_TYPE_STOPPED\x10\x02\x12(\n" +
+	"$INSTANCE_EVENT_TYPE_PROVIDER_UPDATED\x10\x03B<Z:github.com/theairblow/turnable/pkg/service/proto;servicepbb\x06proto3"
 
 var (
 	file_service_proto_rawDescOnce sync.Once
@@ -1677,62 +2590,88 @@ func file_service_proto_rawDescGZIP() []byte {
 	return file_service_proto_rawDescData
 }
 
-var file_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_service_proto_goTypes = []any{
 	(InstanceType)(0),                    // 0: turnable.service.v1.InstanceType
-	(*InstanceInfo)(nil),                 // 1: turnable.service.v1.InstanceInfo
-	(*LogAttr)(nil),                      // 2: turnable.service.v1.LogAttr
-	(*LogRecord)(nil),                    // 3: turnable.service.v1.LogRecord
-	(*ServerHello)(nil),                  // 4: turnable.service.v1.ServerHello
-	(*ClientHello)(nil),                  // 5: turnable.service.v1.ClientHello
-	(*StartServerRequest)(nil),           // 6: turnable.service.v1.StartServerRequest
-	(*StartServerResponse)(nil),          // 7: turnable.service.v1.StartServerResponse
-	(*StartClientRequest)(nil),           // 8: turnable.service.v1.StartClientRequest
-	(*StartClientResponse)(nil),          // 9: turnable.service.v1.StartClientResponse
-	(*StopInstanceRequest)(nil),          // 10: turnable.service.v1.StopInstanceRequest
-	(*StopInstanceResponse)(nil),         // 11: turnable.service.v1.StopInstanceResponse
-	(*UpdateProviderRequest)(nil),        // 12: turnable.service.v1.UpdateProviderRequest
-	(*UpdateProviderResponse)(nil),       // 13: turnable.service.v1.UpdateProviderResponse
-	(*ListInstancesRequest)(nil),         // 14: turnable.service.v1.ListInstancesRequest
-	(*ListInstancesResponse)(nil),        // 15: turnable.service.v1.ListInstancesResponse
-	(*ValidateServerConfigRequest)(nil),  // 16: turnable.service.v1.ValidateServerConfigRequest
-	(*ValidateServerConfigResponse)(nil), // 17: turnable.service.v1.ValidateServerConfigResponse
-	(*ValidateClientConfigRequest)(nil),  // 18: turnable.service.v1.ValidateClientConfigRequest
-	(*ValidateClientConfigResponse)(nil), // 19: turnable.service.v1.ValidateClientConfigResponse
-	(*ConvertClientConfigRequest)(nil),   // 20: turnable.service.v1.ConvertClientConfigRequest
-	(*ConvertClientConfigResponse)(nil),  // 21: turnable.service.v1.ConvertClientConfigResponse
-	(*ErrorResponse)(nil),                // 22: turnable.service.v1.ErrorResponse
-	(*Request)(nil),                      // 23: turnable.service.v1.Request
-	(*Response)(nil),                     // 24: turnable.service.v1.Response
+	(InstanceEventType)(0),               // 1: turnable.service.v1.InstanceEventType
+	(*InstanceInfo)(nil),                 // 2: turnable.service.v1.InstanceInfo
+	(*InstanceEvent)(nil),                // 3: turnable.service.v1.InstanceEvent
+	(*LogAttr)(nil),                      // 4: turnable.service.v1.LogAttr
+	(*LogRecord)(nil),                    // 5: turnable.service.v1.LogRecord
+	(*ServerHello)(nil),                  // 6: turnable.service.v1.ServerHello
+	(*ClientHello)(nil),                  // 7: turnable.service.v1.ClientHello
+	(*StartServerRequest)(nil),           // 8: turnable.service.v1.StartServerRequest
+	(*StartServerResponse)(nil),          // 9: turnable.service.v1.StartServerResponse
+	(*StartClientRequest)(nil),           // 10: turnable.service.v1.StartClientRequest
+	(*StartClientResponse)(nil),          // 11: turnable.service.v1.StartClientResponse
+	(*StopInstanceRequest)(nil),          // 12: turnable.service.v1.StopInstanceRequest
+	(*StopInstanceResponse)(nil),         // 13: turnable.service.v1.StopInstanceResponse
+	(*UpdateProviderRequest)(nil),        // 14: turnable.service.v1.UpdateProviderRequest
+	(*UpdateProviderResponse)(nil),       // 15: turnable.service.v1.UpdateProviderResponse
+	(*ListInstancesRequest)(nil),         // 16: turnable.service.v1.ListInstancesRequest
+	(*ListInstancesResponse)(nil),        // 17: turnable.service.v1.ListInstancesResponse
+	(*ValidateServerConfigRequest)(nil),  // 18: turnable.service.v1.ValidateServerConfigRequest
+	(*ValidateServerConfigResponse)(nil), // 19: turnable.service.v1.ValidateServerConfigResponse
+	(*ValidateClientConfigRequest)(nil),  // 20: turnable.service.v1.ValidateClientConfigRequest
+	(*ValidateClientConfigResponse)(nil), // 21: turnable.service.v1.ValidateClientConfigResponse
+	(*ConvertClientConfigRequest)(nil),   // 22: turnable.service.v1.ConvertClientConfigRequest
+	(*ConvertClientConfigResponse)(nil),  // 23: turnable.service.v1.ConvertClientConfigResponse
+	(*GetInstanceRequest)(nil),           // 24: turnable.service.v1.GetInstanceRequest
+	(*GetInstanceResponse)(nil),          // 25: turnable.service.v1.GetInstanceResponse
+	(*AddRouteRequest)(nil),              // 26: turnable.service.v1.AddRouteRequest
+	(*AddRouteResponse)(nil),             // 27: turnable.service.v1.AddRouteResponse
+	(*DeleteRouteRequest)(nil),           // 28: turnable.service.v1.DeleteRouteRequest
+	(*DeleteRouteResponse)(nil),          // 29: turnable.service.v1.DeleteRouteResponse
+	(*AddUserRequest)(nil),               // 30: turnable.service.v1.AddUserRequest
+	(*AddUserResponse)(nil),              // 31: turnable.service.v1.AddUserResponse
+	(*DeleteUserRequest)(nil),            // 32: turnable.service.v1.DeleteUserRequest
+	(*DeleteUserResponse)(nil),           // 33: turnable.service.v1.DeleteUserResponse
+	(*ErrorResponse)(nil),                // 34: turnable.service.v1.ErrorResponse
+	(*Request)(nil),                      // 35: turnable.service.v1.Request
+	(*Response)(nil),                     // 36: turnable.service.v1.Response
 }
 var file_service_proto_depIdxs = []int32{
 	0,  // 0: turnable.service.v1.InstanceInfo.type:type_name -> turnable.service.v1.InstanceType
-	2,  // 1: turnable.service.v1.LogRecord.attrs:type_name -> turnable.service.v1.LogAttr
-	1,  // 2: turnable.service.v1.ListInstancesResponse.instances:type_name -> turnable.service.v1.InstanceInfo
-	6,  // 3: turnable.service.v1.Request.start_server:type_name -> turnable.service.v1.StartServerRequest
-	8,  // 4: turnable.service.v1.Request.start_client:type_name -> turnable.service.v1.StartClientRequest
-	10, // 5: turnable.service.v1.Request.stop_instance:type_name -> turnable.service.v1.StopInstanceRequest
-	12, // 6: turnable.service.v1.Request.update_provider:type_name -> turnable.service.v1.UpdateProviderRequest
-	14, // 7: turnable.service.v1.Request.list_instances:type_name -> turnable.service.v1.ListInstancesRequest
-	16, // 8: turnable.service.v1.Request.validate_server_config:type_name -> turnable.service.v1.ValidateServerConfigRequest
-	18, // 9: turnable.service.v1.Request.validate_client_config:type_name -> turnable.service.v1.ValidateClientConfigRequest
-	20, // 10: turnable.service.v1.Request.convert_client_config:type_name -> turnable.service.v1.ConvertClientConfigRequest
-	7,  // 11: turnable.service.v1.Response.start_server:type_name -> turnable.service.v1.StartServerResponse
-	9,  // 12: turnable.service.v1.Response.start_client:type_name -> turnable.service.v1.StartClientResponse
-	11, // 13: turnable.service.v1.Response.stop_instance:type_name -> turnable.service.v1.StopInstanceResponse
-	13, // 14: turnable.service.v1.Response.update_provider:type_name -> turnable.service.v1.UpdateProviderResponse
-	15, // 15: turnable.service.v1.Response.list_instances:type_name -> turnable.service.v1.ListInstancesResponse
-	3,  // 16: turnable.service.v1.Response.log_record:type_name -> turnable.service.v1.LogRecord
-	22, // 17: turnable.service.v1.Response.error:type_name -> turnable.service.v1.ErrorResponse
-	17, // 18: turnable.service.v1.Response.validate_server_config:type_name -> turnable.service.v1.ValidateServerConfigResponse
-	19, // 19: turnable.service.v1.Response.validate_client_config:type_name -> turnable.service.v1.ValidateClientConfigResponse
-	21, // 20: turnable.service.v1.Response.convert_client_config:type_name -> turnable.service.v1.ConvertClientConfigResponse
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	0,  // 1: turnable.service.v1.InstanceEvent.instance_type:type_name -> turnable.service.v1.InstanceType
+	1,  // 2: turnable.service.v1.InstanceEvent.event_type:type_name -> turnable.service.v1.InstanceEventType
+	4,  // 3: turnable.service.v1.LogRecord.attrs:type_name -> turnable.service.v1.LogAttr
+	2,  // 4: turnable.service.v1.ListInstancesResponse.instances:type_name -> turnable.service.v1.InstanceInfo
+	2,  // 5: turnable.service.v1.GetInstanceResponse.info:type_name -> turnable.service.v1.InstanceInfo
+	8,  // 6: turnable.service.v1.Request.start_server:type_name -> turnable.service.v1.StartServerRequest
+	10, // 7: turnable.service.v1.Request.start_client:type_name -> turnable.service.v1.StartClientRequest
+	12, // 8: turnable.service.v1.Request.stop_instance:type_name -> turnable.service.v1.StopInstanceRequest
+	14, // 9: turnable.service.v1.Request.update_provider:type_name -> turnable.service.v1.UpdateProviderRequest
+	16, // 10: turnable.service.v1.Request.list_instances:type_name -> turnable.service.v1.ListInstancesRequest
+	18, // 11: turnable.service.v1.Request.validate_server_config:type_name -> turnable.service.v1.ValidateServerConfigRequest
+	20, // 12: turnable.service.v1.Request.validate_client_config:type_name -> turnable.service.v1.ValidateClientConfigRequest
+	22, // 13: turnable.service.v1.Request.convert_client_config:type_name -> turnable.service.v1.ConvertClientConfigRequest
+	24, // 14: turnable.service.v1.Request.get_instance:type_name -> turnable.service.v1.GetInstanceRequest
+	26, // 15: turnable.service.v1.Request.add_route:type_name -> turnable.service.v1.AddRouteRequest
+	28, // 16: turnable.service.v1.Request.delete_route:type_name -> turnable.service.v1.DeleteRouteRequest
+	30, // 17: turnable.service.v1.Request.add_user:type_name -> turnable.service.v1.AddUserRequest
+	32, // 18: turnable.service.v1.Request.delete_user:type_name -> turnable.service.v1.DeleteUserRequest
+	9,  // 19: turnable.service.v1.Response.start_server:type_name -> turnable.service.v1.StartServerResponse
+	11, // 20: turnable.service.v1.Response.start_client:type_name -> turnable.service.v1.StartClientResponse
+	13, // 21: turnable.service.v1.Response.stop_instance:type_name -> turnable.service.v1.StopInstanceResponse
+	15, // 22: turnable.service.v1.Response.update_provider:type_name -> turnable.service.v1.UpdateProviderResponse
+	17, // 23: turnable.service.v1.Response.list_instances:type_name -> turnable.service.v1.ListInstancesResponse
+	5,  // 24: turnable.service.v1.Response.log_record:type_name -> turnable.service.v1.LogRecord
+	34, // 25: turnable.service.v1.Response.error:type_name -> turnable.service.v1.ErrorResponse
+	19, // 26: turnable.service.v1.Response.validate_server_config:type_name -> turnable.service.v1.ValidateServerConfigResponse
+	21, // 27: turnable.service.v1.Response.validate_client_config:type_name -> turnable.service.v1.ValidateClientConfigResponse
+	23, // 28: turnable.service.v1.Response.convert_client_config:type_name -> turnable.service.v1.ConvertClientConfigResponse
+	25, // 29: turnable.service.v1.Response.get_instance:type_name -> turnable.service.v1.GetInstanceResponse
+	3,  // 30: turnable.service.v1.Response.instance_event:type_name -> turnable.service.v1.InstanceEvent
+	27, // 31: turnable.service.v1.Response.add_route:type_name -> turnable.service.v1.AddRouteResponse
+	29, // 32: turnable.service.v1.Response.delete_route:type_name -> turnable.service.v1.DeleteRouteResponse
+	31, // 33: turnable.service.v1.Response.add_user:type_name -> turnable.service.v1.AddUserResponse
+	33, // 34: turnable.service.v1.Response.delete_user:type_name -> turnable.service.v1.DeleteUserResponse
+	35, // [35:35] is the sub-list for method output_type
+	35, // [35:35] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_service_proto_init() }
@@ -1740,7 +2679,7 @@ func file_service_proto_init() {
 	if File_service_proto != nil {
 		return
 	}
-	file_service_proto_msgTypes[22].OneofWrappers = []any{
+	file_service_proto_msgTypes[33].OneofWrappers = []any{
 		(*Request_StartServer)(nil),
 		(*Request_StartClient)(nil),
 		(*Request_StopInstance)(nil),
@@ -1749,8 +2688,13 @@ func file_service_proto_init() {
 		(*Request_ValidateServerConfig)(nil),
 		(*Request_ValidateClientConfig)(nil),
 		(*Request_ConvertClientConfig)(nil),
+		(*Request_GetInstance)(nil),
+		(*Request_AddRoute)(nil),
+		(*Request_DeleteRoute)(nil),
+		(*Request_AddUser)(nil),
+		(*Request_DeleteUser)(nil),
 	}
-	file_service_proto_msgTypes[23].OneofWrappers = []any{
+	file_service_proto_msgTypes[34].OneofWrappers = []any{
 		(*Response_StartServer)(nil),
 		(*Response_StartClient)(nil),
 		(*Response_StopInstance)(nil),
@@ -1761,14 +2705,20 @@ func file_service_proto_init() {
 		(*Response_ValidateServerConfig)(nil),
 		(*Response_ValidateClientConfig)(nil),
 		(*Response_ConvertClientConfig)(nil),
+		(*Response_GetInstance)(nil),
+		(*Response_InstanceEvent)(nil),
+		(*Response_AddRoute)(nil),
+		(*Response_DeleteRoute)(nil),
+		(*Response_AddUser)(nil),
+		(*Response_DeleteUser)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   24,
+			NumEnums:      2,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

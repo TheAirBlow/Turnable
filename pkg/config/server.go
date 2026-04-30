@@ -318,6 +318,51 @@ func (s *ServerConfig) GetAllRoutes() []Route {
 	return s.provider.GetAllRoutes()
 }
 
+// AddRoute adds or updates a route in the active provider
+func (s *ServerConfig) AddRoute(route *Route) error {
+	if s.provider == nil {
+		return fmt.Errorf("no config provider initialized, call UpdateProvider first")
+	}
+
+	return s.provider.AddRoute(route)
+}
+
+// AddUser adds or updates a user in the active provider
+func (s *ServerConfig) AddUser(user *User) error {
+	if s.provider == nil {
+		return fmt.Errorf("no config provider initialized, call UpdateProvider first")
+	}
+
+	return s.provider.AddUser(user)
+}
+
+// DeleteRoute removes a route by ID from the active provider
+func (s *ServerConfig) DeleteRoute(id string) error {
+	if s.provider == nil {
+		return fmt.Errorf("no config provider initialized, call UpdateProvider first")
+	}
+
+	return s.provider.DeleteRoute(id)
+}
+
+// DeleteUser removes a user by UUID from the active provider
+func (s *ServerConfig) DeleteUser(uuid string) error {
+	if s.provider == nil {
+		return fmt.Errorf("no config provider initialized, call UpdateProvider first")
+	}
+
+	return s.provider.DeleteUser(uuid)
+}
+
+// ProviderID returns the ID of the active provider, or empty string if none is set
+func (s *ServerConfig) ProviderID() string {
+	if s.provider == nil {
+		return ""
+	}
+
+	return s.provider.ID()
+}
+
 // ToJSON serializes this ServerConfig to a JSON file
 func (s *ServerConfig) ToJSON(indented bool) (string, error) {
 	if s.provider != nil {
