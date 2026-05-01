@@ -15,31 +15,36 @@ import (
 	"github.com/theairblow/turnable/pkg/common"
 )
 
-// ClientConfig represents a client configuration URL
+// ClientConfig represents a client configuration
 type ClientConfig struct {
-	UserUUID string `json:"user_uuid,omitempty"` // User's unique UIID
-	Username string `json:"username,omitempty"`  // [-] Username to use in the call
+	UserUUID string `json:"user_uuid,omitempty"` // User's unique UUID
+	Username string `json:"username,omitempty"`  // Username to use in the call
 
-	PlatformID string `json:"platform_id,omitempty"` // [-] ID of the platform
-	CallID     string `json:"call_id,omitempty"`     // [-] ID of the call on the platform
+	PlatformID string `json:"platform_id,omitempty"` // ID of the platform
+	CallID     string `json:"call_id,omitempty"`     // ID of the call on the platform
 
-	RouteID         string `json:"route_id,omitempty"`         // Route's unique ID
-	Socket          string `json:"socket,omitempty"`           // Socket protocol to use (UDP/TCP)
-	Gateway         string `json:"gateway,omitempty"`          // [-] Gateway's IP and port (for Relay)
-	GatewayUsername string `json:"gateway_username,omitempty"` // [-] Gateway's username in the call (for P2P)
+	Routes          []ClientRoute `json:"routes,omitempty"`           // Ordered list of tunnel routes
+	GatewayUsername string        `json:"gateway_username,omitempty"` // [-] Gateway username (P2P)
 
 	Type      string `json:"type,omitempty"` // Connection type
-	ForceTurn bool   `json:"forceturn"`      // [-] Force TURN connection in P2P mode
-	Peers     int    `json:"peers"`          // [-] How many peer connections to open per session
+	ForceTurn bool   `json:"forceturn"`      // [-] Force TURN in P2P mode
+	Peers     int    `json:"peers"`          // [-] Peer connections per session
 
-	Proto     string `json:"proto,omitempty"`     // [-] Protocol to use
-	Cloak     string `json:"cloak,omitempty"`     // [-] Cloak method to use
-	Transport string `json:"transport,omitempty"` // [-] Transport protocol to use
+	Proto   string `json:"proto,omitempty"`   // [-] Protocol to use
+	Cloak   string `json:"cloak,omitempty"`   // [-] Cloak method
+	Gateway string `json:"gateway,omitempty"` // [-] Gateway IP:port (relay)
 
-	PubKey     string `json:"pub_key,omitempty"`    // [-] Public key of the server
-	Encryption string `json:"encryption,omitempty"` // Encryption mode
+	PubKey     string `json:"pub_key,omitempty"`    // [-] Server ML-KEM-768 public key (base64)
+	Encryption string `json:"encryption,omitempty"` // Encryption mode (handshake / full)
 
-	Name string `json:"name,omitempty"` // [-] Display name of the config
+	Name string `json:"name,omitempty"` // [-] Display name
+}
+
+// ClientRoute represents one tunnel route inside a multi-route client config
+type ClientRoute struct {
+	RouteID   string `json:"route_id"`
+	Socket    string `json:"socket"`
+	Transport string `json:"transport,omitempty"`
 }
 
 // Validate checks that the ClientConfig contains all required fields.
@@ -54,16 +59,13 @@ func (c *ClientConfig) Validate() error {
 	if c.Proto == "" {
 		c.Proto = "none"
 	}
-	if c.Transport == "" {
-		c.Transport = "none"
-	}
 	if c.Cloak == "" {
 		c.Cloak = "none"
 	}
 
 	if c.Type != "direct" {
-		if common.IsNullOrWhiteSpace(c.RouteID) {
-			return errors.New("route_id (path) is required")
+		if len(c.Routes) == 0 {
+			return errors.New("at least one route is required")
 		}
 
 		_, err := uuid.Parse(c.UserUUID)
@@ -73,7 +75,6 @@ func (c *ClientConfig) Validate() error {
 
 		switch c.Encryption {
 		case "handshake", "full":
-			// OK
 		default:
 			return fmt.Errorf("invalid encryption mode: %s", c.Encryption)
 		}
@@ -101,19 +102,32 @@ func (c *ClientConfig) Validate() error {
 		return fmt.Errorf("invalid protocol: %s", c.Proto)
 	}
 
-	switch c.Socket {
-	case "tcp", "udp":
-		// OK
-	default:
-		return fmt.Errorf("invalid socket: %s (must be tcp or udp)", c.Socket)
+	if len(c.Routes) == 0 {
+		return errors.New("at least one route is required")
 	}
 
-	if c.Socket == "tcp" && c.Transport == "none" {
-		return fmt.Errorf("transport is required for tcp to work reliably")
-	}
+	for i, route := range c.Routes {
+		if common.IsNullOrWhiteSpace(route.RouteID) {
+			return fmt.Errorf("routes[%d].route_id is required", i)
+		}
 
-	if !common.TransportsHolder.Exists(c.Transport) {
-		return fmt.Errorf("invalid transport: %s", c.Transport)
+		if c.Routes[i].Transport == "" {
+			c.Routes[i].Transport = "none"
+		}
+
+		switch route.Socket {
+		case "tcp", "udp":
+		default:
+			return fmt.Errorf("routes[%d]: invalid socket %q (must be tcp or udp)", i, route.Socket)
+		}
+
+		if route.Socket == "tcp" && c.Routes[i].Transport == "none" {
+			return fmt.Errorf("routes[%d]: transport is required for tcp to work reliably", i)
+		}
+
+		if !common.TransportsHolder.Exists(c.Routes[i].Transport) {
+			return fmt.Errorf("routes[%d]: invalid transport: %s", i, c.Routes[i].Transport)
+		}
 	}
 
 	if c.Peers <= 0 {
@@ -133,17 +147,16 @@ func (c *ClientConfig) Validate() error {
 	return nil
 }
 
-// NewClientConfigFromJSON creates a new ClientConfig from a config JSON
+// NewClientConfigFromJSON creates a new ClientConfig from a config JSON.
 func NewClientConfigFromJSON(baseJSON string) (*ClientConfig, error) {
 	var s ClientConfig
 	if err := json.Unmarshal([]byte(baseJSON), &s); err != nil {
 		return nil, fmt.Errorf("failed to parse client config: %w", err)
 	}
-
 	return &s, nil
 }
 
-// NewClientConfigFromURL parses a VPN connection URL into a ClientConfig.
+// NewClientConfigFromURL parses a connection URL into a ClientConfig
 func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -157,19 +170,70 @@ func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 	q := u.Query()
 
 	cfg := &ClientConfig{
-		PlatformID: u.Host,
 		ForceTurn:  false,
 		Cloak:      "none",
-		Transport:  "none",
 		Proto:      "dtls",
 		Peers:      1,
+		PlatformID: u.Host,
+		Name:       u.Fragment,
 	}
-
-	cfg.RouteID = strings.TrimPrefix(u.Path, "/")
 
 	if u.User != nil {
 		cfg.UserUUID = u.User.Username()
 		cfg.CallID, _ = u.User.Password()
+	}
+
+	path := strings.TrimPrefix(u.Path, "/")
+	var routeIDs []string
+	for _, seg := range strings.Split(path, "/") {
+		if seg = strings.TrimSpace(seg); seg != "" {
+			routeIDs = append(routeIDs, seg)
+		}
+	}
+
+	sockets := make(map[int]string)
+	transports := make(map[int]string)
+	for key, vals := range q {
+		if len(vals) == 0 {
+			continue
+		}
+
+		val := vals[0]
+		if bracket := strings.Index(key, "["); bracket >= 0 && strings.HasSuffix(key, "]") {
+			name := key[:bracket]
+			idxStr := key[bracket+1 : len(key)-1]
+			if idx, err := strconv.Atoi(idxStr); err == nil && idx >= 1 {
+				switch name {
+				case "socket":
+					sockets[idx] = val
+				case "transport":
+					transports[idx] = val
+				}
+			}
+		} else {
+			switch key {
+			case "socket":
+				sockets[1] = val
+			case "transport":
+				transports[1] = val
+			}
+		}
+	}
+
+	cfg.Routes = make([]ClientRoute, len(routeIDs))
+	for i, rid := range routeIDs {
+		idx := i + 1
+		socket := sockets[idx]
+		if socket == "" {
+			socket = "udp"
+		}
+
+		transport := transports[idx]
+		if transport == "" {
+			transport = "none"
+		}
+
+		cfg.Routes[i] = ClientRoute{RouteID: rid, Socket: socket, Transport: transport}
 	}
 
 	if v := q.Get("username"); v != "" {
@@ -181,9 +245,6 @@ func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 	if v := q.Get("gateway"); v != "" {
 		cfg.Gateway = v
 	}
-	if v := q.Get("socket"); v != "" {
-		cfg.Socket = v
-	}
 	if v := q.Get("gateway_username"); v != "" {
 		cfg.GatewayUsername = v
 	}
@@ -192,12 +253,6 @@ func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 	}
 	if v := q.Get("cloak"); v != "" {
 		cfg.Cloak = v
-	}
-	if v := q.Get("transport"); v != "" {
-		cfg.Transport = v
-	}
-	if v := q.Get("name"); v != "" {
-		cfg.Name = v
 	}
 	if v := q.Get("forceturn"); v != "" {
 		cfg.ForceTurn, _ = strconv.ParseBool(v)
@@ -213,10 +268,7 @@ func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 	}
 
 	if cfg.Proto == "" {
-		cfg.Transport = "none"
-	}
-	if cfg.Transport == "" {
-		cfg.Transport = "none"
+		cfg.Proto = "none"
 	}
 	if cfg.Cloak == "" {
 		cfg.Cloak = "none"
@@ -225,73 +277,89 @@ func NewClientConfigFromURL(raw string) (*ClientConfig, error) {
 	return cfg, nil
 }
 
-// ToURL serialises the ClientConfig back into a VPN connection URL.
+// ToURL serialises the ClientConfig back into a connection URL
 func (c *ClientConfig) ToURL() string {
+	var pathParts []string
+	for _, r := range c.Routes {
+		pathParts = append(pathParts, strings.TrimPrefix(r.RouteID, "/"))
+	}
+	routePath := "/"
+	if len(pathParts) > 0 {
+		routePath = "/" + strings.Join(pathParts, "/")
+	}
+
 	u := &url.URL{
-		Scheme: "turnable",
-		Host:   c.PlatformID,
-		Path:   "/" + strings.TrimPrefix(c.RouteID, "/"),
+		Scheme:   "turnable",
+		Host:     c.PlatformID,
+		Path:     routePath,
+		Fragment: c.Name,
 	}
 
 	if !common.IsNullOrWhiteSpace(c.UserUUID) || !common.IsNullOrWhiteSpace(c.CallID) {
 		u.User = url.UserPassword(c.UserUUID, c.CallID)
 	}
 
-	type queryParam struct {
-		key   string
-		value string
+	type queryParam struct{ key, value string }
+	params := make([]queryParam, 0, 16)
+
+	single := len(c.Routes) == 1
+	for i, r := range c.Routes {
+		idx := i + 1
+
+		var sockKey, transKey string
+		if single {
+			sockKey, transKey = "socket", "transport"
+		} else {
+			sockKey = fmt.Sprintf("socket[%d]", idx)
+			transKey = fmt.Sprintf("transport[%d]", idx)
+		}
+
+		params = append(params, queryParam{sockKey, r.Socket})
+		if !common.IsNullOrWhiteSpace(r.Transport) && r.Transport != "none" {
+			params = append(params, queryParam{transKey, r.Transport})
+		}
 	}
-	params := make([]queryParam, 0, 12)
 
 	if !common.IsNullOrWhiteSpace(c.PubKey) {
-		params = append(params, queryParam{key: "pub_key", value: c.PubKey})
+		params = append(params, queryParam{"pub_key", c.PubKey})
 	}
 	if !common.IsNullOrWhiteSpace(c.Username) {
-		params = append(params, queryParam{key: "username", value: c.Username})
+		params = append(params, queryParam{"username", c.Username})
 	}
 	if !common.IsNullOrWhiteSpace(c.Type) {
-		params = append(params, queryParam{key: "type", value: c.Type})
+		params = append(params, queryParam{"type", c.Type})
 	}
 	if !common.IsNullOrWhiteSpace(c.Encryption) {
-		params = append(params, queryParam{key: "encryption", value: c.Encryption})
-	}
-	if !common.IsNullOrWhiteSpace(c.Transport) {
-		params = append(params, queryParam{key: "transport", value: c.Transport})
+		params = append(params, queryParam{"encryption", c.Encryption})
 	}
 	if !common.IsNullOrWhiteSpace(c.Gateway) {
-		params = append(params, queryParam{key: "gateway", value: c.Gateway})
-	}
-	if !common.IsNullOrWhiteSpace(c.Socket) {
-		params = append(params, queryParam{key: "socket", value: c.Socket})
+		params = append(params, queryParam{"gateway", c.Gateway})
 	}
 	if !common.IsNullOrWhiteSpace(c.GatewayUsername) {
-		params = append(params, queryParam{key: "gateway_username", value: c.GatewayUsername})
+		params = append(params, queryParam{"gateway_username", c.GatewayUsername})
 	}
-	if !common.IsNullOrWhiteSpace(c.Proto) {
-		params = append(params, queryParam{key: "proto", value: c.Proto})
+	if !common.IsNullOrWhiteSpace(c.Proto) && c.Proto != "none" {
+		params = append(params, queryParam{"proto", c.Proto})
 	}
-	if !common.IsNullOrWhiteSpace(c.Cloak) {
-		params = append(params, queryParam{key: "cloak", value: c.Cloak})
-	}
-	if !common.IsNullOrWhiteSpace(c.Name) {
-		params = append(params, queryParam{key: "name", value: c.Name})
+	if !common.IsNullOrWhiteSpace(c.Cloak) && c.Cloak != "none" {
+		params = append(params, queryParam{"cloak", c.Cloak})
 	}
 	if c.ForceTurn {
-		params = append(params, queryParam{key: "forceturn", value: "true"})
+		params = append(params, queryParam{"forceturn", "true"})
 	}
 	if c.Peers > 1 {
-		params = append(params, queryParam{key: "peers", value: strconv.Itoa(c.Peers)})
+		params = append(params, queryParam{"peers", strconv.Itoa(c.Peers)})
 	}
 
 	if len(params) > 0 {
 		var b strings.Builder
-		for i, param := range params {
+		for i, p := range params {
 			if i > 0 {
 				b.WriteByte('&')
 			}
-			b.WriteString(url.QueryEscape(param.key))
+			b.WriteString(url.QueryEscape(p.key))
 			b.WriteByte('=')
-			b.WriteString(url.QueryEscape(param.value))
+			b.WriteString(url.QueryEscape(p.value))
 		}
 		u.RawQuery = b.String()
 	}
@@ -299,19 +367,17 @@ func (c *ClientConfig) ToURL() string {
 	return u.String()
 }
 
-// ToJSON serializes this ClientConfig to JSON, optionally stripping transport-only fields
+// ToJSON serializes this ClientConfig to JSON
 func (c *ClientConfig) ToJSON(stripped bool) (string, error) {
 	if stripped {
 		data := struct {
-			UserUUID   string `json:"user_uuid"`
-			RouteID    string `json:"route_id"`
-			Socket     string `json:"socket"`
-			Type       string `json:"type"`
-			Encryption string `json:"encryption"`
+			UserUUID   string        `json:"user_uuid"`
+			Routes     []ClientRoute `json:"routes"`
+			Type       string        `json:"type"`
+			Encryption string        `json:"encryption"`
 		}{
 			UserUUID:   c.UserUUID,
-			RouteID:    c.RouteID,
-			Socket:     c.Socket,
+			Routes:     c.Routes,
 			Type:       c.Type,
 			Encryption: c.Encryption,
 		}
@@ -320,6 +386,7 @@ func (c *ClientConfig) ToJSON(stripped bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
+
 		return string(b), nil
 	}
 

@@ -18,7 +18,7 @@ import (
 
 const (
 	muxControlMagic        = "TMUX"
-	muxControlVersion byte = 1
+	muxControlVersion byte = 2
 
 	muxControlTypeOpen       byte = 1
 	muxControlTypePing       byte = 2
@@ -40,14 +40,16 @@ const (
 
 // muxControlMessage is a control protocol message
 type muxControlMessage struct {
-	Type   byte
-	FlowID uint16
+	Type     byte
+	FlowID   uint16
+	RouteIdx byte
 }
 
 // MuxChannel is one negotiated data flow
 type MuxChannel struct {
-	FlowID uint16
-	Conn   net.Conn
+	FlowID   uint16
+	RouteIdx byte
+	Conn     net.Conn
 }
 
 // tinyMuxCore represents the shared core implementation of tinymux
@@ -561,8 +563,8 @@ func (c *TinyMuxClient) controlReader() {
 func (c *TinyMuxClient) Done() <-chan struct{} { return c.pingCtx.Done() }
 
 // OpenChannel requests a new data flow from the server and returns it
-func (c *TinyMuxClient) OpenChannel() (net.Conn, error) {
-	if err := c.writeControl(muxControlMessage{Type: muxControlTypeOpen}); err != nil {
+func (c *TinyMuxClient) OpenChannel(routeIdx byte) (net.Conn, error) {
+	if err := c.writeControl(muxControlMessage{Type: muxControlTypeOpen, RouteIdx: routeIdx}); err != nil {
 		return nil, err
 	}
 	select {
@@ -696,8 +698,9 @@ func (s *TinyMuxServer) AcceptChannels(ctx context.Context) <-chan MuxChannel {
 				s.mux.log.Debug("tinymux channel opened", "side", "server", "flow_id", fc.id)
 				select {
 				case out <- MuxChannel{
-					FlowID: fc.id,
-					Conn:   sf,
+					FlowID:   fc.id,
+					RouteIdx: msg.RouteIdx,
+					Conn:     sf,
 				}:
 				case <-ctx.Done():
 					_ = s.Close()
@@ -783,34 +786,40 @@ func (s *TinyMuxServer) Close() error {
 	)
 }
 
-// writeControlMessage writes one 4-byte control frame
+// writeControlMessage writes one 5-byte control frame
 func writeControlMessage(w io.Writer, msg muxControlMessage) error {
-	frame := make([]byte, 4)
+	frame := make([]byte, 5)
 	frame[0] = muxControlVersion
 	frame[1] = msg.Type
 	binary.BigEndian.PutUint16(frame[2:], msg.FlowID)
+	frame[4] = msg.RouteIdx
 	_, err := w.Write(frame)
 	return err
 }
 
-// readControlMessage reads one 4-byte control frame
+// readControlMessage reads one 5-byte control frame
 func readControlMessage(r io.Reader) (muxControlMessage, error) {
-	frame := make([]byte, 4)
+	frame := make([]byte, 5)
 	if _, err := io.ReadFull(r, frame); err != nil {
 		return muxControlMessage{}, err
 	}
+
 	if frame[0] != muxControlVersion {
 		return muxControlMessage{}, fmt.Errorf("unsupported tinymux control version %d", frame[0])
 	}
+
 	msg := muxControlMessage{
-		Type:   frame[1],
-		FlowID: binary.BigEndian.Uint16(frame[2:]),
+		Type:     frame[1],
+		FlowID:   binary.BigEndian.Uint16(frame[2:]),
+		RouteIdx: frame[4],
 	}
+
 	switch msg.Type {
 	case muxControlTypeOpen, muxControlTypePing, muxControlTypePong,
 		muxControlTypeClose, muxControlTypeDisconnect:
 	default:
 		return muxControlMessage{}, fmt.Errorf("unknown control message type %d", msg.Type)
 	}
+
 	return msg, nil
 }

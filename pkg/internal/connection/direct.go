@@ -81,7 +81,7 @@ func (D *DirectHandler) Connect(cfg config.ClientConfig) error {
 	if cfg.Type != D.ID() {
 		return fmt.Errorf("invalid connection type %q, expected %q", cfg.Type, D.ID())
 	}
-	if cfg.Socket != "udp" {
+	if len(cfg.Routes) > 0 && cfg.Routes[0].Socket != "udp" {
 		return errors.New("direct handler only supports UDP")
 	}
 	if cfg.Proto != "none" {
@@ -260,7 +260,7 @@ func (D *DirectHandler) connectSession() error {
 }
 
 // OpenChannel opens a new logical data channel
-func (D *DirectHandler) OpenChannel() (net.Conn, error) {
+func (D *DirectHandler) OpenChannel(_ byte) (net.Conn, error) {
 	if !D.running.Load() {
 		return nil, errors.New("not running")
 	}

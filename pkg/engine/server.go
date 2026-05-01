@@ -120,7 +120,7 @@ func (s *TurnableServer) acceptClients(handler connection.Handler, socket Socket
 	}
 
 	for client := range clientCh {
-		if client.Route == nil || client.Config == nil || client.User == nil {
+		if len(client.Routes) == 0 || client.Config == nil || client.User == nil {
 			s.log.Warn("dropping client with incomplete metadata", "addr", client.Address)
 			_ = client.Conn.Close()
 			continue
@@ -132,16 +132,23 @@ func (s *TurnableServer) acceptClients(handler connection.Handler, socket Socket
 
 // handleClient dials the backend route and pipes the tinymux channel through it
 func (s *TurnableServer) handleClient(client connection.ServerClient, socket SocketHandler) {
-	routeCtx, routeCancel := context.WithCancel(s.ctx)
-	defer routeCancel()
-
-	routeIO, err := socket.Connect(routeCtx, client.Route)
-	if err != nil {
-		s.log.Warn("failed to connect to route", "addr", client.Address, "route", client.Route.ID, "error", err)
+	if int(client.RouteIdx) >= len(client.Routes) {
+		s.log.Warn("invalid route index", "addr", client.Address, "route_idx", client.RouteIdx, "routes", len(client.Routes))
 		_ = client.Conn.Close()
 		return
 	}
 
-	s.log.Debug("piping client to route", "addr", client.Address, "route", client.Route.ID, "session", client.SessionUUID)
+	route := &client.Routes[client.RouteIdx]
+	routeCtx, routeCancel := context.WithCancel(s.ctx)
+	defer routeCancel()
+
+	routeIO, err := socket.Connect(routeCtx, route)
+	if err != nil {
+		s.log.Warn("failed to connect to route", "addr", client.Address, "route", route.ID, "error", err)
+		_ = client.Conn.Close()
+		return
+	}
+
+	s.log.Debug("piping client to route", "addr", client.Address, "route", route.ID, "session", client.SessionUUID)
 	pipeStreams(client.Conn, routeIO)
 }

@@ -20,7 +20,7 @@ type Handler interface {
 	Stop() error                                                    // Stops the server listener
 	AcceptClients(ctx context.Context) (<-chan ServerClient, error) // Accepts and emits new authenticated server clients
 	Connect(config config.ClientConfig) error                       // Connects to a remote server
-	OpenChannel() (net.Conn, error)                                 // Opens a new logical data channel
+	OpenChannel(routeIdx byte) (net.Conn, error)                    // Opens a new logical data channel for the given route index
 	Disconnect() error                                              // Gracefully disconnects from the current remote server
 	Close() error                                                   // Forcibly closes the current remove server connection
 	SetLogger(log *slog.Logger)                                     // Changes the slog logger instance
@@ -32,7 +32,8 @@ type ServerClient struct {
 	Conn        net.Conn             // Client connection
 	Config      *config.ClientConfig // Authenticated client config
 	User        *config.User         // Authenticated user
-	Route       *config.Route        // Requested route
+	Routes      []config.Route       // All routes authorized for this session
+	RouteIdx    byte                 // Index into Routes selected for this channel
 	SessionUUID string               // Multi-peer session identifier
 }
 

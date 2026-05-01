@@ -18,13 +18,13 @@ import (
 
 	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/config"
-	platformpkg "github.com/theairblow/turnable/pkg/internal/platform"
+	"github.com/theairblow/turnable/pkg/internal/platform"
 	"github.com/theairblow/turnable/pkg/internal/protocol"
-	transportpkg "github.com/theairblow/turnable/pkg/internal/transport"
+	"github.com/theairblow/turnable/pkg/internal/transport"
 )
 
 const (
-	relayHandshakeVersion byte = 2
+	relayHandshakeVersion byte = 3
 
 	relayHelloTypePrimary   byte = 1
 	relayHelloTypeSecondary byte = 2
@@ -53,7 +53,7 @@ type RelayHandler struct {
 	sessions     sync.Map
 
 	// client-side
-	platform  platformpkg.Handler
+	platform  platform.Handler
 	muxClient *TinyMuxClient
 	peerConn  *PeerConn
 	cancel    context.CancelFunc
@@ -81,7 +81,7 @@ type relayServerSession struct {
 	peerConn  *PeerConn
 	muxServer atomic.Pointer[TinyMuxServer]
 	userUUID  string
-	routeID   string
+	routes    []config.Route
 	fullEnc   bool
 }
 
@@ -203,7 +203,7 @@ func (D *RelayHandler) Connect(cfg config.ClientConfig) error {
 }
 
 // OpenChannel opens a new logical data channel
-func (D *RelayHandler) OpenChannel() (net.Conn, error) {
+func (D *RelayHandler) OpenChannel(routeIdx byte) (net.Conn, error) {
 	if !D.running.Load() {
 		return nil, errors.New("not running")
 	}
@@ -217,7 +217,7 @@ func (D *RelayHandler) OpenChannel() (net.Conn, error) {
 		return nil, errors.New("relay: no active mux connection")
 	}
 
-	stream, err := muxClient.OpenChannel()
+	stream, err := muxClient.OpenChannel(routeIdx)
 	if err != nil {
 		if D.muxClient == muxClient {
 			D.muxClient = nil
@@ -233,7 +233,14 @@ func (D *RelayHandler) OpenChannel() (net.Conn, error) {
 		return nil, errors.New("relay: no client config")
 	}
 
-	handler, err := transportpkg.GetHandler(cfg.Transport)
+	transportID := "none"
+	if int(routeIdx) < len(cfg.Routes) {
+		if t := cfg.Routes[routeIdx].Transport; t != "" {
+			transportID = t
+		}
+	}
+
+	handler, err := transport.GetHandler(transportID)
 	if err != nil {
 		_ = stream.Close()
 		return nil, fmt.Errorf("relay: transport setup: %w", err)
@@ -377,10 +384,11 @@ func (D *RelayHandler) connectClientSession() error {
 		return errors.New("relay reconnect requires client config")
 	}
 
-	platformHandler, err := platformpkg.GetHandler(cfg.PlatformID)
+	platformHandler, err := platform.GetHandler(cfg.PlatformID)
 	if err != nil {
 		return err
 	}
+
 	if err := platformHandler.Authorize(cfg.CallID, cfg.Username); err != nil {
 		return err
 	}
@@ -555,7 +563,7 @@ func (D *RelayHandler) connectClientSession() error {
 			}
 
 			_ = raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
-			err = doClientSecondaryHandshake(enc, assignedUUID, cfg.UserUUID, cfg.RouteID)
+			err = doClientSecondaryHandshake(enc, assignedUUID, cfg.UserUUID)
 			_ = raw.SetDeadline(time.Time{})
 
 			if err != nil {
@@ -672,8 +680,9 @@ primaryLoop:
 			case p := <-connCh:
 				go func(p connPair) {
 					_ = p.raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
-					sErr := doClientSecondaryHandshake(p.enc, assignedUUID, cfg.UserUUID, cfg.RouteID)
+					sErr := doClientSecondaryHandshake(p.enc, assignedUUID, cfg.UserUUID)
 					_ = p.raw.SetDeadline(time.Time{})
+
 					if sErr != nil {
 						_ = p.raw.Close()
 						var ackErr *ErrAckRejected
@@ -759,7 +768,9 @@ func (D *RelayHandler) handleIncomingPeer(
 		return fmt.Errorf("write challenge: %w", err)
 	}
 
-	buf := make([]byte, 4096)
+	// Read the full hello
+	const maxHelloSize = 256 * 1024
+	buf := make([]byte, maxHelloSize)
 	n, err := encConn.Read(buf)
 	if err != nil {
 		_ = encConn.Close()
@@ -802,7 +813,7 @@ func (D *RelayHandler) handlePrimaryPeer(
 		return fmt.Errorf("parse primary hello: %w", err)
 	}
 
-	clientCfg, user, route, err := validateClientConfig(*serverCfg, configJSON)
+	clientCfg, user, routes, err := validateClientConfig(*serverCfg, configJSON)
 	if err != nil {
 		_ = writePrimaryAck(encConn, [16]byte{}, err.Error())
 		_ = encConn.Close()
@@ -829,7 +840,7 @@ func (D *RelayHandler) handlePrimaryPeer(
 	newSess := &relayServerSession{
 		peerConn: peerConn,
 		userUUID: clientCfg.UserUUID,
-		routeID:  clientCfg.RouteID,
+		routes:   routes,
 		fullEnc:  clientCfg.Encryption == "full",
 	}
 
@@ -867,20 +878,34 @@ func (D *RelayHandler) handlePrimaryPeer(
 	newSess.muxServer.Store(muxServer)
 	muxServer.SetLogger(sessionLog)
 
-	if route.BandwidthRelay > 0 {
-		muxServer.SetRateLimit(route.BandwidthRelay * float64(clientCfg.Peers))
+	platformHandler, err := platform.GetHandler(serverCfg.PlatformID)
+	if err != nil {
+		return err
 	}
+
+	platCfg := platformHandler.GetConfig()
+	muxServer.SetRateLimit(platCfg.BandwidthRelay * float64(clientCfg.Peers))
 
 	peerConn.SetOnAllPeersGone(func() { _ = muxServer.Close() })
 
-	transportHandler, transportErr := transportpkg.GetHandler(route.Transport)
-	if transportErr != nil {
-		return fmt.Errorf("transport setup: %w", transportErr)
-	}
-
-	D.log.Info("relay handshake completed", "addr", client.Address, "session_uuid", sessionUUIDStr, "user_uuid", clientCfg.UserUUID, "route_id", clientCfg.RouteID)
+	D.log.Info("relay handshake completed", "addr", client.Address, "session_uuid", sessionUUIDStr, "user_uuid", clientCfg.UserUUID, "routes", len(routes))
 
 	for channel := range muxServer.AcceptChannels(ctx) {
+		routeIdx := channel.RouteIdx
+		if int(routeIdx) >= len(newSess.routes) {
+			D.log.Warn("client sent invalid route index", "flow_id", channel.FlowID, "route_idx", routeIdx, "max", len(newSess.routes)-1)
+			_ = channel.Conn.Close()
+			continue
+		}
+		route := newSess.routes[routeIdx]
+
+		transportHandler, wrapErr := transport.GetHandler(route.Transport)
+		if wrapErr != nil {
+			D.log.Warn("transport setup failed", "flow_id", channel.FlowID, "route", route.ID, "error", wrapErr)
+			_ = channel.Conn.Close()
+			continue
+		}
+
 		conn, wrapErr := transportHandler.WrapServer(channel.Conn)
 		if wrapErr != nil {
 			D.log.Warn("transport wrap failed", "flow_id", channel.FlowID, "error", wrapErr)
@@ -894,7 +919,8 @@ func (D *RelayHandler) handlePrimaryPeer(
 			Conn:        conn,
 			Config:      clientCfg,
 			User:        user,
-			Route:       route,
+			Routes:      newSess.routes,
+			RouteIdx:    routeIdx,
 			SessionUUID: fmt.Sprintf("%s:%d", sessionUUIDStr, channel.FlowID),
 		}:
 		case <-ctx.Done():
@@ -918,7 +944,7 @@ func (D *RelayHandler) handleSecondaryPeer(
 	encConn *EncryptedConn,
 	helloPayload []byte,
 ) error {
-	sessionUUIDBin, userUUID, routeID, err := parseSecondaryHello(helloPayload)
+	sessionUUIDBin, userUUID, err := parseSecondaryHello(helloPayload)
 	if err != nil {
 		_ = encConn.Close()
 		return fmt.Errorf("parse secondary hello: %w", err)
@@ -935,7 +961,7 @@ func (D *RelayHandler) handleSecondaryPeer(
 
 	sess := existing.(*relayServerSession)
 
-	if sess.userUUID != userUUID || sess.routeID != routeID {
+	if sess.userUUID != userUUID {
 		_ = writeSecondaryAck(encConn, "session not found")
 		_ = encConn.Close()
 		return fmt.Errorf("secondary peer: session mismatch for %s", sessionUUIDStr)
@@ -964,7 +990,7 @@ func (D *RelayHandler) handleSecondaryPeer(
 }
 
 // relayWatchPlatform watches platform signaling events
-func relayWatchPlatform(ctx context.Context, events <-chan platformpkg.Event, log *slog.Logger) {
+func relayWatchPlatform(ctx context.Context, events <-chan platform.Event, log *slog.Logger) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -974,15 +1000,16 @@ func relayWatchPlatform(ctx context.Context, events <-chan platformpkg.Event, lo
 				log.Debug("relay signaling monitor stopped: event stream closed")
 				return
 			}
-			if event.Type == platformpkg.EventCallEnded {
+			if event.Type == platform.EventCallEnded {
 				log.Debug("relay signaling reported call ended", "metadata", event.Metadata)
 			}
 		}
 	}
 }
 
-// validateClientConfig parses the client config JSON, validates it and authorizes access to the requested route.
-func validateClientConfig(serverCfg config.ServerConfig, configJSON string) (*config.ClientConfig, *config.User, *config.Route, error) {
+// validateClientConfig parses the client config JSON, validates it and authorizes access to every requested route.
+// The returned []config.Route is in the same order as clientCfg.Routes; the slice index becomes the tinymux route byte.
+func validateClientConfig(serverCfg config.ServerConfig, configJSON string) (*config.ClientConfig, *config.User, []config.Route, error) {
 	clientCfg, err := config.NewClientConfigFromJSON(configJSON)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to parse client config json: %w", err)
@@ -991,8 +1018,8 @@ func validateClientConfig(serverCfg config.ServerConfig, configJSON string) (*co
 	if common.IsNullOrWhiteSpace(clientCfg.UserUUID) {
 		return nil, nil, nil, errors.New("relay handshake missing user_uuid")
 	}
-	if common.IsNullOrWhiteSpace(clientCfg.RouteID) {
-		return nil, nil, nil, errors.New("relay handshake missing route_id")
+	if len(clientCfg.Routes) == 0 {
+		return nil, nil, nil, errors.New("relay handshake missing routes")
 	}
 	if clientCfg.Type != "relay" {
 		return nil, nil, nil, fmt.Errorf("unexpected connection type %q", clientCfg.Type)
@@ -1009,27 +1036,30 @@ func validateClientConfig(serverCfg config.ServerConfig, configJSON string) (*co
 		return nil, nil, nil, fmt.Errorf("failed to resolve user: %w", err)
 	}
 
-	route, err := serverCfg.GetRoute(clientCfg.RouteID)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to resolve route: %w", err)
-	}
-
-	isAllowed := false
-	for _, routeID := range user.AllowedRoutes {
-		if routeID == route.ID {
-			isAllowed = true
-			break
+	routes := make([]config.Route, 0, len(clientCfg.Routes))
+	for i, cr := range clientCfg.Routes {
+		route, err := serverCfg.GetRoute(cr.RouteID)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to resolve route %d (%q): %w", i, cr.RouteID, err)
 		}
-	}
-	if !isAllowed {
-		return nil, nil, nil, fmt.Errorf("user %s is not authorized for route %s", user.UUID, route.ID)
+
+		isAllowed := false
+		for _, routeID := range user.AllowedRoutes {
+			if routeID == route.ID {
+				isAllowed = true
+				break
+			}
+		}
+		if !isAllowed {
+			return nil, nil, nil, fmt.Errorf("user %s is not authorized for route %s", user.UUID, route.ID)
+		}
+		if cr.Socket != route.Socket {
+			return nil, nil, nil, fmt.Errorf("route %d (%q): expected socket %s, got %s", i, cr.RouteID, route.Socket, cr.Socket)
+		}
+		routes = append(routes, *route)
 	}
 
-	if clientCfg.Socket != route.Socket {
-		return nil, nil, nil, fmt.Errorf("expected socket type %s, got %s", route.Socket, clientCfg.Socket)
-	}
-
-	return clientCfg, user, route, nil
+	return clientCfg, user, routes, nil
 }
 
 // writePrimaryHello sends a primary handshake hello packet
@@ -1064,46 +1094,36 @@ func parsePrimaryHello(data []byte) (string, error) {
 }
 
 // writeSecondaryHello sends a secondary handshake hello packet
-func writeSecondaryHello(w io.Writer, challenge [8]byte, sessionUUID [16]byte, userUUID, routeID string) error {
+func writeSecondaryHello(w io.Writer, challenge [8]byte, sessionUUID [16]byte, userUUID string) error {
 	userBytes := []byte(userUUID)
-	routeBytes := []byte(routeID)
-	buf := make([]byte, 0, 1+8+1+16+2+len(userBytes)+2+len(routeBytes))
+	buf := make([]byte, 0, 1+8+1+16+2+len(userBytes))
 	buf = append(buf, relayHelloTypeSecondary)
 	buf = append(buf, challenge[:]...)
 	buf = append(buf, relayHandshakeVersion)
 	buf = append(buf, sessionUUID[:]...)
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(userBytes)))
 	buf = append(buf, userBytes...)
-	buf = binary.BigEndian.AppendUint16(buf, uint16(len(routeBytes)))
-	buf = append(buf, routeBytes...)
 	_, err := w.Write(buf)
 	return err
 }
 
 // parseSecondaryHello parses a secondary handshake hello packet
-func parseSecondaryHello(data []byte) ([16]byte, string, string, error) {
+func parseSecondaryHello(data []byte) ([16]byte, string, error) {
 	if len(data) < 19 { // version(1) + uuid(16) + userLen(2)
-		return [16]byte{}, "", "", errors.New("secondary hello too short")
+		return [16]byte{}, "", errors.New("secondary hello too short")
 	}
 	if data[0] != relayHandshakeVersion {
-		return [16]byte{}, "", "", fmt.Errorf("unsupported secondary hello version %d", data[0])
+		return [16]byte{}, "", fmt.Errorf("unsupported secondary hello version %d", data[0])
 	}
 	var sessionUUID [16]byte
 	copy(sessionUUID[:], data[1:17])
 	userLen := binary.BigEndian.Uint16(data[17:19])
 	off := 19
-	if len(data) < off+int(userLen)+2 {
-		return [16]byte{}, "", "", errors.New("secondary hello: truncated user uuid")
+	if len(data) < off+int(userLen) {
+		return [16]byte{}, "", errors.New("secondary hello: truncated user uuid")
 	}
 	userUUID := string(data[off : off+int(userLen)])
-	off += int(userLen)
-	routeLen := binary.BigEndian.Uint16(data[off : off+2])
-	off += 2
-	if len(data) < off+int(routeLen) {
-		return [16]byte{}, "", "", errors.New("secondary hello: truncated route id")
-	}
-	routeID := string(data[off : off+int(routeLen)])
-	return sessionUUID, userUUID, routeID, nil
+	return sessionUUID, userUUID, nil
 }
 
 // writePrimaryAck sends a primary handshake ack packet
@@ -1211,12 +1231,12 @@ func doClientPrimaryHandshake(conn net.Conn, configJSON string) ([16]byte, error
 }
 
 // doClientSecondaryHandshake performs the full client secondary handshake
-func doClientSecondaryHandshake(conn net.Conn, sessionUUID [16]byte, userUUID, routeID string) error {
+func doClientSecondaryHandshake(conn net.Conn, sessionUUID [16]byte, userUUID string) error {
 	var challenge [8]byte
 	if _, err := io.ReadFull(conn, challenge[:]); err != nil {
 		return fmt.Errorf("read challenge: %w", err)
 	}
-	if err := writeSecondaryHello(conn, challenge, sessionUUID, userUUID, routeID); err != nil {
+	if err := writeSecondaryHello(conn, challenge, sessionUUID, userUUID); err != nil {
 		return fmt.Errorf("write secondary hello: %w", err)
 	}
 	buf := make([]byte, 1024)

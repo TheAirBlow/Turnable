@@ -63,6 +63,9 @@ go.work.sum
 # *.iml
 # *.ipr
 
+# Github Copilot
+.idea/copilotDiffState.xml
+
 # CMake
 cmake-build-*/
 

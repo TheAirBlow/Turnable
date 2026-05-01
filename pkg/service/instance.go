@@ -11,12 +11,12 @@ import (
 
 // Instance represents a managed Turnable server or client
 type Instance struct {
-	ID         string
-	Name       string
-	config     string
-	listenAddr string
-	server     *engine.TurnableServer
-	client     *engine.TurnableClient
+	ID          string
+	Name        string
+	config      string
+	listenAddrs []string
+	server      *engine.TurnableServer
+	client      *engine.TurnableClient
 }
 
 // Stop stops the instance

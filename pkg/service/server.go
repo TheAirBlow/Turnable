@@ -40,11 +40,11 @@ type Server struct {
 
 // persistRecord is the on-disk representation of a persisted instance
 type persistRecord struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Config     string `json:"config"`
-	ListenAddr string `json:"listen_addr,omitempty"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Config      string   `json:"config"`
+	ListenAddrs []string `json:"listen_addrs,omitempty"`
 }
 
 // NewServer creates a new Server instance
@@ -280,11 +280,11 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 	}
 
 	cli.SetLogger(s.log.With("client_id", id))
-	if err := cli.Start(req.ListenAddr); err != nil {
+	if err := cli.Start(req.ListenAddrs); err != nil {
 		return "", fmt.Errorf("start client: %w", err)
 	}
 
-	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddr: req.ListenAddr, client: cli}
+	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddrs: req.ListenAddrs, client: cli}
 	s.mu.Lock()
 	s.instances[id] = inst
 	s.mu.Unlock()
@@ -514,9 +514,9 @@ func (s *Server) getInstance(id string) *pb.GetInstanceResponse {
 	}
 
 	return &pb.GetInstanceResponse{
-		Info:       inst.Info(),
-		Config:     inst.config,
-		ListenAddr: inst.listenAddr,
+		Info:        inst.Info(),
+		Config:      inst.config,
+		ListenAddrs: inst.listenAddrs,
 	}
 }
 
@@ -528,10 +528,10 @@ func (s *Server) savePersisted(inst *Instance) {
 	}
 
 	rec := persistRecord{
-		ID:         inst.ID,
-		Name:       inst.Name,
-		Config:     inst.config,
-		ListenAddr: inst.listenAddr,
+		ID:          inst.ID,
+		Name:        inst.Name,
+		Config:      inst.config,
+		ListenAddrs: inst.listenAddrs,
 	}
 	if inst.server != nil {
 		rec.Type = "server"
@@ -596,10 +596,10 @@ func (s *Server) loadPersistedInstances() {
 			})
 		case "client":
 			_, err = s.startClient(&pb.StartClientRequest{
-				Config:     rec.Config,
-				ListenAddr: rec.ListenAddr,
-				InstanceId: rec.ID,
-				Name:       rec.Name,
+				Config:      rec.Config,
+				ListenAddrs: rec.ListenAddrs,
+				InstanceId:  rec.ID,
+				Name:        rec.Name,
 			})
 		default:
 			s.log.Warn("persist: unknown instance type in record", "path", path, "type", rec.Type)

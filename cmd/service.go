@@ -173,6 +173,21 @@ func resolve(relPath string) string {
 	return absPath
 }
 
+// splitAddrs splits comma separated addresses string into a string slice
+func splitAddrs(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // serviceClientMain runs the service CLI REPL
 func serviceClientMain(opts *serviceClientOptions) error {
 	if opts.serverAddr != "" && opts.unixSocket != "" {
@@ -490,8 +505,8 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			fmt.Printf("Name:     %s\n", detail.Info.Name)
 			fmt.Printf("Type:     %s\n", typeName)
 			fmt.Printf("Status:   %s\n", status)
-			if detail.ListenAddr != "" {
-				fmt.Printf("Listen:   %s\n", detail.ListenAddr)
+			if len(detail.ListenAddrs) > 0 {
+				fmt.Printf("Listen:   %s\n", strings.Join(detail.ListenAddrs, ", "))
 			}
 
 			fmt.Printf("Config:   %s\n", detail.Config)
@@ -544,7 +559,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 				name = parts[4]
 			}
 
-			id, err := c.StartClient(parts[1], parts[2], instanceID, name)
+			id, err := c.StartClient(parts[1], splitAddrs(parts[2]), instanceID, name)
 			if err != nil {
 				fmt.Println("Failed to start client:", err)
 				continue

@@ -1,14 +1,12 @@
 package connection
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/mlkem"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -161,34 +159,38 @@ func writeClientHello(conn net.Conn, ciphertext []byte) error {
 // readClientHello reads the client hello packet
 func readClientHello(conn net.Conn) ([]byte, error) {
 	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read encrypted tunnel hello: %w", err)
-	}
-	buf = buf[:n]
+	total := 0
+	cipherLen := -1
 
-	if n < 7 {
-		return nil, fmt.Errorf("encrypted tunnel hello too short: %d bytes", n)
-	}
+	for {
+		if total == len(buf) {
+			buf = append(buf, make([]byte, len(buf))...)
+		}
 
-	magic := []byte(encryptedTunnelMagic)
-	if !bytes.Equal(buf[:4], magic) {
-		return nil, fmt.Errorf("invalid encrypted tunnel magic: got=%q hex=%s", string(buf[:4]), hex.EncodeToString(buf[:7]))
-	}
-	if buf[4] != encryptedTunnelVersion {
-		return nil, fmt.Errorf("unsupported encrypted tunnel version %d", buf[4])
-	}
+		n, err := conn.Read(buf[total:])
+		total += n
 
-	cipherLen := binary.BigEndian.Uint16(buf[5:7])
-	if cipherLen == 0 {
-		return nil, errors.New("encrypted tunnel ciphertext is empty")
-	}
+		if cipherLen < 0 && total >= 7 {
+			if string(buf[:4]) != encryptedTunnelMagic {
+				return nil, fmt.Errorf("invalid encrypted tunnel magic: got %q", string(buf[:4]))
+			}
+			if buf[4] != encryptedTunnelVersion {
+				return nil, fmt.Errorf("unsupported encrypted tunnel version %d", buf[4])
+			}
+			cipherLen = int(binary.BigEndian.Uint16(buf[5:7]))
+			if cipherLen == 0 {
+				return nil, errors.New("encrypted tunnel ciphertext is empty")
+			}
+		}
 
-	if n < 7+int(cipherLen) {
-		return nil, fmt.Errorf("encrypted tunnel hello truncated: need %d, got %d", 7+cipherLen, n)
-	}
+		if cipherLen >= 0 && total >= 7+cipherLen {
+			return buf[7 : 7+cipherLen], nil
+		}
 
-	return buf[7 : 7+cipherLen], nil
+		if err != nil {
+			return nil, fmt.Errorf("failed to read encrypted tunnel hello: %w", err)
+		}
+	}
 }
 
 // Read decrypts one incoming datagram

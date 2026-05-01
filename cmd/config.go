@@ -15,8 +15,8 @@ import (
 // configGenerateOptions holds CLI flags for the config generate subcommand
 type configGenerateOptions struct {
 	configPath string
-	routeID    string
 	userUUID   string
+	routeIDs   []string
 	json       bool
 }
 
@@ -35,6 +35,11 @@ type configDirectOptions struct {
 	json       bool
 }
 
+// configBootstrapOptions holds CLI flags for the config bootstrap subcommand
+type configBootstrapOptions struct {
+	output string
+}
+
 // newConfigCommand creates the config cobra command
 func newConfigCommand() *cobra.Command {
 	root := &cobra.Command{
@@ -45,6 +50,7 @@ func newConfigCommand() *cobra.Command {
 	root.AddCommand(newConfigGenerateCommand())
 	root.AddCommand(newConfigKeygenCommand())
 	root.AddCommand(newConfigDirectCommand())
+	root.AddCommand(newConfigBootstrapCommand())
 	return root
 }
 
@@ -53,14 +59,14 @@ func newConfigGenerateCommand() *cobra.Command {
 	opts := &configGenerateOptions{}
 
 	cmd := &cobra.Command{
-		Use:   "generate <route-id> <user-uuid>",
+		Use:   "generate <user-uuid> <route-id1> [route-id2 ...]",
 		Short: "Generates a client config from server config",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 2 {
-				return errors.New("expected exactly 2 positional arguments")
+			if len(args) < 2 {
+				return errors.New("expected at least 2 positional arguments: <user-uuid> <route-id1> [route-id2 ...]")
 			}
-			opts.routeID = args[0]
-			opts.userUUID = args[1]
+			opts.userUUID = args[0]
+			opts.routeIDs = args[1:]
 			return configMain(opts)
 		},
 	}
@@ -110,7 +116,23 @@ func newConfigDirectCommand() *cobra.Command {
 	return cmd
 }
 
-// configMain runs the config command
+// newConfigBootstrapCommand creates the interactive bootstrap cobra command
+func newConfigBootstrapCommand() *cobra.Command {
+	opts := &configBootstrapOptions{}
+
+	cmd := &cobra.Command{
+		Use:   "bootstrap",
+		Short: "Interactively create a new server config",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return bootstrapMain(opts)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.output, "output", "o", "config.json", "output path for the generated server config")
+	return cmd
+}
+
+// configMain runs the config generate command
 func configMain(opts *configGenerateOptions) error {
 	configData, err := os.ReadFile(opts.configPath)
 	if err != nil {
@@ -134,12 +156,16 @@ func configMain(opts *configGenerateOptions) error {
 		return fmt.Errorf("failed to resolve user: %w", err)
 	}
 
-	route, err := serverCfg.GetRoute(opts.routeID)
-	if err != nil {
-		return fmt.Errorf("failed to resolve route: %w", err)
+	routes := make([]*config.Route, 0, len(opts.routeIDs))
+	for _, rid := range opts.routeIDs {
+		route, err := serverCfg.GetRoute(rid)
+		if err != nil {
+			return fmt.Errorf("failed to resolve route %q: %w", rid, err)
+		}
+		routes = append(routes, route)
 	}
 
-	clientCfg, err := serverCfg.GetClientConfig(user, route)
+	clientCfg, err := serverCfg.GetClientConfig(user, routes)
 	if err != nil {
 		return fmt.Errorf("failed to generate client config: %w", err)
 	}
@@ -149,7 +175,11 @@ func configMain(opts *configGenerateOptions) error {
 	}
 
 	if opts.json {
-		fmt.Println(clientCfg.ToJSON(false))
+		out, err := clientCfg.ToJSON(false)
+		if err != nil {
+			return err
+		}
+		fmt.Println(out)
 	} else {
 		fmt.Println(clientCfg.ToURL())
 	}
@@ -194,9 +224,11 @@ func directConfigMain(opts *configDirectOptions) error {
 		Username:   opts.username,
 		Gateway:    opts.gateway,
 		Peers:      opts.peers,
-		Socket:     "udp",
 		Type:       "direct",
 		Proto:      "none",
+		Routes: []config.ClientRoute{
+			{RouteID: "direct", Socket: "udp", Transport: "none"},
+		},
 	}
 
 	if err := clientCfg.Validate(); err != nil {
@@ -204,10 +236,19 @@ func directConfigMain(opts *configDirectOptions) error {
 	}
 
 	if opts.json {
-		fmt.Println(clientCfg.ToJSON(false))
+		out, err := clientCfg.ToJSON(false)
+		if err != nil {
+			return err
+		}
+		fmt.Println(out)
 	} else {
 		fmt.Println(clientCfg.ToURL())
 	}
 
 	return nil
+}
+
+// bootstrapMain runs the interactive server-config wizard
+func bootstrapMain(opts *configBootstrapOptions) error {
+	return errors.New("not implemented")
 }

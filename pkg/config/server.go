@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 
 	"github.com/theairblow/turnable/pkg/common"
 )
@@ -32,6 +33,12 @@ type ServerConfig struct {
 type User struct {
 	UUID          string   `json:"uuid"`           // Unique UUID of this user
 	AllowedRoutes []string `json:"allowed_routes"` // Allowed route IDs
+
+	Username string `json:"username"` // Username to use in the call
+
+	Type      string `json:"type"`                // Connection type
+	ForceTurn bool   `json:"forceturn,omitempty"` // Force TURN in P2P mode
+	Peers     int    `json:"peers"`               // Peer connections per session
 }
 
 // RelayServerConfig provides relay mode server configuration
@@ -56,27 +63,13 @@ type Route struct {
 
 	Address   string `json:"address"`             // IP address of the destination server
 	Port      int    `json:"port"`                // Port of the destination server
-	Socket    string `json:"socket"`              // Socket protocol to use (UDP/TCP)
-	Transport string `json:"transport,omitempty"` // Transport protocol to use (none/sctp/kcp)
+	Socket    string `json:"socket"`              // Socket protocol to use
+	Transport string `json:"transport,omitempty"` // Transport protocol to use
 
 	Conn string `json:"conn,omitempty"` // Connection type (optional)
 
-	BandwidthRelay float64 `json:"bandwidth_relay,omitempty"` // Per-TURN outbound rate limit in bytes/sec; 0 = unlimited
-
-	ClientPrefs ClientPrefs `json:"client_prefs"` // Client config preferences
-}
-
-// ClientPrefs provides extra parameters required to generate a ClientConfig
-type ClientPrefs struct {
-	Username string `json:"username"` // Username to use in the call
-
-	Type      string `json:"type"`      // Connection type
-	ForceTurn bool   `json:"forceturn"` // Force TURN connection in P2P mode
-	Peers     int    `json:"peers"`     // How many peer connections to open per session
-
 	Encryption string `json:"encryption"` // Encryption mode
-
-	Name string `json:"name"` // Display name of the config
+	Name       string `json:"name"`       // Display name shown in generated client configs
 }
 
 // ProviderConfig represents provider configuration options
@@ -99,7 +92,7 @@ func (s *ServerConfig) ReplaceProvider(cfgRaw json.RawMessage) error {
 	if s.provider != nil {
 		err := s.provider.Stop()
 		if err != nil {
-			slog.Warn("failed to close provider connection: %v", err)
+			slog.Warn("failed to close provider connection", "error", err)
 		}
 	}
 
@@ -217,60 +210,77 @@ func (r *Route) Validate() error {
 		return fmt.Errorf("invalid address: %s", r.Address)
 	}
 
-	if !common.ConnectionsHolder.Exists(r.ClientPrefs.Type) {
-		return fmt.Errorf("invalid connection type: %s", r.ClientPrefs.Type)
+	if !common.ConnectionsHolder.Exists(r.Conn) && r.Conn != "" {
+		return fmt.Errorf("route %q has invalid connection type: %s", r.ID, r.Conn)
 	}
 
-	switch r.ClientPrefs.Encryption {
+	switch r.Encryption {
 	case "handshake", "full":
 		// OK
+	case "":
+		r.Encryption = "handshake"
 	default:
-		return fmt.Errorf("invalid encryption mode: %s", r.ClientPrefs.Encryption)
-	}
-
-	if r.ClientPrefs.Peers <= 0 {
-		return fmt.Errorf("invalid peers count: %d (must be >= 1)", r.ClientPrefs.Peers)
+		return fmt.Errorf("route %q has invalid encryption mode: %s", r.ID, r.Encryption)
 	}
 
 	return nil
 }
 
-// GetClientConfig generates a ClientConfig for the specified User and Route
-func (s *ServerConfig) GetClientConfig(user *User, route *Route) (*ClientConfig, error) {
-	isAllowed := false
-	for _, rID := range user.AllowedRoutes {
-		if rID == route.ID {
-			isAllowed = true
-			break
+// GetClientConfig generates a ClientConfig for the specified User and ordered set of Routes
+func (s *ServerConfig) GetClientConfig(user *User, routes []*Route) (*ClientConfig, error) {
+	if len(routes) == 0 {
+		return nil, errors.New("at least one route is required")
+	}
+
+	clientRoutes := make([]ClientRoute, 0, len(routes))
+	names := make([]string, 0, len(routes))
+	encryption := "handshake"
+
+	for _, route := range routes {
+		isAllowed := false
+		for _, rID := range user.AllowedRoutes {
+			if rID == route.ID {
+				isAllowed = true
+				break
+			}
+		}
+		if !isAllowed {
+			return nil, fmt.Errorf("user %s is not authorized for route %s", user.UUID, route.ID)
+		}
+
+		trans := route.Transport
+		if trans == "none" {
+			trans = ""
+		}
+
+		clientRoutes = append(clientRoutes, ClientRoute{
+			RouteID:   route.ID,
+			Socket:    route.Socket,
+			Transport: trans,
+		})
+
+		if route.Name != "" {
+			names = append(names, route.Name)
+		}
+		if route.Encryption == "full" {
+			encryption = "full"
 		}
 	}
 
-	if !isAllowed {
-		return nil, fmt.Errorf("user %s is not authorized for route %s", user.UUID, route.ID)
-	}
+	combinedName := strings.Join(names, ", ")
 
-	p := route.ClientPrefs
 	cfg := &ClientConfig{
-		// From User Identity
-		UserUUID: user.UUID,
-		Username: p.Username,
-
-		// From Global Init
+		UserUUID:   user.UUID,
+		Username:   user.Username,
 		PlatformID: s.PlatformID,
 		CallID:     s.CallID,
 		PubKey:     s.PubKey,
-
-		// From Route Identity
-		RouteID: route.ID,
-		Socket:  route.Socket,
-
-		// From Client Prefs
-		Type:       p.Type,
-		ForceTurn:  p.ForceTurn,
-		Peers:      max(p.Peers, 1),
-		Transport:  route.Transport,
-		Encryption: p.Encryption,
-		Name:       p.Name,
+		Routes:     clientRoutes,
+		Type:       user.Type,
+		ForceTurn:  user.ForceTurn,
+		Peers:      max(user.Peers, 1),
+		Encryption: encryption,
+		Name:       combinedName,
 	}
 
 	if s.Relay.Enabled {

@@ -19,7 +19,7 @@ import (
 type clientOptions struct {
 	configPath    string
 	configURL     string
-	listenAddr    string
+	listenAddrs   []string
 	noInteractive bool
 	verbose       bool
 }
@@ -40,7 +40,7 @@ func newClientCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&opts.listenAddr, "listen", "l", "127.0.0.1:0", "local TCP/UDP listen listenAddr (ip:port)")
+	cmd.Flags().StringArrayVarP(&opts.listenAddrs, "listen", "l", []string{"127.0.0.1:0"}, "local listen addresses, one per route")
 	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "V", false, "enable verbose debug logging")
 	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "config.json", "client config JSON file path")
 	cmd.Flags().BoolVarP(&opts.noInteractive, "no-interactive", "i", false, "disable interactive mode")
@@ -83,11 +83,11 @@ func clientMain(opts *clientOptions) error {
 
 	slog.Info("starting turnable client", "connection_type", cfg.Type)
 	client := engine.NewTurnableClient(*cfg)
-	if err := client.Start(opts.listenAddr); err != nil {
+	if err := client.Start(opts.listenAddrs); err != nil {
 		return fmt.Errorf("failed to start vpn client: %w", err)
 	}
 
-	slog.Info("turnable client started", "socket", cfg.Socket, "connection_type", cfg.Type, "listen", opts.listenAddr)
+	slog.Info("turnable client started", "routes", len(cfg.Routes), "connection_type", cfg.Type, "listen", opts.listenAddrs)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/theairblow/turnable/pkg/config"
@@ -43,8 +45,8 @@ func NewTurnableClient(cfg config.ClientConfig) *TurnableClient {
 	}
 }
 
-// Start starts the Turnable client using the provided local tunnel handler
-func (c *TurnableClient) Start(listenAddr string) error {
+// Start starts the Turnable client
+func (c *TurnableClient) Start(listenAddrs []string) error {
 	if !c.running.CompareAndSwap(false, true) {
 		return errors.New("already running")
 	}
@@ -73,13 +75,37 @@ func (c *TurnableClient) Start(listenAddr string) error {
 
 	c.handler = connHandler
 
-	acceptCh, err := socket.Open(c.ctx, c.Config.Socket, listenAddr)
-	if err != nil {
-		_ = connHandler.Close()
-		return fmt.Errorf("open tunnel: %w", err)
+	baseAddr := "127.0.0.1:0"
+	if len(listenAddrs) > 0 {
+		baseAddr = listenAddrs[0]
 	}
 
-	go c.acceptClients(acceptCh)
+	baseHost, basePortStr, err := net.SplitHostPort(baseAddr)
+	if err != nil {
+		return fmt.Errorf("invalid base listen address %q: %w", baseAddr, err)
+	}
+
+	basePort, err := strconv.Atoi(basePortStr)
+	if err != nil {
+		return fmt.Errorf("invalid port in base listen address %q: %w", baseAddr, err)
+	}
+
+	for i, route := range c.Config.Routes {
+		var addr string
+		if i < len(listenAddrs) {
+			addr = listenAddrs[i]
+		} else {
+			addr = net.JoinHostPort(baseHost, strconv.Itoa(basePort+i))
+		}
+
+		acceptCh, err := socket.Open(c.ctx, route.Socket, addr)
+		if err != nil {
+			_ = connHandler.Close()
+			return fmt.Errorf("open tunnel for route %d (%s): %w", i, route.RouteID, err)
+		}
+
+		go c.acceptRouteClients(acceptCh, byte(i))
+	}
 
 	success = true
 	return nil
@@ -106,8 +132,8 @@ func (c *TurnableClient) Stop() error {
 	return err
 }
 
-// acceptClients accepts local clients and handles them
-func (c *TurnableClient) acceptClients(acceptCh <-chan AcceptedClient) {
+// acceptRouteClients accepts local clients for a specific route and handles them
+func (c *TurnableClient) acceptRouteClients(acceptCh <-chan AcceptedClient, routeIdx byte) {
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -116,20 +142,20 @@ func (c *TurnableClient) acceptClients(acceptCh <-chan AcceptedClient) {
 			if !ok {
 				return
 			}
-			go c.handleClient(client)
+			go c.handleClient(client, routeIdx)
 		}
 	}
 }
 
-// handleClient opens a tinymux channel and pipes the local client through it
-func (c *TurnableClient) handleClient(local AcceptedClient) {
+// handleClient opens a tinymux channel for the given route and pipes the local client through it
+func (c *TurnableClient) handleClient(local AcceptedClient, routeIdx byte) {
 	if c.handler == nil {
 		c.log.Warn("no active handler for local client")
 		_ = local.Stream.Close()
 		return
 	}
 
-	channel, err := c.handler.OpenChannel()
+	channel, err := c.handler.OpenChannel(routeIdx)
 	if err != nil {
 		if !errors.Is(err, connection.ErrReconnecting) {
 			c.log.Warn("failed to open channel for local client", "error", err)
@@ -138,6 +164,6 @@ func (c *TurnableClient) handleClient(local AcceptedClient) {
 		return
 	}
 
-	c.log.Debug("piping local client to channel")
+	c.log.Debug("piping local client to channel", "route_idx", routeIdx)
 	pipeStreams(local.Stream, channel)
 }

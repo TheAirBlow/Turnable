@@ -27,8 +27,7 @@ message InstanceInfo {
   string name = 4;
 }
 
-// InstanceEvent is broadcast to all connected clients when an instance starts,
-// stops, or its provider configuration changes
+// InstanceEvent is broadcast message about a change to a managed instance's state or config
 message InstanceEvent {
   string instance_id = 1;
   string name = 2;
@@ -80,7 +79,7 @@ message StartServerResponse {
 // StartClientRequest starts a new Turnable client instance
 message StartClientRequest {
   string config = 1;
-  string listenAddr = 2;
+  repeated string listen_addrs = 2;
   string instance_id = 3;
   string name = 4;
 }
@@ -159,11 +158,11 @@ message GetInstanceRequest {
 message GetInstanceResponse {
   InstanceInfo info = 1;
   string config = 2;
-  string listen_addr = 3;
+  repeated string listen_addrs = 3;
   string error = 4;
 }
 
-// AddRouteRequest adds or updates a route on a server instance (route_json is a Route JSON object)
+// AddRouteRequest adds or updates a route on a server instance
 message AddRouteRequest {
   string instance_id = 1;
   string route_json = 2;
@@ -185,7 +184,7 @@ message DeleteRouteResponse {
   string error = 1;
 }
 
-// AddUserRequest adds or updates a user on a server instance (user_json is a User JSON object)
+// AddUserRequest adds or updates a user on a server instance
 message AddUserRequest {
   string instance_id = 1;
   string user_json = 2;

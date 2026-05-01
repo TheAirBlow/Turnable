@@ -175,14 +175,14 @@ func (c *Client) StartServer(config, instanceID, name string) (string, error) {
 }
 
 // StartClient requests a new client instance
-func (c *Client) StartClient(config string, listenAddr string, instanceID, name string) (string, error) {
+func (c *Client) StartClient(config string, listenAddrs []string, instanceID, name string) (string, error) {
 	req := &pb.Request{
 		Payload: &pb.Request_StartClient{
 			StartClient: &pb.StartClientRequest{
-				Config:     config,
-				ListenAddr: listenAddr,
-				InstanceId: instanceID,
-				Name:       name,
+				Config:      config,
+				ListenAddrs: listenAddrs,
+				InstanceId:  instanceID,
+				Name:        name,
 			},
 		},
 	}
