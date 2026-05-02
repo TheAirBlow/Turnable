@@ -241,9 +241,15 @@ func serviceClientMain(opts *serviceClientOptions) error {
 					}
 
 					fmt.Printf("\n[instance stopped: id=%s name=%s type=%s]\n", ev.InstanceId, ev.Name, itype)
-				case service.EventProviderUpdated:
+				case service.EventInstanceUpdated:
 					ev := event.InstanceEvent
-					fmt.Printf("\n[provider updated: id=%s name=%s]\n", ev.InstanceId, ev.Name)
+					fmt.Printf("\n[instance updated: id=%s name=%s]\n", ev.InstanceId, ev.Name)
+				case service.EventInstanceCreated:
+					ev := event.InstanceEvent
+					fmt.Printf("\n[instance created: id=%s name=%s]\n", ev.InstanceId, ev.Name)
+				case service.EventInstanceFailed:
+					ev := event.InstanceEvent
+					fmt.Printf("\n[instance failed: id=%s name=%s]\n", ev.InstanceId, ev.Name)
 				case service.EventDisconnected:
 					clientMu.Lock()
 					if client == activeClient {
@@ -458,9 +464,18 @@ func serviceClientMain(opts *serviceClientOptions) error {
 					typeName = "client"
 				}
 
-				status := "stopped"
-				if inst.Running {
-					status = "running"
+				status := "unknown"
+				switch inst.Status {
+				case pb.InstanceStatus_INSTANCE_STATUS_UNSPECIFIED:
+					status = "unspecified"
+				case pb.InstanceStatus_INSTANCE_STATUS_STARTING:
+					status = "starting"
+				case pb.InstanceStatus_INSTANCE_STATUS_STARTED:
+					status = "started"
+				case pb.InstanceStatus_INSTANCE_STATUS_STOPPED:
+					status = "stopped"
+				case pb.InstanceStatus_INSTANCE_STATUS_FAILED:
+					status = "failed"
 				}
 
 				name := inst.Name
@@ -496,9 +511,18 @@ func serviceClientMain(opts *serviceClientOptions) error {
 				typeName = "client"
 			}
 
-			status := "stopped"
-			if detail.Info.Running {
-				status = "running"
+			status := "unknown"
+			switch detail.Info.Status {
+			case pb.InstanceStatus_INSTANCE_STATUS_UNSPECIFIED:
+				status = "unspecified"
+			case pb.InstanceStatus_INSTANCE_STATUS_STARTING:
+				status = "starting"
+			case pb.InstanceStatus_INSTANCE_STATUS_STARTED:
+				status = "started"
+			case pb.InstanceStatus_INSTANCE_STATUS_STOPPED:
+				status = "stopped"
+			case pb.InstanceStatus_INSTANCE_STATUS_FAILED:
+				status = "failed"
 			}
 
 			fmt.Printf("ID:       %s\n", detail.Info.Id)

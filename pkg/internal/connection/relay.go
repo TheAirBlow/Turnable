@@ -1008,7 +1008,6 @@ func relayWatchPlatform(ctx context.Context, events <-chan platform.Event, log *
 }
 
 // validateClientConfig parses the client config JSON, validates it and authorizes access to every requested route.
-// The returned []config.Route is in the same order as clientCfg.Routes; the slice index becomes the tinymux route byte.
 func validateClientConfig(serverCfg config.ServerConfig, configJSON string) (*config.ClientConfig, *config.User, []config.Route, error) {
 	clientCfg, err := config.NewClientConfigFromJSON(configJSON)
 	if err != nil {

@@ -14,16 +14,27 @@ enum InstanceType {
 // InstanceEventType describes what happened to an instance
 enum InstanceEventType {
   INSTANCE_EVENT_TYPE_UNSPECIFIED = 0;
-  INSTANCE_EVENT_TYPE_STARTED = 1;
-  INSTANCE_EVENT_TYPE_STOPPED = 2;
-  INSTANCE_EVENT_TYPE_PROVIDER_UPDATED = 3;
+  INSTANCE_EVENT_TYPE_CREATED = 1;
+  INSTANCE_EVENT_TYPE_FAILED = 2;
+  INSTANCE_EVENT_TYPE_STARTED = 3;
+  INSTANCE_EVENT_TYPE_STOPPED = 4;
+  INSTANCE_EVENT_TYPE_UPDATED = 5;
+}
+
+// InstanceStatus describes an instance's current state
+enum InstanceStatus {
+  INSTANCE_STATUS_UNSPECIFIED = 0;
+  INSTANCE_STATUS_STARTING = 1;
+  INSTANCE_STATUS_STARTED = 2;
+  INSTANCE_STATUS_STOPPED = 3;
+  INSTANCE_STATUS_FAILED = 4;
 }
 
 // InstanceInfo describes a managed instance
 message InstanceInfo {
   string id = 1;
   InstanceType type = 2;
-  bool running = 3;
+  InstanceStatus status = 3;
   string name = 4;
 }
 

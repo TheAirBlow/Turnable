@@ -14,9 +14,11 @@ type EventKind int
 const (
 	EventLog             EventKind = iota // server emitted a log record
 	EventDisconnected                     // connection was lost or closed
+	EventInstanceCreated                  // an instance was created
 	EventInstanceStarted                  // an instance was started
 	EventInstanceStopped                  // an instance was stopped
-	EventProviderUpdated                  // an instance's provider config was updated
+	EventInstanceFailed                   // an instance failed to start
+	EventInstanceUpdated                  // an instance was updated
 )
 
 // Event is emitted by the client read loop to signal logs, instance events, or disconnects
@@ -103,12 +105,16 @@ func (c *Client) readLoop() {
 
 			var kind EventKind
 			switch ev.EventType {
+			case pb.InstanceEventType_INSTANCE_EVENT_TYPE_CREATED:
+				kind = EventInstanceCreated
 			case pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED:
 				kind = EventInstanceStarted
 			case pb.InstanceEventType_INSTANCE_EVENT_TYPE_STOPPED:
 				kind = EventInstanceStopped
-			case pb.InstanceEventType_INSTANCE_EVENT_TYPE_PROVIDER_UPDATED:
-				kind = EventProviderUpdated
+			case pb.InstanceEventType_INSTANCE_EVENT_TYPE_FAILED:
+				kind = EventInstanceFailed
+			case pb.InstanceEventType_INSTANCE_EVENT_TYPE_UPDATED:
+				kind = EventInstanceUpdated
 			default:
 				kind = EventLog
 			}

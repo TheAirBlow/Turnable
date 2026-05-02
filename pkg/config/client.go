@@ -18,13 +18,13 @@ import (
 // ClientConfig represents a client configuration
 type ClientConfig struct {
 	UserUUID string `json:"user_uuid,omitempty"` // User's unique UUID
-	Username string `json:"username,omitempty"`  // Username to use in the call
+	Username string `json:"username,omitempty"`  // [-] Username to use in the call
 
-	PlatformID string `json:"platform_id,omitempty"` // ID of the platform
-	CallID     string `json:"call_id,omitempty"`     // ID of the call on the platform
+	PlatformID string `json:"platform_id,omitempty"` // [-] ID of the platform
+	CallID     string `json:"call_id,omitempty"`     // [-] ID of the call on the platform
 
 	Routes          []ClientRoute `json:"routes,omitempty"`           // Ordered list of tunnel routes
-	GatewayUsername string        `json:"gateway_username,omitempty"` // [-] Gateway username (P2P)
+	GatewayUsername string        `json:"gateway_username,omitempty"` // [-] Gateway username in the call (P2P)
 
 	Type      string `json:"type,omitempty"` // Connection type
 	ForceTurn bool   `json:"forceturn"`      // [-] Force TURN in P2P mode
@@ -32,19 +32,19 @@ type ClientConfig struct {
 
 	Proto   string `json:"proto,omitempty"`   // [-] Protocol to use
 	Cloak   string `json:"cloak,omitempty"`   // [-] Cloak method
-	Gateway string `json:"gateway,omitempty"` // [-] Gateway IP:port (relay)
+	Gateway string `json:"gateway,omitempty"` // [-] Gateway's IP and port (Relay)
 
-	PubKey     string `json:"pub_key,omitempty"`    // [-] Server ML-KEM-768 public key (base64)
-	Encryption string `json:"encryption,omitempty"` // Encryption mode (handshake / full)
+	PubKey     string `json:"pub_key,omitempty"`    // [-] Public key of the server
+	Encryption string `json:"encryption,omitempty"` // Encryption mode
 
 	Name string `json:"name,omitempty"` // [-] Display name
 }
 
 // ClientRoute represents one tunnel route inside a multi-route client config
 type ClientRoute struct {
-	RouteID   string `json:"route_id"`
-	Socket    string `json:"socket"`
-	Transport string `json:"transport,omitempty"`
+	RouteID   string `json:"route_id"`            // Route's unique ID
+	Socket    string `json:"socket"`              // Socket protocol to use
+	Transport string `json:"transport,omitempty"` // Transport protocol to use
 }
 
 // Validate checks that the ClientConfig contains all required fields.
@@ -63,11 +63,11 @@ func (c *ClientConfig) Validate() error {
 		c.Cloak = "none"
 	}
 
-	if c.Type != "direct" {
-		if len(c.Routes) == 0 {
-			return errors.New("at least one route is required")
-		}
+	if len(c.Routes) == 0 {
+		return errors.New("at least one route is required")
+	}
 
+	if c.Type != "direct" {
 		_, err := uuid.Parse(c.UserUUID)
 		if err != nil {
 			return fmt.Errorf("invalid user uuid: %s", c.UserUUID)

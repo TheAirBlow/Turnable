@@ -81,8 +81,14 @@ func (D *DirectHandler) Connect(cfg config.ClientConfig) error {
 	if cfg.Type != D.ID() {
 		return fmt.Errorf("invalid connection type %q, expected %q", cfg.Type, D.ID())
 	}
-	if len(cfg.Routes) > 0 && cfg.Routes[0].Socket != "udp" {
+	if len(cfg.Routes) != 1 {
+		return errors.New("direct handler only supports one route")
+	}
+	if cfg.Routes[0].Socket != "udp" {
 		return errors.New("direct handler only supports UDP")
+	}
+	if cfg.Routes[0].Transport != "none" {
+		return errors.New("direct handler does not support any transports")
 	}
 	if cfg.Proto != "none" {
 		return errors.New("direct handler only supports the 'none' protocol")

@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/theairblow/turnable/pkg/config"
 	"github.com/theairblow/turnable/pkg/engine"
@@ -17,6 +18,7 @@ type Instance struct {
 	listenAddrs []string
 	server      *engine.TurnableServer
 	client      *engine.TurnableClient
+	status      atomic.Int32
 }
 
 // Stop stops the instance
@@ -31,19 +33,28 @@ func (i *Instance) Stop() error {
 // Info returns a protobuf description of this instance
 func (i *Instance) Info() *pb.InstanceInfo {
 	info := &pb.InstanceInfo{
-		Id:   i.ID,
-		Name: i.Name,
+		Id:     i.ID,
+		Name:   i.Name,
+		Status: pb.InstanceStatus(i.status.Load()),
 	}
 
 	if i.server != nil {
 		info.Type = pb.InstanceType_INSTANCE_TYPE_SERVER
-		info.Running = i.server.IsRunning()
 	} else {
 		info.Type = pb.InstanceType_INSTANCE_TYPE_CLIENT
-		info.Running = i.client.IsRunning()
 	}
 
 	return info
+}
+
+// SetStatus sets the instance status atomically
+func (i *Instance) SetStatus(status pb.InstanceStatus) {
+	i.status.Store(int32(status))
+}
+
+// GetStatus returns the current instance status
+func (i *Instance) GetStatus() pb.InstanceStatus {
+	return pb.InstanceStatus(i.status.Load())
 }
 
 // buildServerInstance returns a TurnableServer and its provider from a StartServerRequest

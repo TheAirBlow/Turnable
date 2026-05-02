@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"crypto/mlkem"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"slices"
+	"strconv"
+	"strings"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
+	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/config"
 )
 
@@ -248,7 +255,287 @@ func directConfigMain(opts *configDirectOptions) error {
 	return nil
 }
 
+func prompt(r *bufio.Reader, msg, def string) string {
+	if def != "" {
+		fmt.Printf("%s [%s]: ", msg, def)
+	} else {
+		fmt.Printf("%s: ", msg)
+	}
+	line, _ := r.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return def
+	}
+	return line
+}
+
+func promptRequired(r *bufio.Reader, msg string) string {
+	for {
+		v := prompt(r, msg, "")
+		if v != "" {
+			return v
+		}
+		fmt.Println("* this field is required, please enter a value")
+	}
+}
+
+func promptChoice(r *bufio.Reader, msg string, choices []string, def string) string {
+	joined := strings.Join(choices, "/")
+	for {
+		fmt.Printf("%s (%s) [%s]: ", msg, joined, def)
+		line, _ := r.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if line == "" {
+			return def
+		}
+		for _, c := range choices {
+			if strings.EqualFold(line, c) {
+				return strings.ToLower(c)
+			}
+		}
+		fmt.Printf("* invalid choice, pick one of %s\n", joined)
+	}
+}
+
+func promptInt(r *bufio.Reader, msg string, def int) int {
+	for {
+		raw := prompt(r, msg, strconv.Itoa(def))
+		v, err := strconv.Atoi(raw)
+		if err == nil && v > 0 {
+			return v
+		}
+		fmt.Println("* please enter a positive integer")
+	}
+}
+
+func promptIP(r *bufio.Reader, msg string) string {
+	for {
+		v := promptRequired(r, msg)
+		if net.ParseIP(v) != nil {
+			return v
+		}
+		fmt.Println("* invalid IP address, try again")
+	}
+}
+
+func promptPort(r *bufio.Reader, msg string, def int) int {
+	for {
+		v := promptInt(r, msg, def)
+		if v >= 1 && v <= 65535 {
+			return v
+		}
+		fmt.Println("* port must be between 1 and 65535")
+	}
+}
+
 // bootstrapMain runs the interactive server-config wizard
 func bootstrapMain(opts *configBootstrapOptions) error {
-	return errors.New("not implemented")
+	r := bufio.NewReader(os.Stdin)
+
+	platforms := common.PlatformsHolder.List()
+	fmt.Printf("Available platforms: %s\n", strings.Join(platforms, ", "))
+	platformID := promptChoice(r, "Platform ID", platforms, platforms[0])
+	callID := promptRequired(r, "Call ID")
+
+	dk, err := mlkem.GenerateKey768()
+	if err != nil {
+		return fmt.Errorf("keygen: %w", err)
+	}
+	privKey := base64.StdEncoding.EncodeToString(dk.Bytes())
+	pubKey := base64.StdEncoding.EncodeToString(dk.EncapsulationKey().Bytes())
+
+	fmt.Println()
+	enableRelayStr := promptChoice(r, "Enable relay mode?", []string{"yes", "no"}, "yes")
+	enableRelay := enableRelayStr == "yes"
+
+	relayCfg := config.RelayServerConfig{Enabled: enableRelay, Proto: "none"}
+	if enableRelay {
+		relayCfg.PublicIP = promptIP(r, "Relay public IP")
+		port := promptPort(r, "Relay UDP port", 56000)
+		relayCfg.Port = &port
+
+		protos := common.ProtocolsHolder.List()
+		if len(protos) == 0 {
+			protos = []string{"none"}
+		}
+		relayCfg.Proto = promptChoice(r, "Relay protocol", protos, "none")
+	}
+
+	fmt.Println()
+
+	enableP2PStr := promptChoice(r, "Enable P2P mode?", []string{"yes", "no"}, "no")
+	enableP2P := enableP2PStr == "yes"
+
+	p2pCfg := config.P2PServerConfig{Enabled: enableP2P}
+	if enableP2P {
+		p2pCfg.Username = promptRequired(r, "Username in the call")
+	}
+
+	if !enableRelay && !enableP2P {
+		return errors.New("at least one server mode must be enabled")
+	}
+
+	fmt.Println()
+	providerType := promptChoice(r, "Provider type", []string{"raw", "json"}, "raw")
+
+	var providerCfg map[string]any
+	var jsonProviderPath string
+	if providerType == "json" {
+		jsonProviderPath = prompt(r, "Path to provider JSON file", "provider.json")
+		providerCfg = map[string]any{"type": "json", "path": jsonProviderPath}
+	} else {
+		providerCfg = map[string]any{"type": "raw", "routes": []any{}, "users": []any{}}
+	}
+
+	fmt.Println()
+
+	addRouteStr := promptChoice(r, "Add a route now?", []string{"yes", "no"}, "yes")
+
+	var routes []config.Route
+	var routeIDs []string
+	for addRouteStr == "yes" {
+		fmt.Println()
+		routeID := promptRequired(r, "Route ID")
+		address := promptIP(r, "Destination IP address")
+		port := promptPort(r, "Destination port", 51820)
+		socket := promptChoice(r, "Socket type", []string{"udp", "tcp"}, "udp")
+
+		transports := common.TransportsHolder.List()
+		if len(transports) == 0 {
+			transports = []string{"none"}
+		}
+
+		transport := "none"
+		if socket == "tcp" {
+			transport = promptChoice(r, "Transport", transports, transports[0])
+		} else {
+			transport = promptChoice(r, "Transport", transports, "none")
+		}
+
+		encryption := promptChoice(r, "Encryption mode", []string{"handshake", "full"}, "handshake")
+		displayName := prompt(r, "Display name for generated client configs", routeID)
+
+		routes = append(routes, config.Route{
+			ID:         routeID,
+			Address:    address,
+			Port:       port,
+			Socket:     socket,
+			Transport:  transport,
+			Encryption: encryption,
+			Name:       displayName,
+		})
+		routeIDs = append(routeIDs, routeID)
+
+		fmt.Printf("* Route %q added\n\n", routeID)
+		addRouteStr = promptChoice(r, "Add another route?", []string{"yes", "no"}, "no")
+	}
+
+	fmt.Println()
+
+	addUserStr := promptChoice(r, "Add a user now?", []string{"yes", "no"}, "yes")
+
+	var users []config.User
+	for addUserStr == "yes" {
+		fmt.Println()
+
+		var userUUID string
+		for {
+			userUUID = prompt(r, "User UUID (leave empty to auto-generate)", "")
+			if userUUID == "" {
+				userUUID = uuid.New().String()
+				fmt.Printf("* Auto-generated UUID: %s\n\n", userUUID)
+			} else if _, err := uuid.Parse(userUUID); err != nil {
+				fmt.Println("* Invalid UUID")
+				continue
+			}
+
+			break
+		}
+
+		fmt.Printf("Available routes: %s\n", strings.Join(routeIDs, ", "))
+		allowedRaw := prompt(r, "Allowed routes (comma-separated, empty = all)", "")
+
+		var allowedRoutes []string
+		if strings.TrimSpace(allowedRaw) == "" {
+			allowedRoutes = append([]string(nil), routeIDs...)
+		} else {
+			for _, rid := range strings.Split(allowedRaw, ",") {
+				if rid = strings.TrimSpace(rid); rid != "" {
+					allowedRoutes = append(allowedRoutes, rid)
+				}
+			}
+		}
+
+		username := promptRequired(r, "Username to use in the call")
+
+		connections := common.ConnectionsHolder.List()
+		connections = slices.DeleteFunc(connections, func(e string) bool {
+			return e == "direct"
+		})
+		connType := promptChoice(r, "Connection type", connections, "relay")
+
+		peers := promptInt(r, "Peer connections per session", 1)
+		forceTurnStr := promptChoice(r, "Force TURN in P2P mode?", []string{"yes", "no"}, "no")
+
+		users = append(users, config.User{
+			UUID:          userUUID,
+			AllowedRoutes: allowedRoutes,
+			Username:      username,
+			Type:          connType,
+			Peers:         peers,
+			ForceTurn:     forceTurnStr == "yes",
+		})
+
+		fmt.Printf("* User %s added\n\n", userUUID)
+		addUserStr = promptChoice(r, "Add another user?", []string{"yes", "no"}, "no")
+	}
+
+	if providerType == "raw" {
+		providerCfg["routes"] = routes
+		providerCfg["users"] = users
+	} else {
+		pData := map[string]any{"routes": routes, "users": users}
+		pJSON, err := json.MarshalIndent(pData, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal provider data: %w", err)
+		}
+		if err := os.WriteFile(jsonProviderPath, pJSON, 0o640); err != nil {
+			return fmt.Errorf("write provider file: %w", err)
+		}
+
+		fmt.Printf("* Users and route written to %s\n", jsonProviderPath)
+	}
+
+	providerJSON, err := json.Marshal(providerCfg)
+	if err != nil {
+		return fmt.Errorf("marshal provider config: %w", err)
+	}
+
+	serverCfg := config.ServerConfig{
+		PlatformID: platformID,
+		CallID:     callID,
+		PubKey:     pubKey,
+		PrivKey:    privKey,
+		Relay:      relayCfg,
+		P2P:        p2pCfg,
+		Provider:   providerJSON,
+	}
+
+	if err := serverCfg.Validate(); err != nil {
+		return fmt.Errorf("generated config failed validation: %w", err)
+	}
+
+	outJSON, err := serverCfg.ToJSON(true)
+	if err != nil {
+		return fmt.Errorf("serialize config: %w", err)
+	}
+
+	if err := os.WriteFile(opts.output, []byte(outJSON), 0o640); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Printf("* Server config written to %s\n", opts.output)
+
+	return nil
 }

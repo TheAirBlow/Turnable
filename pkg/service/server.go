@@ -238,12 +238,8 @@ func (s *Server) startServer(req *pb.StartServerRequest) (string, error) {
 		return "", err
 	}
 
-	srv.SetLogger(s.log.With("server_id", id))
-	if err := srv.Start(); err != nil {
-		return "", fmt.Errorf("start server: %w", err)
-	}
-
 	inst := &Instance{ID: id, Name: name, config: req.Config, server: srv}
+
 	s.mu.Lock()
 	s.instances[id] = inst
 	s.mu.Unlock()
@@ -256,8 +252,34 @@ func (s *Server) startServer(req *pb.StartServerRequest) (string, error) {
 		InstanceId:   id,
 		Name:         name,
 		InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
-		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED,
+		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_CREATED,
 	})
+
+	go func() {
+		srv.SetLogger(s.log.With("server_id", id))
+
+		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTING)
+
+		if err := srv.Start(); err != nil {
+			s.log.Warn("server start failed", "client_id", id, "error", err)
+			s.broadcastEvent(&pb.InstanceEvent{
+				InstanceId:   id,
+				Name:         name,
+				InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
+				EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_FAILED,
+			})
+
+			return
+		}
+
+		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTED)
+		s.broadcastEvent(&pb.InstanceEvent{
+			InstanceId:   id,
+			Name:         name,
+			InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
+			EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED,
+		})
+	}()
 
 	return id, nil
 }
@@ -279,11 +301,6 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 		return "", err
 	}
 
-	cli.SetLogger(s.log.With("client_id", id))
-	if err := cli.Start(req.ListenAddrs); err != nil {
-		return "", fmt.Errorf("start client: %w", err)
-	}
-
 	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddrs: req.ListenAddrs, client: cli}
 	s.mu.Lock()
 	s.instances[id] = inst
@@ -297,8 +314,35 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 		InstanceId:   id,
 		Name:         name,
 		InstanceType: pb.InstanceType_INSTANCE_TYPE_CLIENT,
-		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED,
+		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_CREATED,
 	})
+
+	// Start async
+	go func() {
+		cli.SetLogger(s.log.With("client_id", id))
+		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTING)
+
+		if err := cli.Start(req.ListenAddrs); err != nil {
+			s.log.Warn("client start failed", "client_id", id, "error", err)
+			inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_FAILED)
+			s.broadcastEvent(&pb.InstanceEvent{
+				InstanceId:   id,
+				Name:         name,
+				InstanceType: pb.InstanceType_INSTANCE_TYPE_CLIENT,
+				EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_FAILED,
+			})
+
+			return
+		}
+
+		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTED)
+		s.broadcastEvent(&pb.InstanceEvent{
+			InstanceId:   id,
+			Name:         name,
+			InstanceType: pb.InstanceType_INSTANCE_TYPE_CLIENT,
+			EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED,
+		})
+	}()
 
 	return id, nil
 }
@@ -320,6 +364,7 @@ func (s *Server) stopInstance(id string) error {
 	}
 
 	err := inst.Stop()
+	inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STOPPED)
 
 	itype := pb.InstanceType_INSTANCE_TYPE_CLIENT
 	if inst.server != nil {
@@ -462,7 +507,7 @@ func (s *Server) deleteUser(id string, userUUID string) error {
 	return nil
 }
 
-// persistAndNotifyProvider persists the instance config and broadcasts a ProviderUpdated event
+// persistAndNotifyProvider persists the instance config and broadcasts an UPDATED event
 func (s *Server) persistAndNotifyProvider(inst *Instance) {
 	if inst.server.Config.ProviderID() == "raw" {
 		updated, err := inst.server.Config.ToJSON(false)
@@ -480,7 +525,7 @@ func (s *Server) persistAndNotifyProvider(inst *Instance) {
 		InstanceId:   inst.ID,
 		Name:         inst.Name,
 		InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
-		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_PROVIDER_UPDATED,
+		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_UPDATED,
 	})
 }
 
