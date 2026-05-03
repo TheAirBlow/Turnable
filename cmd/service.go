@@ -188,6 +188,21 @@ func splitAddrs(s string) []string {
 	return out
 }
 
+// loadConfig loads config from file if path starts with @
+func loadConfig(input string) (string, error) {
+	if strings.HasPrefix(input, "@") {
+		filePath := resolve(strings.TrimPrefix(input, "@"))
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read config file %s: %w", filePath, err)
+		}
+
+		return strings.TrimSpace(string(content)), nil
+	}
+
+	return input, nil
+}
+
 // serviceClientMain runs the service CLI REPL
 func serviceClientMain(opts *serviceClientOptions) error {
 	if opts.serverAddr != "" && opts.unixSocket != "" {
@@ -542,7 +557,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 2 {
-				fmt.Println("usage: start-server <config_json> [instance_id] [name]")
+				fmt.Println("usage: start-server <config_json|@file> [instance_id] [name]")
 				continue
 			}
 
@@ -555,7 +570,13 @@ func serviceClientMain(opts *serviceClientOptions) error {
 				name = parts[3]
 			}
 
-			id, err := c.StartServer(parts[1], instanceID, name)
+			configStr, err := loadConfig(parts[1])
+			if err != nil {
+				fmt.Println("Failed to load config:", err)
+				continue
+			}
+
+			id, err := c.StartServer(configStr, instanceID, name)
 			if err != nil {
 				fmt.Println("Failed to start server:", err)
 				continue
@@ -571,7 +592,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 3 {
-				fmt.Println("usage: start-client <config_json_or_url> <listen_addr> [instance_id] [name]")
+				fmt.Println("usage: start-client <config_json_or_url|@file> <listen_addr> [instance_id] [name]")
 				continue
 			}
 
@@ -583,7 +604,13 @@ func serviceClientMain(opts *serviceClientOptions) error {
 				name = parts[4]
 			}
 
-			id, err := c.StartClient(parts[1], splitAddrs(parts[2]), instanceID, name)
+			configStr, err := loadConfig(parts[1])
+			if err != nil {
+				fmt.Println("Failed to load config:", err)
+				continue
+			}
+
+			id, err := c.StartClient(configStr, splitAddrs(parts[2]), instanceID, name)
 			if err != nil {
 				fmt.Println("Failed to start client:", err)
 				continue
@@ -618,11 +645,17 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 3 {
-				fmt.Println("usage: update-provider <id> <config>")
+				fmt.Println("usage: update-provider <id> <config|@file>")
 				continue
 			}
 
-			if err := c.UpdateProvider(parts[1], parts[2]); err != nil {
+			configStr, err := loadConfig(parts[2])
+			if err != nil {
+				fmt.Println("Failed to load config:", err)
+				continue
+			}
+
+			if err := c.UpdateProvider(parts[1], configStr); err != nil {
 				fmt.Println("Failed to update provider:", err)
 				continue
 			}
@@ -636,11 +669,17 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 3 {
-				fmt.Println("usage: add-route <instance_id> <route_json>")
+				fmt.Println("usage: add-route <instance_id> <route_json|@file>")
 				continue
 			}
 
-			if err := c.AddRoute(parts[1], parts[2]); err != nil {
+			routeStr, err := loadConfig(parts[2])
+			if err != nil {
+				fmt.Println("Failed to load route config:", err)
+				continue
+			}
+
+			if err := c.AddRoute(parts[1], routeStr); err != nil {
 				fmt.Println("Failed to add route:", err)
 				continue
 			}
@@ -672,11 +711,17 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 3 {
-				fmt.Println("usage: add-user <instance_id> <user_json>")
+				fmt.Println("usage: add-user <instance_id> <user_json|@file>")
 				continue
 			}
 
-			if err := c.AddUser(parts[1], parts[2]); err != nil {
+			userStr, err := loadConfig(parts[2])
+			if err != nil {
+				fmt.Println("Failed to load user config:", err)
+				continue
+			}
+
+			if err := c.AddUser(parts[1], userStr); err != nil {
 				fmt.Println("Failed to add user:", err)
 				continue
 			}
@@ -708,11 +753,17 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 2 {
-				fmt.Println("usage: validate-server <config>")
+				fmt.Println("usage: validate-server <config|@file>")
 				continue
 			}
 
-			valid, err := c.ValidateServerConfig(parts[1])
+			configStr, err := loadConfig(parts[1])
+			if err != nil {
+				fmt.Println("Failed to load config:", err)
+				continue
+			}
+
+			valid, err := c.ValidateServerConfig(configStr)
 			if err != nil {
 				fmt.Println("Invalid server config:", err)
 				continue
@@ -731,11 +782,17 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 2 {
-				fmt.Println("usage: validate-client <config>")
+				fmt.Println("usage: validate-client <config|@file>")
 				continue
 			}
 
-			valid, err := c.ValidateClientConfig(parts[1])
+			configStr, err := loadConfig(parts[1])
+			if err != nil {
+				fmt.Println("Failed to load config:", err)
+				continue
+			}
+
+			valid, err := c.ValidateClientConfig(configStr)
 			if err != nil {
 				fmt.Println("Invalid client config:", err)
 				continue
@@ -754,11 +811,17 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 2 {
-				fmt.Println("usage: convert <config>")
+				fmt.Println("usage: convert <config|@file>")
 				continue
 			}
 
-			result, err := c.ConvertClientConfig(parts[1])
+			configStr, err := loadConfig(parts[1])
+			if err != nil {
+				fmt.Println("Failed to load config:", err)
+				continue
+			}
+
+			result, err := c.ConvertClientConfig(configStr)
 			if err != nil {
 				fmt.Println("Failed to convert config:", err)
 				continue
@@ -782,24 +845,34 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 		case "help":
 			fmt.Println("Available commands:")
-			fmt.Println("  connect <tcp/unix> <addr> [priv_key] [pub_key]              connect to service")
-			fmt.Println("  disconnect                                                  close current connection")
-			fmt.Println("  list                                                        list all managed instances")
-			fmt.Println("  get <id>                                                    get full details + config for an instance")
-			fmt.Println("  start-server <config_json> [id] [name]                      start a server instance")
-			fmt.Println("  start-client <config_json_or_url> <listen_addr> [id] [name] start a client instance")
-			fmt.Println("  stop <id>                                                   stop an instance")
-			fmt.Println("  update-provider <id> <config>                               update provider config")
-			fmt.Println("  add-route <id> <route_json>                                 add or update a route on a server instance")
-			fmt.Println("  delete-route <id> <route_id>                                remove a route from a server instance")
-			fmt.Println("  add-user <id> <user_json>                                   add or update a user on a server instance")
-			fmt.Println("  delete-user <id> <user_uuid>                                remove a user from a server instance")
-			fmt.Println("  validate-server <config>                                    validate a server config")
-			fmt.Println("  validate-client <config>                                    validate a client config")
-			fmt.Println("  convert <config>                                            convert config between JSON and URL")
-			fmt.Println("  logs <true/false>                                           toggle server log forwarding")
-			fmt.Println("  help                                                        show this help")
-			fmt.Println("  exit / quit                                                 exit the CLI")
+			fmt.Println("  connect <tcp/unix> <addr> [priv_key] [pub_key]   connect to service")
+			fmt.Println("  disconnect                                       close current connection")
+			fmt.Println()
+			fmt.Println("Instance Management:")
+			fmt.Println("  list                                                    list all managed instances")
+			fmt.Println("  get <id>                                                get full details + config for an instance")
+			fmt.Println("  start-server <config|@file> [id] [name]                 start a server instance")
+			fmt.Println("  start-client <config|@file> <listen_addr> [id] [name]   start a client instance")
+			fmt.Println("  stop <id>                                               stop an instance")
+			fmt.Println()
+			fmt.Println("Provider & Routing:")
+			fmt.Println("  update-provider <id> <config|@file>   update provider config")
+			fmt.Println("  add-route <id> <route_json|@file>     add or update a route")
+			fmt.Println("  delete-route <id> <route_id>          remove a route")
+			fmt.Println()
+			fmt.Println("User Management:")
+			fmt.Println("  add-user <id> <user_json|@file>   add or update a user")
+			fmt.Println("  delete-user <id> <user_uuid>      remove a user")
+			fmt.Println()
+			fmt.Println("Validation & Conversion:")
+			fmt.Println("  validate-server <config|@file>   validate a server config")
+			fmt.Println("  validate-client <config|@file>   validate a client config")
+			fmt.Println("  convert <config|@file>           convert config between JSON and URL")
+			fmt.Println()
+			fmt.Println("Other:")
+			fmt.Println("  logs <true/false>   toggle server log forwarding")
+			fmt.Println("  help                show this help")
+			fmt.Println("  exit / quit         exit the CLI")
 		case "exit", "quit":
 			fmt.Println("Goodbye!")
 			if c := getClient(); c != nil {
