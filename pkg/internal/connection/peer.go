@@ -19,8 +19,8 @@ var ErrPeerDone = errors.New("peer: done")
 const (
 	peerMaxPacket       = muxMaxPacket + 2 // maximum packet size read from a peer connection; must hold a full mux frame
 	peerReconnectInit   = 5 * time.Second  // initial back-off delay before the first peer reconnect attempt
-	peerReconnectMax    = 10 * time.Second // maximum back-off delay between peer reconnect attempts
-	peerQuotaBackoff    = 10 * time.Second // delay when TURN allocation quota is exhausted
+	peerReconnectMax    = 30 * time.Second // maximum back-off delay between peer reconnect attempts
+	peerQuotaBackoff    = 30 * time.Second // delay when TURN allocation quota is exhausted
 	peerIncomingBufSize = 1024             // channel buffer size for packets arriving from all peers
 	peerWriteSendBuf    = 256              // per-peer outbound write queue depth
 )

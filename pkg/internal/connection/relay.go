@@ -36,6 +36,8 @@ const (
 
 	fullReconnectInit = 5 * time.Second
 	fullReconnectMax  = 30 * time.Second
+
+	peerHandshakeRetryMax      = 45 * time.Second
 )
 
 // ErrAckRejected is returned when the server sends an error ACK during handshake
@@ -480,6 +482,28 @@ func (D *RelayHandler) connectClientSession() error {
 	}
 
 	connCh := make(chan connPair, numPeers)
+	peerRetryMu := sync.Mutex{}
+	peerRetryDelay := make(map[int]time.Duration)
+
+	getDelay := func(prev time.Duration, err error) time.Duration {
+		if errors.Is(err, protocol.ErrQuotaReached) {
+			if prev < peerQuotaBackoff {
+				return peerQuotaBackoff
+			}
+			return min(prev*2, peerHandshakeRetryMax)
+		}
+
+		if prev <= 0 {
+			return peerReconnectInit
+		}
+		return min(prev*2, peerHandshakeRetryMax)
+	}
+
+	resetPeerRetryDelay := func(idx int) {
+		peerRetryMu.Lock()
+		delete(peerRetryDelay, idx)
+		peerRetryMu.Unlock()
+	}
 
 	connectAndEncrypt := func(idx int, ctx context.Context) (raw, enc net.Conn, err error) {
 		h, _ := protocol.GetHandler(cfg.Proto)
@@ -507,9 +531,17 @@ func (D *RelayHandler) connectClientSession() error {
 		return
 	}
 
-	spawnPeer := func(idx int) {
+	spawnPeer := func(idx int, initialDelay time.Duration) {
 		go func() {
 			delay := peerReconnectInit
+			if initialDelay > 0 {
+				select {
+				case <-sessionCtx.Done():
+					return
+				case <-time.After(initialDelay):
+				}
+			}
+
 			for {
 				raw, enc, err := connectAndEncrypt(idx, sessionCtx)
 				if err != nil {
@@ -543,8 +575,18 @@ func (D *RelayHandler) connectClientSession() error {
 		}()
 	}
 
+	schedulePeerRetry := func(idx int, err error) {
+		peerRetryMu.Lock()
+		next := getDelay(peerRetryDelay[idx], err)
+		peerRetryDelay[idx] = next
+		peerRetryMu.Unlock()
+
+		D.log.Warn("scheduling peer retry", "peer_idx", idx, "delay", next, "error", err)
+		spawnPeer(idx, next)
+	}
+
 	for i := 0; i < numPeers; i++ {
-		spawnPeer(i)
+		spawnPeer(i, 0)
 	}
 
 	pickConn := func(p connPair) net.Conn {
@@ -594,8 +636,8 @@ primaryLoop:
 			cfgJson, err := cfg.ToJSON(true)
 			if err != nil {
 				_ = p.raw.Close()
-				D.log.Warn("primary handshake failed, retrying", "peer_idx", p.idx, "error", err)
-				spawnPeer(p.idx)
+				D.log.Warn("primary handshake failed", "peer_idx", p.idx, "error", err)
+				schedulePeerRetry(p.idx, err)
 				continue
 			}
 
@@ -609,8 +651,8 @@ primaryLoop:
 					_ = platformHandler.Disconnect()
 					return hErr
 				}
-				D.log.Warn("primary handshake failed, retrying", "peer_idx", p.idx, "error", hErr)
-				spawnPeer(p.idx)
+				D.log.Warn("primary handshake failed", "peer_idx", p.idx, "error", hErr)
+				schedulePeerRetry(p.idx, hErr)
 				continue
 			}
 
@@ -621,15 +663,16 @@ primaryLoop:
 			if addErr := peerConn.AddPeer(pickConn(p), makePeerReconnectFn(p.idx)); addErr != nil {
 				_ = p.raw.Close()
 				_ = peerConn.Close()
-				spawnPeer(p.idx)
+				schedulePeerRetry(p.idx, addErr)
 				continue
 			}
+			resetPeerRetryDelay(p.idx)
 
 			var mErr error
 			muxClient, mErr = NewTinyMuxClient(sessionCtx, peerConn)
 			if mErr != nil {
 				_ = peerConn.Close()
-				spawnPeer(p.idx)
+				schedulePeerRetry(p.idx, mErr)
 				continue
 			}
 
@@ -690,15 +733,18 @@ primaryLoop:
 							fullReconnect(sErr.Error())
 							return
 						}
-						D.log.Warn("secondary handshake failed, retrying", "peer_idx", p.idx, "error", sErr)
-						spawnPeer(p.idx)
+						D.log.Warn("secondary handshake failed", "peer_idx", p.idx, "error", sErr)
+						schedulePeerRetry(p.idx, sErr)
 						return
 					}
 
 					if addErr := peerConn.AddPeer(pickConn(p), makePeerReconnectFn(p.idx)); addErr != nil {
 						D.log.Warn("peer add failed", "peer_idx", p.idx, "error", addErr)
 						_ = p.raw.Close()
+						schedulePeerRetry(p.idx, addErr)
+						return
 					}
+					resetPeerRetryDelay(p.idx)
 				}(p)
 			}
 		}
