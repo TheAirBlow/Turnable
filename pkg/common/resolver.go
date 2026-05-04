@@ -205,15 +205,12 @@ func resolverLookup(host string) ([]net.IP, error) {
 
 // ResolveAll resolves and caches a predefined set of domains for warmup
 func ResolveAll() error {
-	results := make(map[string][]net.IP, len(warmupDomains))
 	for _, domain := range warmupDomains {
 		host := normalizeHost(domain)
-		ips, err := Lookup(host)
+		_, err := Lookup(host)
 		if err != nil {
 			return err
 		}
-
-		results[host] = ips
 	}
 
 	return nil

@@ -149,7 +149,9 @@ Turnable provides end-to-end encryption, user and route management for your conv
         "port": 56000
     },
     "p2p": {
-        "enabled": false
+        "enabled": false,
+        "username": "...",
+        "cloak": "none"
     },
     "provider": {
         "type": "json",
@@ -164,11 +166,13 @@ Turnable provides end-to-end encryption, user and route management for your conv
 | `call_id`              | Platform specific call or meeting ID                        |
 | `priv_key` / `pub_key` | Key pair for end-to-end encryption                          |
 | `relay.enabled`        | Relay mode enabled flag                                     |
-| `relay.proto`          | Transport protocol (`dtls` / `srtp`)                        |
+| `relay.proto`          | Transport protocol (`dtls` / `srtp` / `none`)               |
 | `relay.cloak`          | Traffic obfuscation method (`none` for now)                 |
 | `relay.public_ip`      | Public IP address of this server                            |
 | `relay.port`           | UDP port for the DTLS/SRTP listener                         |
 | `p2p.enabled`          | P2P mode enabled flag **⚠️ WIP**                            |
+| `p2p.username`         | Username to use in the call for P2P mode                    |
+| `p2p.cloak`            | Traffic obfuscation method for P2P mode                     |
 | `provider.type`        | User and Route provider type (`json`/`raw`)                 |
 | `provider.path`        | JSON file path relative to working directory (`json`)       |
 
@@ -182,38 +186,38 @@ Turnable provides end-to-end encryption, user and route management for your conv
             "port": 443,
             "socket": "tcp",
             "transport": "kcp",
-            "client_prefs": {
-                "username": "Maxim Smirnov  ",
-                "type": "relay",
-                "encryption": "handshake",
-                "name": "My Server",
-                "peers": 10
-            }
+            "encryption": "handshake",
+            "name": "My HTTPS Server"
         }
     ],
     "users": [
         {
             "uuid": "...",
-            "allowed_routes": ["https"]
+            "allowed_routes": ["https"],
+            "username": "user123",
+            "type": "relay",
+            "peers": 10
         }
     ]
 }
 ```
 
-| Field                              | Description                                                              |
-|------------------------------------|--------------------------------------------------------------------------|
-| `routes[].id`                      | Unique route identifier                                                  |
-| `routes[].address`                 | Destination address to forward traffic to                                |
-| `routes[].port`                    | Destination port                                                         |
-| `routes[].socket`                  | Socket type (`tcp` / `udp`)                                              |
-| `routes[].transport`               | Transport layer - use `kcp` for TCP, `none` for UDP                      |
-| `routes[].client_prefs.username`   | Username to use in the call                                              |
-| `routes[].client_prefs.type`       | Connection type (`relay` / `p2p`)                                        |
-| `routes[].client_prefs.encryption` | Encryption mode (`handshake` / `full`)                                   |
-| `routes[].client_prefs.name`       | Human-readable display name for this route                               |
-| `routes[].client_prefs.peers`      | Number of peer connections to establish                                  |
-| `users[].uuid`                     | Unique user identifier ([generate here](https://www.uuidgenerator.net/)) |
-| `users[].allowed_routes`           | List of route IDs this user is permitted to access                       |
+| Field                      | Description                                                              |
+|----------------------------|--------------------------------------------------------------------------|
+| `routes[].id`              | Unique route identifier                                                  |
+| `routes[].address`         | Destination address to forward traffic to                                |
+| `routes[].port`            | Destination port                                                         |
+| `routes[].socket`          | Socket type (`tcp` / `udp`)                                              |
+| `routes[].transport`       | Transport layer - use `kcp` for TCP, `none` for UDP                      |
+| `routes[].encryption`      | Encryption mode (`handshake` / `full`, defaults to `handshake`)          |
+| `routes[].name`            | Human-readable display name for this route                               |
+| `routes[].conn`            | Connection type override (optional, uses user's type if not set)         |
+| `users[].uuid`             | Unique user identifier ([generate here](https://www.uuidgenerator.net/)) |
+| `users[].allowed_routes`   | List of route IDs this user is permitted to access                       |
+| `users[].username`         | Username to use in the call                                              |
+| `users[].type`             | Connection type (`relay` / `p2p`)                                        |
+| `users[].peers`            | Number of peer connections to establish                                  |
+| `users[].forceturn`        | Force TURN in P2P mode (optional)                                        |
 
 > [!WARNING]
 > Do not share the user UUID willy-nilly, as it is used for authentication!
@@ -232,7 +236,7 @@ Flags:
 
 #### 5. Generate client config
 ```bash
-./turnable config generate <route-id> <user-uuid>
+./turnable config generate <user-uuid> <route-id1> [route-id2 ...]
 # turnable://uuid:call@vk.com/route?pub_key=...
 ```
 
@@ -240,7 +244,6 @@ Flags:
 Flags:
   -c, --config string   server config JSON file path (default "config.json")
   -j, --json            output config in json format
-  -s, --store string    server user/route store JSON file path (default "store.json")
 ```
 
 Produced config URL or JSON is the only thing you need to provide to your users.
@@ -262,6 +265,12 @@ If you would like to, you can directly connect to a remote UDP server if you do 
 ```bash
 ./turnable config direct <platform-id> <call-id> <username> <gateway-addr> -n [peers]
 # turnable://INSECURE-DIRECT-RELAY:call@vk.com/?username=...&type=direct&...
+```
+
+```
+Flags:
+  -n, --peers int   how many peer connections to use (default 1)
+  -j, --json        output config in json format
 ```
 
 #### 2. Start the client

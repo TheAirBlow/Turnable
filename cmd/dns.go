@@ -24,7 +24,7 @@ func newCacheDNSCommand() *cobra.Command {
 func cacheDNSMain() error {
 	err := common.ResolveAll()
 
-	if err != nil {
+	if err == nil {
 		slog.Info("successfully warmed up the DNS cache")
 	}
 
