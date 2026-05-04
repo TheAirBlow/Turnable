@@ -1,244 +1,262 @@
 package common
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
-	"encoding/binary"
+	"encoding/json"
 	"fmt"
-	"io"
+	"log/slog"
 	"net"
-	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
 const (
-	dnsTypeA    uint16 = 1
-	dnsTypeAAAA uint16 = 28
-	dnsClassIN  uint16 = 1
+	dnsCacheTTL = time.Hour // TTL of a DNS cache entry
 )
-
-// dohProviders lists DoH endpoints with their TLS hostname and pinned IPs
-var dohProviders = []struct {
-	url      string
-	hostname string
-	ips      []string
-}{
-	{"https://common.dot.dns.yandex.net/dns-query", "common.dot.dns.yandex.net", []string{"77.88.8.8", "77.88.8.1"}},
-	{"https://dns.google/dns-query", "dns.google", []string{"8.8.8.8", "8.8.4.4"}},
-	{"https://cloudflare-dns.com/dns-query", "cloudflare-dns.com", []string{"1.1.1.1", "1.0.0.1"}},
-}
 
 var (
-	globalClients []*dohClient
-	globalIdx     atomic.Uint64
+	globalResolver = &net.Resolver{}            // Native DNS resolver
+	dnsCacheMu     sync.RWMutex                 // DNS cache mutex
+	dnsCache       = map[string]dnsCacheEntry{} // DNS cache map
+	cacheWarnOnce  sync.Once                    // cache warning sync
 )
 
-// init initializes clients for all DoH providers
+// warmupDomains contains a list of domains to resolve when warmup is requested
+var warmupDomains = []string{
+	"vk.com",
+	"api.vk.com",
+	"login.vk.com",
+	"id.vk.com",
+	"static.vk.com",
+	"calls.okcdn.ru",
+	"videowebrtc.okcdn.ru",
+}
+
+// dnsCacheEntry describes one cached DNS answer with its update timestamp
+type dnsCacheEntry struct {
+	IPs       []string `json:"ips"`
+	UpdatedAt int64    `json:"updated_at"`
+}
+
+// dnsCacheFile is the JSON container for DNS cache
+type dnsCacheFile struct {
+	Entries map[string]dnsCacheEntry `json:"entries"`
+}
+
+// init loads DNS cache state from disk
 func init() {
-	for _, p := range dohProviders {
-		for _, ip := range p.ips {
-			globalClients = append(globalClients, newDohClient(p.url, p.hostname, ip))
-		}
+	primary, fallback := cachePaths()
+	if loadDNSCacheFrom(primary) {
+		return
 	}
+
+	loadDNSCacheFrom(fallback)
 }
 
-// dohClient performs DNS-over-HTTPS queries to a single pinned endpoint
-type dohClient struct {
-	url    string
-	client *http.Client
+// cachePaths returns primary and fallback cache file paths
+func cachePaths() (string, string) {
+	fallback := ".dns_cache"
+	if cwd, err := os.Getwd(); err == nil {
+		fallback = filepath.Join(cwd, ".dns_cache")
+	}
+
+	configDir, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(configDir) == "" {
+		return "", fallback
+	}
+
+	primary := filepath.Join(configDir, "turnable", "dns_cache.json")
+	return primary, fallback
 }
 
-// newDohClient creates a DoH client that dials pinnedIP directly, using hostname for TLS SNI
-func newDohClient(dohURL, hostname, pinnedIP string) *dohClient {
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	transport := &http.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(pinnedIP, "443"))
-			if err != nil {
-				return nil, err
-			}
-
-			tlsConn := tls.Client(conn, &tls.Config{ServerName: hostname})
-			if err := tlsConn.HandshakeContext(ctx); err != nil {
-				conn.Close()
-				return nil, err
-			}
-
-			return tlsConn, nil
-		},
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 8 * time.Second,
-		IdleConnTimeout:       30 * time.Second,
+// loadDNSCacheFrom loads cache entries from a single cache file path
+func loadDNSCacheFrom(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
 	}
 
-	return &dohClient{
-		url:    dohURL,
-		client: &http.Client{Transport: transport, Timeout: 10 * time.Second},
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return false
 	}
+
+	var payload dnsCacheFile
+	if err := json.Unmarshal(data, &payload); err != nil || len(payload.Entries) == 0 {
+		return false
+	}
+
+	dnsCacheMu.Lock()
+	dnsCache = payload.Entries
+	dnsCacheMu.Unlock()
+	return true
 }
 
-// buildQuery encodes a DNS query in wire format for the given hostname and record type
-func buildQuery(id uint16, name string, qtype uint16) []byte {
-	var qname []byte
-	for _, label := range strings.Split(strings.TrimSuffix(name, "."), ".") {
-		qname = append(qname, byte(len(label)))
-		qname = append(qname, label...)
+// persistDNSCache persists the current DNS cache to disk
+func persistDNSCache() {
+	dnsCacheMu.RLock()
+	entries := make(map[string]dnsCacheEntry, len(dnsCache))
+	for host, entry := range dnsCache {
+		entries[host] = entry
 	}
-	qname = append(qname, 0x00)
+	dnsCacheMu.RUnlock()
+	payload := dnsCacheFile{Entries: entries}
 
-	buf := make([]byte, 0, 12+len(qname)+4)
-	buf = binary.BigEndian.AppendUint16(buf, id)
-	buf = binary.BigEndian.AppendUint16(buf, 0x0100) // flags: RD=1
-	buf = binary.BigEndian.AppendUint16(buf, 1)      // QDCOUNT
-	buf = binary.BigEndian.AppendUint16(buf, 0)      // ANCOUNT
-	buf = binary.BigEndian.AppendUint16(buf, 0)      // NSCOUNT
-	buf = binary.BigEndian.AppendUint16(buf, 0)      // ARCOUNT
-	buf = append(buf, qname...)
-	buf = binary.BigEndian.AppendUint16(buf, qtype)
-	buf = binary.BigEndian.AppendUint16(buf, dnsClassIN)
-	return buf
+	data, err := json.Marshal(payload)
+	if err != nil {
+		cacheWarnOnce.Do(func() {
+			slog.Warn("failed to serialize dns cache", "error", err)
+		})
+		return
+	}
+
+	primary, fallback := cachePaths()
+
+	if tryWriteCache(primary, data) == nil {
+		return
+	}
+	if tryWriteCache(fallback, data) == nil {
+		return
+	}
+
+	cacheWarnOnce.Do(func() {
+		slog.Warn("failed to persist dns cache", "primary", primary, "fallback", fallback)
+	})
 }
 
-// skipName advances past a DNS name at off, handling compression pointers
-func skipName(msg []byte, off int) (int, error) {
-	for {
-		if off >= len(msg) {
-			return 0, fmt.Errorf("dns: name out of bounds at offset %d", off)
-		}
-		n := int(msg[off])
-		if n == 0 {
-			return off + 1, nil
-		}
-		if n&0xC0 == 0xC0 { // compression pointer
-			return off + 2, nil
-		}
-		off += 1 + n
+// tryWriteCache attempts to write DNS cache JSON to the given file path
+func tryWriteCache(path string, data []byte) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("empty cache path")
 	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0o640)
 }
 
-// parseIPs extracts A and AAAA records from a raw DNS response
-func parseIPs(msg []byte) ([]net.IP, error) {
-	if len(msg) < 12 {
-		return nil, fmt.Errorf("dns: response too short")
-	}
+// normalizeHost canonicalizes hostnames for cache keys
+func normalizeHost(host string) string {
+	host = strings.TrimSpace(host)
+	host = strings.TrimSuffix(host, ".")
+	return strings.ToLower(host)
+}
 
-	if rcode := int(binary.BigEndian.Uint16(msg[2:4])) & 0xF; rcode == 2 {
-		return nil, fmt.Errorf("dns: SERVFAIL")
-	}
-
-	qdcount := int(binary.BigEndian.Uint16(msg[4:6]))
-	ancount := int(binary.BigEndian.Uint16(msg[6:8]))
-
-	off := 12
-	for i := 0; i < qdcount; i++ {
-		var err error
-		if off, err = skipName(msg, off); err != nil {
-			return nil, err
-		}
-		off += 4 // QTYPE + QCLASS
-	}
-
-	var ips []net.IP
-	for i := 0; i < ancount; i++ {
-		var err error
-		if off, err = skipName(msg, off); err != nil {
-			return nil, err
-		}
-
-		if off+10 > len(msg) {
-			return nil, fmt.Errorf("dns: record header truncated")
-		}
-
-		rrType := binary.BigEndian.Uint16(msg[off:])
-		off += 8 // TYPE(2) + CLASS(2) + TTL(4)
-		rdlen := int(binary.BigEndian.Uint16(msg[off:]))
-		off += 2
-
-		if off+rdlen > len(msg) {
-			return nil, fmt.Errorf("dns: rdata truncated")
-		}
-
-		rdata := msg[off : off+rdlen]
-		off += rdlen
-
-		switch rrType {
-		case dnsTypeA:
-			if rdlen == 4 {
-				ip := make(net.IP, 4)
-				copy(ip, rdata)
-				ips = append(ips, ip)
-			}
-		case dnsTypeAAAA:
-			if rdlen == 16 {
-				ip := make(net.IP, 16)
-				copy(ip, rdata)
-				ips = append(ips, ip)
-			}
+// entryIPs parses cached string IPs into net.IP values
+func entryIPs(entry dnsCacheEntry) []net.IP {
+	ips := make([]net.IP, 0, len(entry.IPs))
+	for _, s := range entry.IPs {
+		if ip := net.ParseIP(s); ip != nil {
+			ips = append(ips, ip)
 		}
 	}
+	return ips
+}
+
+// cacheGet reads a cache entry by normalized host
+func cacheGet(host string) (dnsCacheEntry, bool) {
+	dnsCacheMu.RLock()
+	entry, ok := dnsCache[host]
+	dnsCacheMu.RUnlock()
+	return entry, ok
+}
+
+// cacheSet updates a cache entry and persists cache to disk
+func cacheSet(host string, ips []net.IP) {
+	if len(ips) == 0 {
+		return
+	}
+
+	stringsIP := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if ip != nil {
+			stringsIP = append(stringsIP, ip.String())
+		}
+	}
+
+	dnsCacheMu.Lock()
+	dnsCache[host] = dnsCacheEntry{IPs: stringsIP, UpdatedAt: time.Now().Unix()}
+	dnsCacheMu.Unlock()
+	persistDNSCache()
+}
+
+// resolverLookup performs a native DNS lookup with timeout
+func resolverLookup(host string) ([]net.IP, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ips, err := globalResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no addresses for %s", host)
+	}
+
 	return ips, nil
 }
 
-// query sends a DoH POST request for name/qtype and returns parsed IPs
-func (c *dohClient) query(name string, qtype uint16) ([]net.IP, error) {
-	body := buildQuery(uint16(globalIdx.Add(1)), name, qtype)
-	resp, err := c.client.Post(c.url, "application/dns-message", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	return parseIPs(data)
-}
-
-// Lookup resolves a hostname to IP addresses using native resolver with fallback to DoH
-func Lookup(host string) ([]net.IP, error) {
-	resolver := &net.Resolver{}
-	if ips4, err := resolver.LookupIP(context.Background(), "ip4", host); err == nil && len(ips4) > 0 {
-		if ips6, err := resolver.LookupIP(context.Background(), "ip6", host); err == nil {
-			return append(ips4, ips6...), nil
-		}
-		return ips4, nil
-	}
-
-	if ips6, err := resolver.LookupIP(context.Background(), "ip6", host); err == nil && len(ips6) > 0 {
-		return ips6, nil
-	}
-
-	if len(globalClients) == 0 {
-		return nil, fmt.Errorf("no DoH clients configured")
-	}
-
-	start := int(globalIdx.Add(1)-1) % len(globalClients)
-	var lastErr error
-	for i := 0; i < len(globalClients); i++ {
-		c := globalClients[(start+i)%len(globalClients)]
-		ips, err := c.query(host, dnsTypeA)
+// ResolveAll resolves and caches a predefined set of domains for warmup
+func ResolveAll() error {
+	results := make(map[string][]net.IP, len(warmupDomains))
+	for _, domain := range warmupDomains {
+		host := normalizeHost(domain)
+		ips, err := Lookup(host)
 		if err != nil {
-			lastErr = err
-			continue
+			return err
 		}
 
-		if ips6, err := c.query(host, dnsTypeAAAA); err == nil {
-			ips = append(ips, ips6...)
-		}
-
-		return ips, nil
+		results[host] = ips
 	}
 
-	return nil, fmt.Errorf("lookup %q: %w", host, lastErr)
+	return nil
 }
 
-// ResolveUDPAddr resolves an address using the global resolver for hostname lookup
+// Lookup resolves a hostname from cache, falling back to native resolver.
+func Lookup(host string) ([]net.IP, error) {
+	host = normalizeHost(host)
+	if host == "" {
+		return nil, fmt.Errorf("empty host")
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}, nil
+	}
+
+	entry, cached := cacheGet(host)
+	if cached {
+		cachedIPs := entryIPs(entry)
+		if len(cachedIPs) > 0 {
+			if age := time.Since(time.Unix(entry.UpdatedAt, 0)); age < dnsCacheTTL {
+				return cachedIPs, nil
+			}
+		}
+	}
+
+	resolvedIPs, err := resolverLookup(host)
+	if err == nil {
+		cacheSet(host, resolvedIPs)
+		return resolvedIPs, nil
+	}
+
+	if cached {
+		cachedIPs := entryIPs(entry)
+		if len(cachedIPs) > 0 {
+			return cachedIPs, nil
+		}
+	}
+
+	return nil, fmt.Errorf("lookup %q: %w", host, err)
+}
+
+// ResolveUDPAddr resolves a UDP address using the cached DNS resolver
 func ResolveUDPAddr(addr string) (*net.UDPAddr, error) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -265,7 +283,7 @@ func ResolveUDPAddr(addr string) (*net.UDPAddr, error) {
 	return &net.UDPAddr{IP: ips[0], Port: port}, nil
 }
 
-// ResolverDialContext returns a DialContext function that uses the global DNS resolver
+// ResolverDialContext returns a DialContext using the cached DNS resolver
 func ResolverDialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {

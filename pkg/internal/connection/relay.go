@@ -37,7 +37,7 @@ const (
 	fullReconnectInit = 5 * time.Second
 	fullReconnectMax  = 30 * time.Second
 
-	peerHandshakeRetryMax      = 45 * time.Second
+	peerHandshakeRetryMax = 45 * time.Second
 )
 
 // ErrAckRejected is returned when the server sends an error ACK during handshake
