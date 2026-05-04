@@ -129,13 +129,13 @@ func newConfigBootstrapCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
-		Short: "Interactively create a new server config",
+		Short: "Interactively create a server or service config",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return bootstrapMain(opts)
 		},
 	}
 
-	cmd.Flags().StringVarP(&opts.output, "output", "o", "config.json", "output path for the generated server config")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", "config.json", "output path for the generated config")
 	return cmd
 }
 
@@ -308,6 +308,17 @@ func promptInt(r *bufio.Reader, msg string, def int) int {
 	}
 }
 
+func promptIntAtLeast(r *bufio.Reader, msg string, def, min int) int {
+	for {
+		raw := prompt(r, msg, strconv.Itoa(def))
+		v, err := strconv.Atoi(raw)
+		if err == nil && v >= min {
+			return v
+		}
+		fmt.Printf("* please enter an integer >= %d\n", min)
+	}
+}
+
 func promptIP(r *bufio.Reader, msg string) string {
 	for {
 		v := promptRequired(r, msg)
@@ -328,8 +339,20 @@ func promptPort(r *bufio.Reader, msg string, def int) int {
 	}
 }
 
-// bootstrapMain runs the interactive server-config wizard
+// bootstrapMain runs the bootstrap config command
 func bootstrapMain(opts *configBootstrapOptions) error {
+	r := bufio.NewReader(os.Stdin)
+	kind := promptChoice(r, "Config type", []string{"server", "service"}, "server")
+
+	if kind == "service" {
+		return bootstrapServiceMain(opts)
+	}
+
+	return bootstrapServerMain(opts)
+}
+
+// bootstrapServerMain runs the interactive server config wizard
+func bootstrapServerMain(opts *configBootstrapOptions) error {
 	r := bufio.NewReader(os.Stdin)
 
 	platforms := common.PlatformsHolder.List()
@@ -536,6 +559,83 @@ func bootstrapMain(opts *configBootstrapOptions) error {
 
 	fmt.Println()
 	fmt.Printf("* Server config written to %s\n", opts.output)
+
+	return nil
+}
+
+// bootstrapServiceMain runs the interactive service config wizard
+func bootstrapServiceMain(opts *configBootstrapOptions) error {
+	r := bufio.NewReader(os.Stdin)
+
+	listenMode := promptChoice(r, "Service listener", []string{"unix", "tcp", "both"}, "unix")
+
+	serviceCfg := config.ServiceConfig{}
+
+	if listenMode == "unix" || listenMode == "both" {
+		serviceCfg.UnixSocket = prompt(r, "Unix socket path", "/tmp/turnable.sock")
+	}
+
+	if listenMode == "tcp" || listenMode == "both" {
+		listenIP := prompt(r, "Service TCP listen IP", "127.0.0.1")
+		listenPort := promptPort(r, "Service TCP port", 45678)
+		serviceCfg.ListenAddr = net.JoinHostPort(listenIP, strconv.Itoa(listenPort))
+	}
+
+	serviceCfg.PersistDir = prompt(r, "Persist dir (empty = disabled)", "")
+
+	enableAuth := promptChoice(r, "Enable authentication?", []string{"yes", "no"}, "yes") == "yes"
+	if enableAuth {
+		dk, err := mlkem.GenerateKey768()
+		if err != nil {
+			return fmt.Errorf("keygen: %w", err)
+		}
+
+		serviceCfg.PrivKey = base64.StdEncoding.EncodeToString(dk.Bytes())
+		serviceCfg.PubKey = base64.StdEncoding.EncodeToString(dk.EncapsulationKey().Bytes())
+
+		fmt.Println("* Service server keypair:")
+		fmt.Printf("* pub_key=%s\n", serviceCfg.PubKey)
+		fmt.Printf("* priv_key=%s\n", serviceCfg.PrivKey)
+
+		userCount := promptIntAtLeast(r, "How many service users to generate?", 0, 0)
+		for i := 1; i <= userCount; i++ {
+			userDK, err := mlkem.GenerateKey768()
+			if err != nil {
+				return fmt.Errorf("user keygen %d: %w", i, err)
+			}
+
+			userPriv := base64.StdEncoding.EncodeToString(userDK.Bytes())
+			userPub := base64.StdEncoding.EncodeToString(userDK.EncapsulationKey().Bytes())
+
+			serviceCfg.AllowedKeys = append(serviceCfg.AllowedKeys, userPub)
+
+			fmt.Println()
+			fmt.Printf("* User %d keypair:\n", i)
+			fmt.Printf("  pub_key=%s\n", userPub)
+			fmt.Printf("  priv_key=%s\n", userPriv)
+		}
+	}
+
+	if err := serviceCfg.Validate(); err != nil {
+		return fmt.Errorf("generated service config failed validation: %w", err)
+	}
+
+	outJSON, err := serviceCfg.ToJSON(true)
+	if err != nil {
+		return fmt.Errorf("serialize service config: %w", err)
+	}
+
+	outPath := opts.output
+	if outPath == "config.json" {
+		outPath = "service.json"
+	}
+
+	if err := os.WriteFile(outPath, []byte(outJSON), 0o640); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Printf("* Service config written to %s\n", outPath)
 
 	return nil
 }
