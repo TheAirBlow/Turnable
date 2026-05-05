@@ -14,6 +14,7 @@ import (
 type Instance struct {
 	ID          string
 	Name        string
+	Autostart   bool
 	config      string
 	listenAddrs []string
 	server      *engine.TurnableServer
@@ -33,9 +34,10 @@ func (i *Instance) Stop() error {
 // Info returns a protobuf description of this instance
 func (i *Instance) Info() *pb.InstanceInfo {
 	info := &pb.InstanceInfo{
-		Id:     i.ID,
-		Name:   i.Name,
-		Status: pb.InstanceStatus(i.status.Load()),
+		Id:        i.ID,
+		Name:      i.Name,
+		Status:    pb.InstanceStatus(i.status.Load()),
+		Autostart: i.Autostart,
 	}
 
 	if i.server != nil {

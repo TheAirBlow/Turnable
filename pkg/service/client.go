@@ -476,3 +476,30 @@ func (c *Client) DeleteUser(instanceID string, userUUID string) error {
 
 	return fmt.Errorf("unexpected response type")
 }
+
+// UpdateMetadata updates instance metadata like name and autostart toggle
+func (c *Client) UpdateMetadata(instanceID, name string, autostart bool) error {
+	req := &pb.Request{
+		Payload: &pb.Request_UpdateMetadata{
+			UpdateMetadata: &pb.UpdateMetadataRequest{
+				InstanceId: instanceID,
+				Name:       name,
+				Autostart:  autostart,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return err
+	}
+
+	if um := resp.GetUpdateMetadata(); um != nil {
+		if um.Error != "" {
+			return fmt.Errorf("update metadata: %s", um.Error)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unexpected response type")
+}

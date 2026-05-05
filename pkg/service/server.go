@@ -45,6 +45,7 @@ type persistRecord struct {
 	Type        string   `json:"type"`
 	Config      string   `json:"config"`
 	ListenAddrs []string `json:"listen_addrs,omitempty"`
+	Autostart   bool     `json:"autostart"`
 }
 
 // NewServer creates a new Server instance
@@ -238,7 +239,7 @@ func (s *Server) startServer(req *pb.StartServerRequest) (string, error) {
 		return "", err
 	}
 
-	inst := &Instance{ID: id, Name: name, config: req.Config, server: srv}
+	inst := &Instance{ID: id, Name: name, config: req.Config, server: srv, Autostart: req.Autostart}
 
 	s.mu.Lock()
 	s.instances[id] = inst
@@ -301,7 +302,7 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 		return "", err
 	}
 
-	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddrs: req.ListenAddrs, client: cli}
+	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddrs: req.ListenAddrs, client: cli, Autostart: req.Autostart}
 	s.mu.Lock()
 	s.instances[id] = inst
 	s.mu.Unlock()
@@ -317,7 +318,6 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_CREATED,
 	})
 
-	// Start async
 	go func() {
 		cli.SetLogger(s.log.With("client_id", id))
 		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTING)
@@ -507,6 +507,39 @@ func (s *Server) deleteUser(id string, userUUID string) error {
 	return nil
 }
 
+// updateMetadata updates instance metadata like name and autostart toggle
+func (s *Server) updateMetadata(id, name string, autostart bool) error {
+	s.mu.RLock()
+	inst, ok := s.instances[id]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("instance %q not found", id)
+	}
+
+	if name != "" {
+		inst.Name = name
+	}
+	inst.Autostart = autostart
+
+	if s.persistDir != "" {
+		s.savePersisted(inst)
+	}
+
+	s.broadcastEvent(&pb.InstanceEvent{
+		InstanceId: id,
+		Name:       inst.Name,
+		InstanceType: func() pb.InstanceType {
+			if inst.server != nil {
+				return pb.InstanceType_INSTANCE_TYPE_SERVER
+			}
+			return pb.InstanceType_INSTANCE_TYPE_CLIENT
+		}(),
+		EventType: pb.InstanceEventType_INSTANCE_EVENT_TYPE_UPDATED,
+	})
+
+	return nil
+}
+
 // persistAndNotifyProvider persists the instance config and broadcasts an UPDATED event
 func (s *Server) persistAndNotifyProvider(inst *Instance) {
 	if inst.server.Config.ProviderID() == "raw" {
@@ -575,6 +608,7 @@ func (s *Server) savePersisted(inst *Instance) {
 	rec := persistRecord{
 		ID:          inst.ID,
 		Name:        inst.Name,
+		Autostart:   inst.Autostart,
 		Config:      inst.config,
 		ListenAddrs: inst.listenAddrs,
 	}
@@ -632,12 +666,17 @@ func (s *Server) loadPersistedInstances() {
 			continue
 		}
 
+		if !rec.Autostart {
+			continue
+		}
+
 		switch rec.Type {
 		case "server":
 			_, err = s.startServer(&pb.StartServerRequest{
 				Config:     rec.Config,
 				InstanceId: rec.ID,
 				Name:       rec.Name,
+				Autostart:  rec.Autostart,
 			})
 		case "client":
 			_, err = s.startClient(&pb.StartClientRequest{
@@ -645,6 +684,7 @@ func (s *Server) loadPersistedInstances() {
 				ListenAddrs: rec.ListenAddrs,
 				InstanceId:  rec.ID,
 				Name:        rec.Name,
+				Autostart:   rec.Autostart,
 			})
 		default:
 			s.log.Warn("persist: unknown instance type in record", "path", path, "type", rec.Type)
@@ -868,6 +908,16 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 		}
 
 		return &pb.Response{Payload: &pb.Response_DeleteUser{DeleteUser: resp}}, nil
+	case *pb.Request_UpdateMetadata:
+		resp := &pb.UpdateMetadataResponse{}
+		if err := c.svc.updateMetadata(p.UpdateMetadata.InstanceId, p.UpdateMetadata.Name, p.UpdateMetadata.Autostart); err != nil {
+			c.svc.log.Warn("failed to update metadata", "remote", c.remote, "id", p.UpdateMetadata.InstanceId, "error", err)
+			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("updated metadata", "remote", c.remote, "id", p.UpdateMetadata.InstanceId)
+		}
+
+		return &pb.Response{Payload: &pb.Response_UpdateMetadata{UpdateMetadata: resp}}, nil
 	default:
 		return nil, fmt.Errorf("unknown request type")
 	}

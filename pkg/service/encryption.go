@@ -13,10 +13,6 @@ import (
 	"github.com/theairblow/turnable/pkg/internal/connection"
 )
 
-const (
-	serviceVersion = uint32(1) // Server protocol version
-)
-
 // KeyPair holds a parsed ML-KEM768 keypair for service encryption
 type KeyPair struct {
 	pubKeyBytes []byte

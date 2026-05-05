@@ -36,6 +36,7 @@ message InstanceInfo {
   InstanceType type = 2;
   InstanceStatus status = 3;
   string name = 4;
+  bool autostart = 5;
 }
 
 // InstanceEvent is broadcast message about a change to a managed instance's state or config
@@ -79,6 +80,7 @@ message StartServerRequest {
   string config = 1;
   string instance_id = 2;
   string name = 3;
+  bool autostart = 4;
 }
 
 // StartServerResponse carries the new server instance ID or an error
@@ -93,6 +95,7 @@ message StartClientRequest {
   repeated string listen_addrs = 2;
   string instance_id = 3;
   string name = 4;
+  bool autostart = 5;
 }
 
 // StartClientResponse carries the new client instance ID or an error
@@ -119,6 +122,18 @@ message UpdateProviderRequest {
 
 // UpdateProviderResponse is sent in reply to UpdateProviderRequest
 message UpdateProviderResponse {}
+
+// UpdateMetadataRequest updates instance metadata like name and autostart toggle
+message UpdateMetadataRequest {
+  string instance_id = 1;
+  string name = 2;
+  bool autostart = 3;
+}
+
+// UpdateMetadataResponse is sent in reply to UpdateMetadataRequest
+message UpdateMetadataResponse {
+  string error = 1;
+}
 
 // ListInstancesRequest requests the list of all managed instances
 message ListInstancesRequest {}
@@ -238,6 +253,7 @@ message Request {
     DeleteRouteRequest delete_route = 11;
     AddUserRequest add_user = 12;
     DeleteUserRequest delete_user = 13;
+    UpdateMetadataRequest update_metadata = 14;
   }
 }
 
@@ -260,5 +276,6 @@ message Response {
     DeleteRouteResponse delete_route = 14;
     AddUserResponse add_user = 15;
     DeleteUserResponse delete_user = 16;
+    UpdateMetadataResponse update_metadata = 17;
   }
 }

@@ -14,10 +14,6 @@ import (
 	"time"
 )
 
-const (
-	dnsCacheTTL = time.Hour // TTL of a DNS cache entry
-)
-
 var (
 	globalResolver = &net.Resolver{}            // Native DNS resolver
 	dnsCacheMu     sync.RWMutex                 // DNS cache mutex
@@ -36,10 +32,9 @@ var warmupDomains = []string{
 	"videowebrtc.okcdn.ru",
 }
 
-// dnsCacheEntry describes one cached DNS answer with its update timestamp
+// dnsCacheEntry describes one cached DNS answer
 type dnsCacheEntry struct {
-	IPs       []string `json:"ips"`
-	UpdatedAt int64    `json:"updated_at"`
+	IPs []string `json:"ips"`
 }
 
 // dnsCacheFile is the JSON container for DNS cache
@@ -181,7 +176,7 @@ func cacheSet(host string, ips []net.IP) {
 	}
 
 	dnsCacheMu.Lock()
-	dnsCache[host] = dnsCacheEntry{IPs: stringsIP, UpdatedAt: time.Now().Unix()}
+	dnsCache[host] = dnsCacheEntry{IPs: stringsIP}
 	dnsCacheMu.Unlock()
 	persistDNSCache()
 }
@@ -216,7 +211,7 @@ func ResolveAll() error {
 	return nil
 }
 
-// Lookup resolves a hostname from cache, falling back to native resolver.
+// Lookup resolves a hostname from native resolver, falling back to cache only on failure.
 func Lookup(host string) ([]net.IP, error) {
 	host = normalizeHost(host)
 	if host == "" {
@@ -227,22 +222,13 @@ func Lookup(host string) ([]net.IP, error) {
 		return []net.IP{ip}, nil
 	}
 
-	entry, cached := cacheGet(host)
-	if cached {
-		cachedIPs := entryIPs(entry)
-		if len(cachedIPs) > 0 {
-			if age := time.Since(time.Unix(entry.UpdatedAt, 0)); age < dnsCacheTTL {
-				return cachedIPs, nil
-			}
-		}
-	}
-
 	resolvedIPs, err := resolverLookup(host)
 	if err == nil {
 		cacheSet(host, resolvedIPs)
 		return resolvedIPs, nil
 	}
 
+	entry, cached := cacheGet(host)
 	if cached {
 		cachedIPs := entryIPs(entry)
 		if len(cachedIPs) > 0 {

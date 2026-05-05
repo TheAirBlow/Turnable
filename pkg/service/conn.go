@@ -11,6 +11,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const (
+	serviceVersion = uint32(1) // Server protocol version
+)
+
 // writeFramed writes a length-prefixed proto message without encryption
 func writeFramed(nc net.Conn, msg proto.Message) error {
 	data, err := proto.Marshal(msg)
