@@ -120,7 +120,7 @@ func (s *TurnableServer) acceptClients(handler connection.Handler, socket Socket
 	}
 
 	for client := range clientCh {
-		if len(client.Routes) == 0 || client.Config == nil || client.User == nil {
+		if len(client.Routes) == 0 || client.User == nil {
 			s.log.Warn("dropping client with incomplete metadata", "addr", client.Address)
 			_ = client.Conn.Close()
 			continue

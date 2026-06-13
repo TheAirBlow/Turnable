@@ -1,47 +1,83 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 
 	"github.com/theairblow/turnable/pkg/common"
 )
 
-// Provider represents a Route and User provider
-type Provider interface {
-	ID() string                          // Returns the unique ID of this provider
-	Update(config json.RawMessage) error // Updates or initializes provider configuration
-	ToJSON() (json.RawMessage, error)    // Serializes provider config to config JSON
-	GetRoute(id string) (*Route, error)  // Fetches a Route based on its ID
-	GetUser(uuid string) (*User, error)  // Fetches a User based on their UUID
-	AddRoute(route *Route) error         // Adds or updates a route
-	AddUser(user *User) error            // Adds or updates a user
-	DeleteRoute(id string) error         // Removes a route by ID
-	DeleteUser(uuid string) error        // Removes a user by UUID
-	GetAllRoutes() []Route               // Fetches all available routes
-	Stop() error                         // Stops the provider connection
+// Config represents a config that can be validated and serialized
+type Config interface {
+	Validate() error                                     // Validates the config
+	ToJSON(indented bool, stripped bool) ([]byte, error) // Serializes the config to a JSON string
+	ToURL() (string, error)                              // Serializes the config to a URL string
 }
 
-// Providers represents a Provider registry
-var Providers = common.NewRegistry[Provider]()
-
-// init registers all available route and user providers
-func init() {
-	common.ProvidersHolder = Providers
-	Providers.Register(&RawProvider{})
-	Providers.Register(&JSONProvider{})
+// HandlerAccessor represents a connection handler accessor (hacky as fuck but works)
+type HandlerAccessor interface {
+	GetBlankServerConfig() Config // Returns a blank server config struct
+	GetBlankClientConfig() Config // Returns a blank client config struct
 }
 
-// GetProvider fetches a Provider by its string ID
-func GetProvider(name string) (Provider, error) {
-	return Providers.Get(name)
+// URL schema for Turnable
+const urlSchema = "turnable"
+
+// ToJSON serializes any configuration struct to a JSON string
+func ToJSON(cfg any, indented bool) ([]byte, error) {
+	var out []byte
+	var err error
+
+	if indented {
+		out, err = json.MarshalIndent(cfg, "", "    ")
+	} else {
+		out, err = json.Marshal(cfg)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("config: failed to serialize to JSON: %w", err)
+	}
+
+	return out, nil
 }
 
-// ListProviders lists all Provider string IDs
-func ListProviders() []string {
-	return Providers.List()
+// ToURL serializes any configuration struct to a URL string
+func ToURL(cfg any) (string, error) {
+	urlStr, err := common.MarshalURL(cfg, urlSchema)
+	if err != nil {
+		return "", fmt.Errorf("config: failed to serialize to URL: %w", err)
+	}
+
+	return urlStr, nil
 }
 
-// ProviderExists checks whether a Provider with specified string ID exists
-func ProviderExists(name string) bool {
-	return Providers.Exists(name)
+// ParseConfigGeneric parses a server config from a JSON or URL
+func ParseConfigGeneric[T any](raw []byte) (T, error) {
+	var target T
+	if err := ParseConfig(raw, &target); err != nil {
+		return target, err
+	}
+
+	return target, nil
+}
+
+// ParseConfig parses a server config from a JSON or URL
+func ParseConfig(raw []byte, v any) error {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return fmt.Errorf("config: empty configuration string")
+	}
+
+	if bytes.HasPrefix(raw, []byte("{")) {
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return fmt.Errorf("config: failed to parse JSON: %w", err)
+		}
+	} else {
+		if err := common.UnmarshalURL(string(raw), urlSchema, &v); err != nil {
+			return fmt.Errorf("config: failed to parse URL: %w", err)
+		}
+	}
+
+	return nil
 }

@@ -7,8 +7,6 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	"github.com/theairblow/turnable/pkg/config"
 )
 
 // NoneHandler passes traffic as raw UDP without any encryption or framing
@@ -28,7 +26,7 @@ func (N *NoneHandler) SetLogger(log *slog.Logger) {
 }
 
 // Start starts the server listener
-func (N *NoneHandler) Start(_ config.ServerConfig) error {
+func (N *NoneHandler) Start(_ string) error {
 	return errors.New("none handler does not support server mode")
 }
 

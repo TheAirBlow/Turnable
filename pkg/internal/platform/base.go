@@ -107,12 +107,6 @@ type Event struct {
 // Handlers represents platform Handler registry
 var Handlers = common.NewRegistry[Handler]()
 
-// init registers all available platform handlers
-func init() {
-	common.PlatformsHolder = Handlers
-	Handlers.Register(&VKHandler{})
-}
-
 // GetHandler fetches a platform Handler by its string ID
 func GetHandler(name string) (Handler, error) {
 	return Handlers.Get(name)

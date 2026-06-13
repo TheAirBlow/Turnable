@@ -128,7 +128,7 @@ jobs:
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r26d
-          add-to-path: false
+          add-to-path: true
 
       - name: Build
         env:
@@ -136,21 +136,26 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
           GOMIPS: ${{ matrix.gomips }}
-          CGO_ENABLED: ${{ matrix.cgo || '0' }}
           ANDROID_API: ${{ matrix.api }}
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           if [ "$GOOS" = "android" ]; then
+            export CGO_ENABLED=1
+
+            ANDROID_NDK_HOME='${{ steps.setup-ndk.outputs.ndk-path }}'
             if [ -z "$ANDROID_NDK_HOME" ]; then
               echo "ANDROID_NDK_HOME is not set"
               exit 1
             fi
+
             TOOLCHAIN_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
             if [ "$GOARCH" = "arm64" ]; then
               export CC="$TOOLCHAIN_BIN/aarch64-linux-android${ANDROID_API}-clang"
             elif [ "$GOARCH" = "arm" ]; then
               export CC="$TOOLCHAIN_BIN/armv7a-linux-androideabi${ANDROID_API}-clang"
             fi
+          else
+            # disable CGO for non-Android builds
+            export CGO_ENABLED=0
           fi
 
           mkdir -p dist

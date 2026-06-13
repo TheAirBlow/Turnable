@@ -1,4 +1,4 @@
-package platform
+package vk
 
 import (
 	"context"
@@ -127,7 +127,7 @@ func endVKAuth(key string) {
 }
 
 // Authorize authorizes with VK and fetches the signaling and TURN session state
-func (V *VKHandler) Authorize(callID string, username string) error {
+func (V *Handler) Authorize(callID string, username string) error {
 	if strings.TrimSpace(callID) == "" {
 		return errors.New("call ID is required")
 	}
@@ -235,7 +235,7 @@ func (V *VKHandler) Authorize(callID string, username string) error {
 }
 
 // authorizeAnonymous performs the full VK anonymous auth flow, returning the messages token and call token
-func (V *VKHandler) authorizeAnonymous(ctx context.Context, joinURL, username string) (string, string, error) {
+func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username string) (string, string, error) {
 	if os.Getenv("VK_FORCE_MANUAL") == "1" {
 		slog.Info("vk captcha manual solve forced")
 		return V.solveManualCaptcha(ctx, joinURL)
@@ -333,7 +333,7 @@ func (V *VKHandler) authorizeAnonymous(ctx context.Context, joinURL, username st
 }
 
 // callsLogin creates an anonymous calls session in the VK calls backend
-func (V *VKHandler) callsLogin(ctx context.Context) (string, error) {
+func (V *Handler) callsLogin(ctx context.Context) (string, error) {
 	sessionData := vkCallsSessionData{
 		Version:       2,
 		DeviceID:      uuid.NewString(),
@@ -368,7 +368,7 @@ func (V *VKHandler) callsLogin(ctx context.Context) (string, error) {
 }
 
 // joinConversation joins the target call and returns the signaling bootstrap payload
-func (V *VKHandler) joinConversation(ctx context.Context, callID, anonymToken, sessionKey string) (vkStartedConversationInfo, error) {
+func (V *Handler) joinConversation(ctx context.Context, callID, anonymToken, sessionKey string) (vkStartedConversationInfo, error) {
 	resp, err := V.postVKForm(ctx, vkCallsEndpoint, common.NewValues(
 		"method", "vchat.joinConversationByLink",
 		"format", "JSON",

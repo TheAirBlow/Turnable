@@ -16,14 +16,6 @@ type Handler interface {
 // Handlers represents transport handler registry
 var Handlers = common.NewRegistry[Handler]()
 
-// init wires the transport registry and registers all built-in handlers
-func init() {
-	common.TransportsHolder = Handlers
-	Handlers.Register(&NoneHandler{})
-	Handlers.Register(&SCTPHandler{})
-	Handlers.Register(&KCPHandler{})
-}
-
 // GetHandler fetches a transport handler by its string ID
 func GetHandler(name string) (Handler, error) {
 	return Handlers.Get(name)

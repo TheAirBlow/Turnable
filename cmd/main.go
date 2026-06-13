@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	_ "github.com/theairblow/turnable/pkg/common"
+	_ "github.com/theairblow/turnable/pkg/init"
 )
 
 var buildVersion string

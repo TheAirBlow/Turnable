@@ -1,4 +1,4 @@
-package platform
+package vk
 
 import (
 	"bytes"
@@ -106,7 +106,7 @@ type sliderGuess struct {
 }
 
 // solveCaptchaWithRetry resolves a captcha challenge until success, context cancel, or rate limit
-func (V *VKHandler) solveCaptchaWithRetry(ctx context.Context, apiErr vkAPIError) (string, error) {
+func (V *Handler) solveCaptchaWithRetry(ctx context.Context, apiErr vkAPIError) (string, error) {
 	for attempt := 1; ; attempt++ {
 		successToken, err := V.solveCaptcha(ctx, apiErr)
 		if err == nil {
@@ -131,7 +131,7 @@ func (V *VKHandler) solveCaptchaWithRetry(ctx context.Context, apiErr vkAPIError
 }
 
 // solveCaptcha fetches the captcha page and solves one challenge session
-func (V *VKHandler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, error) {
+func (V *Handler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, error) {
 	if apiErr.RedirectURI == "" || apiErr.SessionToken == "" {
 		return "", errors.New("unsupported captcha challenge")
 	}
@@ -230,7 +230,7 @@ func (V *VKHandler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string
 }
 
 // fetchDebugInfo fetches the captcha JS and extracts the hardcoded debug_info constant, with caching.
-func (V *VKHandler) fetchDebugInfo(ctx context.Context, scriptURL string) (string, error) {
+func (V *Handler) fetchDebugInfo(ctx context.Context, scriptURL string) (string, error) {
 	body, err := V.postVKFormRaw(ctx, http.MethodGet, scriptURL, nil, map[string]string{
 		"Accept":  "text/javascript,*/*",
 		"Referer": "https://id.vk.com/",
@@ -250,7 +250,7 @@ func (V *VKHandler) fetchDebugInfo(ctx context.Context, scriptURL string) (strin
 }
 
 // fetchCaptchaHTML downloads the captcha HTML page from redirect URI
-func (V *VKHandler) fetchCaptchaHTML(ctx context.Context, redirectURI string) (string, error) {
+func (V *Handler) fetchCaptchaHTML(ctx context.Context, redirectURI string) (string, error) {
 	body, err := V.postVKFormRaw(ctx, http.MethodGet, redirectURI, nil, map[string]string{
 		"Accept":         "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 		"Sec-Fetch-Dest": "document",
@@ -306,7 +306,7 @@ func parseCaptchaPage(html string) (*captchaPage, error) {
 }
 
 // captchaRequest performs captcha API requests
-func (V *VKHandler) captchaRequest(ctx context.Context, method string, form *common.Values) (map[string]any, error) {
+func (V *Handler) captchaRequest(ctx context.Context, method string, form *common.Values) (map[string]any, error) {
 	return V.postVKForm(ctx, vkAPIEndpoint+"/"+method+"?v="+captchaAPIVersion, form, map[string]string{
 		"Origin":   "https://id.vk.com",
 		"Referer":  "https://id.vk.com/",
@@ -315,7 +315,7 @@ func (V *VKHandler) captchaRequest(ctx context.Context, method string, form *com
 }
 
 // performCaptchaCheck submits captcha answer and returns status payload
-func (V *VKHandler) performCaptchaCheck(
+func (V *Handler) performCaptchaCheck(
 	ctx context.Context,
 	sessionToken string,
 	adFP string,
@@ -379,7 +379,7 @@ func parseCaptchaCheck(raw map[string]any) (*captchaCheck, error) {
 }
 
 // solveCheckboxCaptcha solves the checkbox captcha variant
-func (V *VKHandler) solveCheckboxCaptcha(
+func (V *Handler) solveCheckboxCaptcha(
 	ctx context.Context,
 	sessionToken string,
 	adFP string,
@@ -456,7 +456,7 @@ func solveCaptchaPoW(input string, difficulty int) string {
 }
 
 // solveSliderCaptcha solves the slider variant using ranked candidates
-func (V *VKHandler) solveSliderCaptcha(
+func (V *Handler) solveSliderCaptcha(
 	ctx context.Context,
 	sessionToken string,
 	adFP string,

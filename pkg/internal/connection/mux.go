@@ -35,7 +35,7 @@ const (
 	muxBurstFloor = 2 * 1420
 
 	muxClientPingInterval = 1 * time.Second
-	muxPingTimeout        = 10 * time.Second
+	muxPingTimeout        = 5 * time.Second
 )
 
 // muxControlMessage is a control protocol message

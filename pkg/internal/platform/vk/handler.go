@@ -1,4 +1,4 @@
-package platform
+package vk
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/theairblow/turnable/pkg/internal/platform"
 	http "github.com/useflyent/fhttp"
 
 	"github.com/gorilla/websocket"
@@ -31,8 +32,8 @@ const (
 	vkVideoTrackSlots = 36                             // Maximum video track slots reported to VK
 )
 
-// VKHandler manages VK authorization, signaling, and peer state
-type VKHandler struct {
+// Handler manages VK authorization, signaling, and peer state
+type Handler struct {
 	once   sync.Once
 	mu     sync.RWMutex // protects all data fields except conn/seq/readerCancel
 	connMu sync.Mutex   // protects conn, seq, readerCancel
@@ -59,10 +60,10 @@ type VKHandler struct {
 
 	participantsByID  map[int64]*vkParticipant
 	participantByPeer map[string]int64
-	remoteMedia       RemoteMediaInfo
+	remoteMedia       platform.RemoteMediaInfo
 	videoTrackSlots   int
 
-	subscribers    map[int]chan Event
+	subscribers    map[int]chan platform.Event
 	nextSubscriber int
 }
 
@@ -75,13 +76,13 @@ type vkParticipant struct {
 }
 
 // ID returns the unique ID of this handler
-func (V *VKHandler) ID() string {
+func (V *Handler) ID() string {
 	return "vk.com"
 }
 
 // GetConfig returns the platform configuration
-func (V *VKHandler) GetConfig() Config {
-	return Config{
+func (V *Handler) GetConfig() platform.Config {
+	return platform.Config{
 		CanReuseTURN:   true,
 		CanMultiplex:   true,
 		BandwidthRelay: 250 * 1024,
@@ -90,11 +91,11 @@ func (V *VKHandler) GetConfig() Config {
 }
 
 // GetTURNInfo returns the latest TURN server credentials learned from VK signaling
-func (V *VKHandler) GetTURNInfo() TURNInfo {
+func (V *Handler) GetTURNInfo() platform.TURNInfo {
 	V.ensureInit()
 	V.mu.RLock()
 	defer V.mu.RUnlock()
-	return TURNInfo{
+	return platform.TURNInfo{
 		Address:   V.turnAddr,
 		Addresses: append([]string(nil), V.turnAddrs...),
 		Username:  V.turnUser,
@@ -103,7 +104,7 @@ func (V *VKHandler) GetTURNInfo() TURNInfo {
 }
 
 // GetPeers returns all currently known peers connected to the call
-func (V *VKHandler) GetPeers() []PeerInfo {
+func (V *Handler) GetPeers() []platform.PeerInfo {
 	V.ensureInit()
 	V.mu.RLock()
 	defer V.mu.RUnlock()
@@ -114,13 +115,13 @@ func (V *VKHandler) GetPeers() []PeerInfo {
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
-	peers := make([]PeerInfo, 0, len(ids))
+	peers := make([]platform.PeerInfo, 0, len(ids))
 	for _, id := range ids {
 		participant := V.participantsByID[id]
 		if participant == nil {
 			continue
 		}
-		peers = append(peers, PeerInfo{
+		peers = append(peers, platform.PeerInfo{
 			ID:         strconv.FormatInt(participant.ID, 10),
 			PeerID:     participant.PeerID,
 			ExternalID: participant.ExternalID,
@@ -131,7 +132,7 @@ func (V *VKHandler) GetPeers() []PeerInfo {
 }
 
 // GetRemoteMedia returns the latest parsed remote media description from signaling
-func (V *VKHandler) GetRemoteMedia() RemoteMediaInfo {
+func (V *Handler) GetRemoteMedia() platform.RemoteMediaInfo {
 	V.ensureInit()
 	V.mu.RLock()
 	defer V.mu.RUnlock()
@@ -139,7 +140,7 @@ func (V *VKHandler) GetRemoteMedia() RemoteMediaInfo {
 }
 
 // GetUsersBySourceIDs resolves participant or peer IDs to names when the roster contains them
-func (V *VKHandler) GetUsersBySourceIDs(sourceIDs []string) (map[string]string, error) {
+func (V *Handler) GetUsersBySourceIDs(sourceIDs []string) (map[string]string, error) {
 	V.ensureInit()
 	result := make(map[string]string, len(sourceIDs))
 
@@ -189,10 +190,10 @@ func (V *VKHandler) GetUsersBySourceIDs(sourceIDs []string) (map[string]string, 
 }
 
 // WatchEvents subscribes to signaling events emitted by the internal signaling loop
-func (V *VKHandler) WatchEvents(ctx context.Context) <-chan Event {
+func (V *Handler) WatchEvents(ctx context.Context) <-chan platform.Event {
 	V.ensureInit()
-	out := make(chan Event, 16)
-	sub := make(chan Event, 16)
+	out := make(chan platform.Event, 16)
+	sub := make(chan platform.Event, 16)
 
 	V.mu.Lock()
 	id := V.nextSubscriber
@@ -210,7 +211,7 @@ func (V *VKHandler) WatchEvents(ctx context.Context) <-chan Event {
 	V.connMu.Unlock()
 
 	if connected {
-		out <- Event{Type: EventTurnAuthUpdated, Payload: turnPayload}
+		out <- platform.Event{Type: platform.EventTurnAuthUpdated, Payload: turnPayload}
 	}
 
 	go func() {
@@ -239,7 +240,7 @@ func (V *VKHandler) WatchEvents(ctx context.Context) <-chan Event {
 }
 
 // ensureInit lazily initializes handler internals exactly once
-func (V *VKHandler) ensureInit() {
+func (V *Handler) ensureInit() {
 	V.once.Do(func() {
 		V.httpClient = &http.Client{
 			Timeout: 30 * time.Second,
@@ -270,13 +271,13 @@ func (V *VKHandler) ensureInit() {
 
 		V.participantsByID = make(map[int64]*vkParticipant)
 		V.participantByPeer = make(map[string]int64)
-		V.subscribers = make(map[int]chan Event)
+		V.subscribers = make(map[int]chan platform.Event)
 		V.videoTrackSlots = vkVideoTrackSlots
 	})
 }
 
 // ensureParticipant returns the participant entry for the given ID, creating it if needed; mu must be held
-func (V *VKHandler) ensureParticipant(participantID int64) *vkParticipant {
+func (V *Handler) ensureParticipant(participantID int64) *vkParticipant {
 	if participant := V.participantsByID[participantID]; participant != nil {
 		return participant
 	}
@@ -286,7 +287,7 @@ func (V *VKHandler) ensureParticipant(participantID int64) *vkParticipant {
 }
 
 // lookupParticipant resolves a peer or participant ID to a participant entry; mu must be held
-func (V *VKHandler) lookupParticipant(sourceID string) *vkParticipant {
+func (V *Handler) lookupParticipant(sourceID string) *vkParticipant {
 	if sourceID == "" {
 		return nil
 	}

@@ -38,8 +38,8 @@ type EncryptedConn struct {
 	writeMu sync.Mutex
 }
 
-// wrapClientEncryptedConn bootstraps the encrypted tunnel from the client side
-func wrapClientEncryptedConn(conn net.Conn, serverPubKey string) (*EncryptedConn, error) {
+// WrapClientEncryptedConn bootstraps the encrypted tunnel from the client side
+func WrapClientEncryptedConn(conn net.Conn, serverPubKey string) (*EncryptedConn, error) {
 	pubBytes, err := base64.StdEncoding.DecodeString(serverPubKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode server public key: %w", err)
@@ -58,8 +58,8 @@ func wrapClientEncryptedConn(conn net.Conn, serverPubKey string) (*EncryptedConn
 	return newEncryptedConn(conn, sharedKey, true)
 }
 
-// wrapServerEncryptedConn bootstraps the encrypted tunnel from the server side
-func wrapServerEncryptedConn(conn net.Conn, serverPrivKey string) (*EncryptedConn, error) {
+// WrapServerEncryptedConn bootstraps the encrypted tunnel from the server side
+func WrapServerEncryptedConn(conn net.Conn, serverPrivKey string) (*EncryptedConn, error) {
 	privBytes, err := base64.StdEncoding.DecodeString(serverPrivKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode server private key: %w", err)

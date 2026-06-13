@@ -14,7 +14,7 @@ Turnable пытается решать капчу автоматически, о
 ### 2.1. Получите токены
 Когда автоматическое решение не срабатывает, вы увидите в логах что-то на подобие этого:
 ```
-2026-04-22 16:09:19.748 [INFO] manual captcha solve required userscript=http://localhost:1984/vk_manual_captcha.user.js guide=http://localhost:1984/ url=https://vk.com/call/join/... timeout=10m0s
+2026-04-22 16:09:19.748 [INFO] manual captcha solve required userscript=http://localhost:1984/manual_captcha.user.js guide=http://localhost:1984/ url=https://vk.com/call/join/... timeout=10m0s
 ```
 
 #### Шаг 1: Установите TamperMonkey

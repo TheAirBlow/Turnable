@@ -1,4 +1,4 @@
-package platform
+package vk
 
 import (
 	"bytes"
@@ -17,6 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/sdp/v3"
+	"github.com/theairblow/turnable/pkg/internal/platform"
 
 	"github.com/theairblow/turnable/pkg/common"
 )
@@ -38,7 +39,7 @@ type vkMessage struct {
 }
 
 // Connect connects to the signaling server and starts the internal signaling loop
-func (V *VKHandler) Connect() error {
+func (V *Handler) Connect() error {
 	V.ensureInit()
 
 	V.mu.RLock()
@@ -160,7 +161,7 @@ func (V *VKHandler) Connect() error {
 	}
 
 	go V.runSignalingLoop(readerCtx, conn)
-	V.broadcast(Event{Type: EventTurnAuthUpdated, Payload: map[string]string{
+	V.broadcast(platform.Event{Type: platform.EventTurnAuthUpdated, Payload: map[string]string{
 		"username": turnUser,
 		"password": turnPass,
 		"address":  turnAddr,
@@ -170,7 +171,7 @@ func (V *VKHandler) Connect() error {
 }
 
 // Disconnect gracefully disconnects from the signaling server
-func (V *VKHandler) Disconnect() error {
+func (V *Handler) Disconnect() error {
 	V.connMu.Lock()
 	defer V.connMu.Unlock()
 
@@ -216,7 +217,7 @@ func (V *VKHandler) Disconnect() error {
 }
 
 // Close forcibly closes the current signaling connection
-func (V *VKHandler) Close() error {
+func (V *Handler) Close() error {
 	V.connMu.Lock()
 	defer V.connMu.Unlock()
 
@@ -238,7 +239,7 @@ func (V *VKHandler) Close() error {
 }
 
 // NotifyVideoStream notifies the signaling server that screen sharing was started or stopped
-func (V *VKHandler) NotifyVideoStream(active bool) error {
+func (V *Handler) NotifyVideoStream(active bool) error {
 	return V.writeSimpleCommand("change-media-settings", map[string]any{
 		"mediaSettings": map[string]bool{
 			"isAudioEnabled":             false,
@@ -252,7 +253,7 @@ func (V *VKHandler) NotifyVideoStream(active bool) error {
 }
 
 // handleIncomingMessage updates local state and converts a signaling message into events
-func (V *VKHandler) handleIncomingMessage(msg *vkMessage) []Event {
+func (V *Handler) handleIncomingMessage(msg *vkMessage) []platform.Event {
 	V.mu.Lock()
 	defer V.mu.Unlock()
 
@@ -283,14 +284,14 @@ func (V *VKHandler) handleIncomingMessage(msg *vkMessage) []Event {
 		remoteMedia, err := parseRemoteMediaDescription(msg.Description)
 		if err != nil {
 			slog.Warn("vk signaling producer update parse failed", "error", err)
-			return []Event{{
-				Type:     EventCallEnded,
+			return []platform.Event{{
+				Type:     platform.EventCallEnded,
 				Metadata: map[string]string{"error": "invalid producer offer: " + err.Error()},
 			}}
 		}
 		V.remoteMedia = remoteMedia
 		// TODO: send accept-producer response with SDP answer
-		return []Event{{Type: EventRemoteMediaUpdated, Payload: cloneRemoteMediaInfo(remoteMedia)}}
+		return []platform.Event{{Type: platform.EventRemoteMediaUpdated, Payload: cloneRemoteMediaInfo(remoteMedia)}}
 	case "participant-joined":
 		participantID := int64(msg.ParticipantID)
 		participant := V.ensureParticipant(participantID)
@@ -304,8 +305,8 @@ func (V *VKHandler) handleIncomingMessage(msg *vkMessage) []Event {
 				V.participantByPeer[peerID] = participantID
 			}
 		}
-		return []Event{{
-			Type:    EventParticipantsChanged,
+		return []platform.Event{{
+			Type:    platform.EventParticipantsChanged,
 			Payload: map[string]string{"participant_id": strconv.FormatInt(participantID, 10), "external_id": participant.ExternalID},
 		}}
 	case "registered-peer":
@@ -319,19 +320,19 @@ func (V *VKHandler) handleIncomingMessage(msg *vkMessage) []Event {
 			}
 		}
 	case "hungup", "closed-conversation":
-		return []Event{{Type: EventCallEnded, Metadata: map[string]string{"reason": common.FirstNonEmpty(msg.Reason, msg.Notification)}}}
+		return []platform.Event{{Type: platform.EventCallEnded, Metadata: map[string]string{"reason": common.FirstNonEmpty(msg.Reason, msg.Notification)}}}
 	}
 	return nil
 }
 
 // handleConnectionSnapshot registers participants from the initial connection snapshot; mu must be held
-func (V *VKHandler) handleConnectionSnapshot(conversation map[string]any) []Event {
+func (V *Handler) handleConnectionSnapshot(conversation map[string]any) []platform.Event {
 	participantsRaw, ok := conversation["participants"].([]any)
 	if !ok || len(participantsRaw) == 0 {
 		return nil
 	}
 
-	events := make([]Event, 0, len(participantsRaw))
+	events := make([]platform.Event, 0, len(participantsRaw))
 	for _, raw := range participantsRaw {
 		participantMap, ok := raw.(map[string]any)
 		if !ok {
@@ -367,8 +368,8 @@ func (V *VKHandler) handleConnectionSnapshot(conversation map[string]any) []Even
 			V.participantByPeer[peerID] = participantID
 		}
 
-		events = append(events, Event{
-			Type:    EventParticipantsChanged,
+		events = append(events, platform.Event{
+			Type:    platform.EventParticipantsChanged,
 			Payload: map[string]string{"participant_id": strconv.FormatInt(participantID, 10), "external_id": participant.ExternalID},
 		})
 	}
@@ -376,7 +377,7 @@ func (V *VKHandler) handleConnectionSnapshot(conversation map[string]any) []Even
 }
 
 // runSignalingLoop owns websocket reads and periodic pings for the active connection
-func (V *VKHandler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) {
+func (V *Handler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) {
 	const pingInterval = 5 * time.Second
 
 	pingTicker := time.NewTicker(pingInterval)
@@ -405,7 +406,7 @@ func (V *VKHandler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) 
 			V.readerCancel = nil
 		}
 		V.connMu.Unlock()
-		V.broadcast(Event{Type: EventCallEnded, Metadata: map[string]string{"error": err.Error()}})
+		V.broadcast(platform.Event{Type: platform.EventCallEnded, Metadata: map[string]string{"error": err.Error()}})
 		slog.Warn("vk signaling loop terminated", "error", err)
 	}
 
@@ -480,9 +481,9 @@ func (V *VKHandler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) 
 }
 
 // broadcast fan-outs an event to all active subscribers without blocking
-func (V *VKHandler) broadcast(event Event) {
+func (V *Handler) broadcast(event platform.Event) {
 	V.mu.RLock()
-	subscribers := make([]chan Event, 0, len(V.subscribers))
+	subscribers := make([]chan platform.Event, 0, len(V.subscribers))
 	for _, ch := range V.subscribers {
 		subscribers = append(subscribers, ch)
 	}
@@ -497,7 +498,7 @@ func (V *VKHandler) broadcast(event Event) {
 }
 
 // writeSimpleCommand sends a signaling command acquiring connMu
-func (V *VKHandler) writeSimpleCommand(command string, payload map[string]any) error {
+func (V *Handler) writeSimpleCommand(command string, payload map[string]any) error {
 	V.connMu.Lock()
 	defer V.connMu.Unlock()
 
@@ -508,7 +509,7 @@ func (V *VKHandler) writeSimpleCommand(command string, payload map[string]any) e
 }
 
 // writeCommandLocked serializes and writes a signaling command; connMu must be held by caller
-func (V *VKHandler) writeCommandLocked(command string, payload map[string]any) error {
+func (V *Handler) writeCommandLocked(command string, payload map[string]any) error {
 	sequence := V.seq
 	V.seq++
 	encoded, err := marshalCommandJSON(command, sequence, payload)
@@ -574,14 +575,14 @@ func marshalCommandJSON(command string, sequence int, payload map[string]any) ([
 }
 
 // cloneRemoteMediaInfo copies the parsed remote media snapshot for safe external use
-func cloneRemoteMediaInfo(info RemoteMediaInfo) RemoteMediaInfo {
-	cloned := RemoteMediaInfo{
+func cloneRemoteMediaInfo(info platform.RemoteMediaInfo) platform.RemoteMediaInfo {
+	cloned := platform.RemoteMediaInfo{
 		BundleMIDs:             append([]string(nil), info.BundleMIDs...),
 		OfferedVideoTrackSlots: info.OfferedVideoTrackSlots,
-		Tracks:                 make([]RemoteMediaTrack, 0, len(info.Tracks)),
+		Tracks:                 make([]platform.RemoteMediaTrack, 0, len(info.Tracks)),
 	}
 	for _, track := range info.Tracks {
-		cloned.Tracks = append(cloned.Tracks, RemoteMediaTrack{
+		cloned.Tracks = append(cloned.Tracks, platform.RemoteMediaTrack{
 			Index:     track.Index,
 			MID:       track.MID,
 			Kind:      track.Kind,
@@ -595,10 +596,10 @@ func cloneRemoteMediaInfo(info RemoteMediaInfo) RemoteMediaInfo {
 }
 
 // parseRemoteMediaDescription parses the remote media description from VK signaling
-func parseRemoteMediaDescription(raw string) (RemoteMediaInfo, error) {
+func parseRemoteMediaDescription(raw string) (platform.RemoteMediaInfo, error) {
 	var session sdp.SessionDescription
 	if err := session.Unmarshal([]byte(raw)); err != nil {
-		return RemoteMediaInfo{}, err
+		return platform.RemoteMediaInfo{}, err
 	}
 
 	bundleMIDs := []string(nil)
@@ -613,14 +614,14 @@ func parseRemoteMediaDescription(raw string) (RemoteMediaInfo, error) {
 		}
 	}
 
-	info := RemoteMediaInfo{
+	info := platform.RemoteMediaInfo{
 		BundleMIDs: bundleMIDs,
-		Tracks:     make([]RemoteMediaTrack, 0, len(session.MediaDescriptions)),
+		Tracks:     make([]platform.RemoteMediaTrack, 0, len(session.MediaDescriptions)),
 	}
 	for index, media := range session.MediaDescriptions {
 		mid := ""
 		msid := ""
-		direction := MediaDirectionSendRecv
+		direction := platform.MediaDirectionSendRecv
 		sourceIDs := make([]string, 0, 2)
 		seenSSRC := make(map[string]struct{})
 
@@ -635,13 +636,13 @@ func parseRemoteMediaDescription(raw string) (RemoteMediaInfo, error) {
 					msid = attr.Value
 				}
 			case "sendonly":
-				direction = MediaDirectionSendOnly
+				direction = platform.MediaDirectionSendOnly
 			case "recvonly":
-				direction = MediaDirectionRecvOnly
+				direction = platform.MediaDirectionRecvOnly
 			case "sendrecv":
-				direction = MediaDirectionSendRecv
+				direction = platform.MediaDirectionSendRecv
 			case "inactive":
-				direction = MediaDirectionInactive
+				direction = platform.MediaDirectionInactive
 			case "ssrc":
 				ssrc := strings.TrimSpace(strings.SplitN(attr.Value, " ", 2)[0])
 				if ssrc == "" {
@@ -655,14 +656,14 @@ func parseRemoteMediaDescription(raw string) (RemoteMediaInfo, error) {
 			}
 		}
 
-		kind := MediaKindUnknown
+		kind := platform.MediaKindUnknown
 		switch strings.ToLower(media.MediaName.Media) {
 		case "audio":
-			kind = MediaKindAudio
+			kind = platform.MediaKindAudio
 		case "video":
-			kind = MediaKindVideo
+			kind = platform.MediaKindVideo
 		case "application":
-			kind = MediaKindApplication
+			kind = platform.MediaKindApplication
 		}
 
 		streamID := ""
@@ -675,7 +676,7 @@ func parseRemoteMediaDescription(raw string) (RemoteMediaInfo, error) {
 			trackID = msidParts[1]
 		}
 
-		track := RemoteMediaTrack{
+		track := platform.RemoteMediaTrack{
 			Index:     index,
 			MID:       mid,
 			Kind:      kind,
@@ -684,7 +685,7 @@ func parseRemoteMediaDescription(raw string) (RemoteMediaInfo, error) {
 			TrackID:   trackID,
 			SourceIDs: sourceIDs,
 		}
-		if track.Kind == MediaKindVideo && track.Direction == MediaDirectionSendOnly {
+		if track.Kind == platform.MediaKindVideo && track.Direction == platform.MediaDirectionSendOnly {
 			info.OfferedVideoTrackSlots++
 		}
 		info.Tracks = append(info.Tracks, track)

@@ -7,7 +7,6 @@ import (
 	"net"
 
 	"github.com/theairblow/turnable/pkg/common"
-	"github.com/theairblow/turnable/pkg/config"
 )
 
 // ErrQuotaReached indicates a TURN allocation quota has been exhausted
@@ -30,7 +29,7 @@ type ServerClient struct {
 // Handler represents a protocol handler
 type Handler interface {
 	ID() string                                                                                   // Returns the unique ID of this handler
-	Start(config config.ServerConfig) error                                                       // Starts the server listener
+	Start(listenAddr string) error                                                                // Starts the server listener
 	Stop() error                                                                                  // Stops the server listener
 	AcceptClients(ctx context.Context) (<-chan ServerClient, error)                               // Accepts new server clients
 	Connect(ctx context.Context, dest net.Addr, turn RelayInfo, forceTURN bool) (net.Conn, error) // Connects to a remote server directly or via TURN
@@ -39,14 +38,6 @@ type Handler interface {
 
 // Handlers represents protocol Handler registry.
 var Handlers = common.NewRegistry[Handler]()
-
-// init registers all available protocol handlers
-func init() {
-	common.ProtocolsHolder = Handlers
-	Handlers.Register(&DTLSHandler{})
-	Handlers.Register(&SRTPHandler{})
-	Handlers.Register(&NoneHandler{})
-}
 
 // GetHandler fetches a protocol Handler by its string ID.
 func GetHandler(name string) (Handler, error) {

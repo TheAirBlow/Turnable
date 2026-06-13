@@ -1,17 +1,14 @@
-package config
+package providers
 
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"sync"
 )
 
-// JSONProvider represents a Provider from a JSON file
-type JSONProvider struct {
+// RawProvider represents a Provider from raw provider config JSON
+type RawProvider struct {
 	mu sync.RWMutex
-
-	path string // resolved path to the backing JSON file
 
 	data struct {
 		Routes map[string]Route `json:"routes"`
@@ -19,37 +16,22 @@ type JSONProvider struct {
 	}
 }
 
-// JSONProviderConfig represents JSONProvider configuration
-type JSONProviderConfig struct {
-	Path string `json:"path"` // Path to JSON file
-}
-
 // ID returns the unique ID of this provider
-func (j *JSONProvider) ID() string {
-	return "json"
+func (j *RawProvider) ID() string {
+	return "raw"
 }
 
 // Update updates or initializes provider configuration
-func (j *JSONProvider) Update(config json.RawMessage) error {
+func (j *RawProvider) Update(config json.RawMessage) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-
-	var cfg JSONProviderConfig
-	if err := json.Unmarshal(config, &cfg); err != nil {
-		return fmt.Errorf("failed to parse JSON provider config: %w", err)
-	}
-
-	storeData, err := os.ReadFile(cfg.Path)
-	if err != nil {
-		return fmt.Errorf("failed to read store json file: %w", err)
-	}
 
 	var newData struct {
 		Routes []Route `json:"routes"`
 		Users  []User  `json:"users"`
 	}
 
-	if err := json.Unmarshal(storeData, &newData); err != nil {
+	if err := json.Unmarshal(config, &newData); err != nil {
 		return fmt.Errorf("failed to parse provider JSON: %w", err)
 	}
 
@@ -84,12 +66,11 @@ func (j *JSONProvider) Update(config json.RawMessage) error {
 
 	j.data.Routes = routes
 	j.data.Users = users
-	j.path = cfg.Path
 	return nil
 }
 
 // ToJSON serializes provider config to config JSON
-func (j *JSONProvider) ToJSON() (json.RawMessage, error) {
+func (j *RawProvider) ToJSON() (json.RawMessage, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -118,7 +99,7 @@ func (j *JSONProvider) ToJSON() (json.RawMessage, error) {
 }
 
 // GetRoute fetches a Route based on its ID
-func (j *JSONProvider) GetRoute(id string) (*Route, error) {
+func (j *RawProvider) GetRoute(id string) (*Route, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -131,7 +112,7 @@ func (j *JSONProvider) GetRoute(id string) (*Route, error) {
 }
 
 // GetUser fetches a User based on their UUID
-func (j *JSONProvider) GetUser(uuid string) (*User, error) {
+func (j *RawProvider) GetUser(uuid string) (*User, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -144,7 +125,7 @@ func (j *JSONProvider) GetUser(uuid string) (*User, error) {
 }
 
 // GetAllRoutes fetches all available routes
-func (j *JSONProvider) GetAllRoutes() []Route {
+func (j *RawProvider) GetAllRoutes() []Route {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -155,42 +136,8 @@ func (j *JSONProvider) GetAllRoutes() []Route {
 	return routes
 }
 
-// saveToDiskLocked serializes the current data and writes it to the backing JSON file
-func (j *JSONProvider) saveToDiskLocked() error {
-	if j.path == "" {
-		return fmt.Errorf("json provider path not set")
-	}
-
-	data := struct {
-		Routes []Route `json:"routes"`
-		Users  []User  `json:"users"`
-	}{
-		Routes: make([]Route, 0, len(j.data.Routes)),
-		Users:  make([]User, 0, len(j.data.Users)),
-	}
-
-	for _, r := range j.data.Routes {
-		data.Routes = append(data.Routes, r)
-	}
-
-	for _, u := range j.data.Users {
-		data.Users = append(data.Users, u)
-	}
-
-	b, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal json provider data: %w", err)
-	}
-
-	if err := os.WriteFile(j.path, b, 0o640); err != nil {
-		return fmt.Errorf("write json provider file: %w", err)
-	}
-
-	return nil
-}
-
 // AddRoute adds or updates a route
-func (j *JSONProvider) AddRoute(route *Route) error {
+func (j *RawProvider) AddRoute(route *Route) error {
 	if route == nil {
 		return fmt.Errorf("route cannot be nil")
 	}
@@ -202,11 +149,11 @@ func (j *JSONProvider) AddRoute(route *Route) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.data.Routes[route.ID] = *route
-	return j.saveToDiskLocked()
+	return nil
 }
 
 // AddUser adds or updates a user
-func (j *JSONProvider) AddUser(user *User) error {
+func (j *RawProvider) AddUser(user *User) error {
 	if user == nil {
 		return fmt.Errorf("user cannot be nil")
 	}
@@ -218,11 +165,11 @@ func (j *JSONProvider) AddUser(user *User) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.data.Users[user.UUID] = *user
-	return j.saveToDiskLocked()
+	return nil
 }
 
 // DeleteRoute removes a route by ID
-func (j *JSONProvider) DeleteRoute(id string) error {
+func (j *RawProvider) DeleteRoute(id string) error {
 	if id == "" {
 		return fmt.Errorf("route id is required")
 	}
@@ -235,11 +182,11 @@ func (j *JSONProvider) DeleteRoute(id string) error {
 	}
 
 	delete(j.data.Routes, id)
-	return j.saveToDiskLocked()
+	return nil
 }
 
 // DeleteUser removes a user by UUID
-func (j *JSONProvider) DeleteUser(uuid string) error {
+func (j *RawProvider) DeleteUser(uuid string) error {
 	if uuid == "" {
 		return fmt.Errorf("user uuid is required")
 	}
@@ -252,10 +199,10 @@ func (j *JSONProvider) DeleteUser(uuid string) error {
 	}
 
 	delete(j.data.Users, uuid)
-	return j.saveToDiskLocked()
+	return nil
 }
 
 // Stop stops the provider connection
-func (j *JSONProvider) Stop() error {
+func (j *RawProvider) Stop() error {
 	return nil
 }

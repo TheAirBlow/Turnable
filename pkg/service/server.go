@@ -239,7 +239,7 @@ func (s *Server) startServer(req *pb.StartServerRequest) (string, error) {
 		return "", err
 	}
 
-	inst := &Instance{ID: id, Name: name, config: req.Config, server: srv, Autostart: req.Autostart}
+	inst := &Instance{ID: id, Name: name, config: req.Config, server: srv}
 
 	s.mu.Lock()
 	s.instances[id] = inst
@@ -302,7 +302,7 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 		return "", err
 	}
 
-	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddrs: req.ListenAddrs, client: cli, Autostart: req.Autostart}
+	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddrs: req.ListenAddrs, client: cli}
 	s.mu.Lock()
 	s.instances[id] = inst
 	s.mu.Unlock()
@@ -318,6 +318,7 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_CREATED,
 	})
 
+	// Start async
 	go func() {
 		cli.SetLogger(s.log.With("client_id", id))
 		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTING)
@@ -478,6 +479,15 @@ func (s *Server) addUser(id string, userJSON string) error {
 		return fmt.Errorf("user uuid is required")
 	}
 
+	// Check if user UUID already exists (reject duplicates if adding new user)
+	existingUser, err := inst.server.Config.GetUser(user.UUID)
+	if err == nil && existingUser != nil {
+		// User exists, so we're updating (this is allowed)
+	} else if err != nil && !strings.Contains(err.Error(), "not found") {
+		// Some other error occurred
+		return fmt.Errorf("failed to check existing user: %w", err)
+	}
+
 	if err := inst.server.Config.AddUser(&user); err != nil {
 		return err
 	}
@@ -516,15 +526,18 @@ func (s *Server) updateMetadata(id, name string, autostart bool) error {
 		return fmt.Errorf("instance %q not found", id)
 	}
 
+	// Update metadata
 	if name != "" {
 		inst.Name = name
 	}
 	inst.Autostart = autostart
 
+	// Persist the change
 	if s.persistDir != "" {
 		s.savePersisted(inst)
 	}
 
+	// Broadcast update event
 	s.broadcastEvent(&pb.InstanceEvent{
 		InstanceId: id,
 		Name:       inst.Name,
@@ -666,7 +679,9 @@ func (s *Server) loadPersistedInstances() {
 			continue
 		}
 
+		// Skip restoration if autostart is disabled
 		if !rec.Autostart {
+			s.log.Debug("persist: skipping instance with autostart disabled", "id", rec.ID, "name", rec.Name)
 			continue
 		}
 

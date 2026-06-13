@@ -18,9 +18,9 @@ var ErrPeerDone = errors.New("peer: done")
 
 const (
 	peerMaxPacket       = muxMaxPacket + 2 // maximum packet size read from a peer connection; must hold a full mux frame
-	peerReconnectInit   = 5 * time.Second  // initial back-off delay before the first peer reconnect attempt
-	peerReconnectMax    = 30 * time.Second // maximum back-off delay between peer reconnect attempts
-	peerQuotaBackoff    = 30 * time.Second // delay when TURN allocation quota is exhausted
+	PeerReconnectInit   = 5 * time.Second  // initial back-off delay before the first peer reconnect attempt
+	PeerReconnectMax    = 30 * time.Second // maximum back-off delay between peer reconnect attempts
+	PeerQuotaBackoff    = 30 * time.Second // delay when TURN allocation quota is exhausted
 	peerIncomingBufSize = 1024             // channel buffer size for packets arriving from all peers
 	peerWriteSendBuf    = 256              // per-peer outbound write queue depth
 )
@@ -122,7 +122,7 @@ func (m *PeerConn) peerWriteLoop(entry *peerEntry) {
 // peerReadLoop reads packets from one peer and feeds them into the incoming channel
 func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(context.Context) (net.Conn, error)) {
 	buf := make([]byte, peerMaxPacket)
-	delay := peerReconnectInit
+	delay := PeerReconnectInit
 
 	for {
 		entry.mu.Lock()
@@ -138,7 +138,7 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 			case <-m.ctx.Done():
 				return
 			}
-			delay = peerReconnectInit
+			delay = PeerReconnectInit
 			continue
 		}
 
@@ -172,8 +172,8 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 			case <-time.After(delay):
 			}
 			delay *= 2
-			if delay > peerReconnectMax {
-				delay = peerReconnectMax
+			if delay > PeerReconnectMax {
+				delay = PeerReconnectMax
 			}
 
 			newConn, err := reconnectFn(m.ctx)
@@ -184,8 +184,8 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 					return
 				}
 				if errors.Is(err, protocol.ErrQuotaReached) {
-					m.log.Warn("peer quota reached, backing off", "peer_idx", idx, "delay", peerQuotaBackoff)
-					delay = peerQuotaBackoff
+					m.log.Warn("peer quota reached, backing off", "peer_idx", idx, "delay", PeerQuotaBackoff)
+					delay = PeerQuotaBackoff
 				}
 				m.log.Warn("peer reconnect failed", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "delay", delay, "error", err)
 				continue
@@ -195,7 +195,7 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 			entry.conn = newConn
 			entry.mu.Unlock()
 			entry.connected.Store(true)
-			delay = peerReconnectInit
+			delay = PeerReconnectInit
 			m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
 			break
 		}

@@ -21,6 +21,7 @@ type RegistryItem interface {
 
 // RegistryHolder represents a "holder" for a registry of any type
 type RegistryHolder interface {
+	GetAny(name string) (any, error)
 	List() []string
 	Exists(name string) bool
 }
@@ -55,22 +56,33 @@ func (r *Registry[T]) Register(item T) {
 
 // Get fetches a RegistryItem by its string ID
 func (r *Registry[T]) Get(name string) (T, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	itemType, ok := r.items[name]
-	if !ok {
+	instance, err := r.GetAny(name)
+	if err != nil {
 		var zero T
-		return zero, fmt.Errorf("item '%s' not found", name)
+		return zero, err
 	}
 
-	instance := reflect.New(itemType).Interface()
 	item, ok := instance.(T)
 	if !ok {
 		var zero T
 		return zero, fmt.Errorf("item '%s' cannot be instantiated as requested type", name)
 	}
+
 	return item, nil
+}
+
+// GetAny fetches a RegistryItem by its string ID
+func (r *Registry[T]) GetAny(name string) (any, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	itemType, ok := r.items[name]
+	if !ok {
+		return nil, fmt.Errorf("item '%s' not found", name)
+	}
+
+	instance := reflect.New(itemType).Interface()
+	return instance, nil
 }
 
 // List lists all RegistryItem string IDs

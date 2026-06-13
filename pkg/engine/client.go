@@ -155,15 +155,25 @@ func (c *TurnableClient) handleClient(local AcceptedClient, routeIdx byte) {
 		return
 	}
 
+	deadline := time.Now().Add(channelOpenTimeout)
+	var channel net.Conn
+	for {
+		var err error
 	channel, err := c.handler.OpenChannel(routeIdx)
 	if err != nil {
-		if !errors.Is(err, connection.ErrReconnecting) {
-			c.log.Warn("failed to open channel for local client", "error", err)
+			return
 		}
 		_ = local.Stream.Close()
 		return
-	}
-
-	c.log.Debug("piping local client to channel", "route_idx", routeIdx)
+		if time.Now().After(deadline) {
+			c.log.Warn("timed out waiting for reconnect to open channel")
+			_ = local.Stream.Close()
+			return
+		}
+		select {
+		case <-c.ctx.Done():
+			_ = local.Stream.Close()
+			return
+		case <-time.After(500 * time.Millisecond):
 	pipeStreams(local.Stream, channel)
 }

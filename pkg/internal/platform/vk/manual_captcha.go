@@ -1,4 +1,4 @@
-package platform
+package vk
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	http "github.com/useflyent/fhttp"
 )
 
-//go:embed vk_manual_captcha.user.js
+//go:embed manual_captcha.user.js
 var vkCaptchaUserScript []byte
 
 const (
@@ -30,7 +30,7 @@ type manualCaptchaResult struct {
 }
 
 // solveManualCaptcha starts a local token capture server and prompts the user to run a userscript
-func (V *VKHandler) solveManualCaptcha(ctx context.Context, joinURL string) (string, string, error) {
+func (V *Handler) solveManualCaptcha(ctx context.Context, joinURL string) (string, string, error) {
 	keyCh := make(chan manualCaptchaResult, 1)
 
 	mux := http.NewServeMux()
@@ -38,7 +38,7 @@ func (V *VKHandler) solveManualCaptcha(ctx context.Context, joinURL string) (str
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		_, _ = fmt.Fprint(w, "ok")
 	})
-	mux.HandleFunc("/vk_manual_captcha.user.js", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/manual_captcha.user.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		_, _ = w.Write(vkCaptchaUserScript)
@@ -88,7 +88,7 @@ func (V *VKHandler) solveManualCaptcha(ctx context.Context, joinURL string) (str
 	}
 
 	slog.Info("manual captcha solve required",
-		"userscript", "http://localhost:"+manualCaptchaPort+"/vk_manual_captcha.user.js",
+		"userscript", "http://localhost:"+manualCaptchaPort+"/manual_captcha.user.js",
 		"guide", "http://localhost:"+manualCaptchaPort+"/",
 		"url", joinURL,
 		"timeout", manualCaptchaTimeout)

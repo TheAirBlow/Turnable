@@ -1,4 +1,4 @@
-package platform
+package vk
 
 import (
 	"context"
@@ -32,7 +32,7 @@ type vkCallParticipantsResponse struct {
 type vkFormResponse map[string]any
 
 // fetchParticipantNames resolves external participant IDs to display names
-func (V *VKHandler) fetchParticipantNames(ctx context.Context, callID, accessToken string, externalIDs map[string]struct{}) (map[string]string, error) {
+func (V *Handler) fetchParticipantNames(ctx context.Context, callID, accessToken string, externalIDs map[string]struct{}) (map[string]string, error) {
 	ids := make([]string, 0, len(externalIDs))
 	for externalID := range externalIDs {
 		ids = append(ids, externalID)
@@ -73,7 +73,7 @@ func (V *VKHandler) fetchParticipantNames(ctx context.Context, callID, accessTok
 }
 
 // postVKFormRaw performs an HTTP request with all profile headers applied and returns the raw response body.
-func (V *VKHandler) postVKFormRaw(ctx context.Context, method, endpoint string, form *common.Values, extraHeaders map[string]string) ([]byte, error) {
+func (V *Handler) postVKFormRaw(ctx context.Context, method, endpoint string, form *common.Values, extraHeaders map[string]string) ([]byte, error) {
 	p := V.profile
 	httpClient := V.httpClient
 
@@ -141,7 +141,7 @@ func (V *VKHandler) postVKFormRaw(ctx context.Context, method, endpoint string, 
 }
 
 // postVKForm submits a form-encoded POST request and returns a decoded JSON response.
-func (V *VKHandler) postVKForm(ctx context.Context, endpoint string, form *common.Values, extraHeaders map[string]string) (vkFormResponse, error) {
+func (V *Handler) postVKForm(ctx context.Context, endpoint string, form *common.Values, extraHeaders map[string]string) (vkFormResponse, error) {
 	body, err := V.postVKFormRaw(ctx, http.MethodPost, endpoint, form, extraHeaders)
 	if err != nil {
 		return nil, err

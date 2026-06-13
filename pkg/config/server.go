@@ -1,75 +1,26 @@
 package config
 
 import (
-	"crypto/mlkem"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
-	"net"
 	"strings"
 
 	"github.com/theairblow/turnable/pkg/common"
+	"github.com/theairblow/turnable/pkg/config/providers"
 )
 
-// ServerConfig represents the server configuration JSON and provides easy access to users and routes
+// ServersConfig represents the configs of all servers and provides easy access to users and routes
+type ServersConfig struct {
+	Servers   map[string]json.RawMessage `json:"servers"`   // Named list of servers to run
+	Providers map[string]json.RawMessage `json:"providers"` // Named list of all providers
+}
+
+// ServerConfig represents an abstract server config
 type ServerConfig struct {
+	Type       string `json:"type"`        // Connection type
+	Provider   string `json:"provider"`    // Provider ID
 	PlatformID string `json:"platform_id"` // ID of the platform
 	CallID     string `json:"call_id"`     // ID of the call on the platform
-
-	PubKey  string `json:"pub_key"`  // Public key
-	PrivKey string `json:"priv_key"` // Private key
-
-	Relay RelayServerConfig `json:"relay"` // Relay server config
-	P2P   P2PServerConfig   `json:"p2p"`   // P2P server config
-
-	Provider json.RawMessage `json:"provider"` // Provider configuration
-
-	provider Provider // Provider instance in use
-}
-
-// User represents a VPN user
-type User struct {
-	UUID          string   `json:"uuid"`           // Unique UUID of this user
-	AllowedRoutes []string `json:"allowed_routes"` // Allowed route IDs
-
-	Username string `json:"username"` // Username to use in the call
-
-	Type      string `json:"type"`                // Connection type
-	ForceTurn bool   `json:"forceturn,omitempty"` // Force TURN in P2P mode
-	Peers     int    `json:"peers"`               // Peer connections per session
-}
-
-// RelayServerConfig provides relay mode server configuration
-type RelayServerConfig struct {
-	Enabled  bool   `json:"enabled"`        // Whether relay server is enabled or not
-	Proto    string `json:"proto"`          // Socket to use
-	Cloak    string `json:"cloak"`          // Cloak method to use
-	PublicIP string `json:"public_ip"`      // Server's public IP
-	Port     *int   `json:"port,omitempty"` // UDP port to listen on
-}
-
-// P2PServerConfig provides P2P mode server configuration
-type P2PServerConfig struct {
-	Enabled  bool   `json:"enabled"`  // Whether P2P server is enabled or not
-	Username string `json:"username"` // Username to use in the call
-	Cloak    string `json:"cloak"`    // Cloak method to use
-}
-
-// Route represents a tunnel route
-type Route struct {
-	ID string `json:"id"` // Unique ID of this route
-
-	Address   string `json:"address"`             // IP address of the destination server
-	Port      int    `json:"port"`                // Port of the destination server
-	Socket    string `json:"socket"`              // Socket protocol to use
-	Transport string `json:"transport,omitempty"` // Transport protocol to use
-
-	Conn string `json:"conn,omitempty"` // Connection type (optional)
-
-	Encryption string `json:"encryption"` // Encryption mode
-	Name       string `json:"name"`       // Display name shown in generated client configs
 }
 
 // ProviderConfig represents provider configuration options
@@ -77,327 +28,68 @@ type ProviderConfig struct {
 	Type string `json:"type"` // Provider type
 }
 
-// NewServerConfigFromJSON creates a new ServerConfig from a base config JSON
-func NewServerConfigFromJSON(baseJSON string) (*ServerConfig, error) {
-	var s ServerConfig
-	if err := json.Unmarshal([]byte(baseJSON), &s); err != nil {
-		return nil, fmt.Errorf("failed to parse base server config: %w", err)
+// ParseServersConfig parses the servers config JSON and initializes providers
+func ParseServersConfig(raw string) (ServersConfig, error) {
+	var target ServersConfig
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return target, fmt.Errorf("config: empty configuration string")
 	}
 
-	return &s, nil
+	if err := json.Unmarshal([]byte(raw), &target); err != nil {
+		return target, fmt.Errorf("config: failed to parse JSON: %w", err)
+	}
+
+	return target, nil
 }
 
-// ReplaceProvider replaces current provider in case it successfully initializes
-func (s *ServerConfig) ReplaceProvider(cfgRaw json.RawMessage) error {
-	if s.provider != nil {
-		err := s.provider.Stop()
-		if err != nil {
-			slog.Warn("failed to close provider connection", "error", err)
-		}
+// GetServerConfig parses the server config for specified server ID
+func (s *ServersConfig) GetServerConfig(id string) (Config, error) {
+	raw, ok := s.Servers[id]
+	if !ok {
+		return nil, fmt.Errorf("config: server '%s' not found", id)
 	}
 
-	var cfg ProviderConfig
-	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
-		return fmt.Errorf("failed to parse provider config: %w", err)
-	}
-
-	provider, err := GetProvider(cfg.Type)
+	cfg, err := ParseConfigGeneric[ServerConfig](raw)
 	if err != nil {
-		return fmt.Errorf("provider does not exist: %s", cfg.Type)
-	}
-
-	if err := provider.Update(cfgRaw); err != nil {
-		return fmt.Errorf("failed to update provider config: %w", err)
-	}
-
-	s.Provider = cfgRaw
-	s.provider = provider
-	return nil
-}
-
-// UpdateProvider initializes or updates provider configuration
-func (s *ServerConfig) UpdateProvider() error {
-	return s.ReplaceProvider(s.Provider)
-}
-
-// StopProvider stops the current provider connection
-func (s *ServerConfig) StopProvider() error {
-	return s.provider.Stop()
-}
-
-// Validate validates the ServerConfig
-func (s *ServerConfig) Validate() error {
-	if common.IsNullOrWhiteSpace(s.CallID) {
-		return errors.New("call_id is required")
-	}
-	if !s.Relay.Enabled && !s.P2P.Enabled {
-		return errors.New("at least one server mode must be enabled")
-	}
-
-	if !common.PlatformsHolder.Exists(s.PlatformID) {
-		return fmt.Errorf("invalid platform id: %s", s.PlatformID)
-	}
-
-	if s.Relay.Proto == "" {
-		s.Relay.Proto = "none"
-	}
-
-	var cfg ProviderConfig
-	if err := json.Unmarshal(s.Provider, &cfg); err != nil {
-		return fmt.Errorf("failed to parse provider config: %w", err)
-	}
-
-	if !ProviderExists(cfg.Type) {
-		return fmt.Errorf("provider does not exist: %s", cfg.Type)
-	}
-
-	if !common.IsNullOrWhiteSpace(s.Relay.PublicIP) {
-		host, _, err := net.SplitHostPort(s.Relay.PublicIP)
-		if err != nil {
-			if net.ParseIP(s.Relay.PublicIP) == nil {
-				return fmt.Errorf("invalid relay public_ip format: %s", s.Relay.PublicIP)
-			}
-		} else if net.ParseIP(host) == nil {
-			return fmt.Errorf("invalid host in relay public_ip: %s", host)
-		}
-	}
-
-	pubBytes, err := base64.StdEncoding.DecodeString(s.PubKey)
-	if err != nil {
-		return err
-	}
-
-	_, err = mlkem.NewEncapsulationKey768(pubBytes)
-	if err != nil {
-		return fmt.Errorf("invalid PQC public key structure: %w", err)
-	}
-
-	privBytes, err := base64.StdEncoding.DecodeString(s.PrivKey)
-	if err != nil {
-		return err
-	}
-
-	_, err = mlkem.NewDecapsulationKey768(privBytes)
-	if err != nil {
-		return fmt.Errorf("invalid PQC private key structure: %w", err)
-	}
-
-	return nil
-}
-
-// Validate validates the Route
-func (r *Route) Validate() error {
-	switch r.Socket {
-	case "tcp", "udp":
-		// OK
-	default:
-		return fmt.Errorf("route %q has invalid socket type %q (must be tcp or udp)", r.ID, r.Socket)
-	}
-
-	if r.Transport == "" {
-		r.Transport = "none"
-	}
-
-	if r.Transport != "" && !common.TransportsHolder.Exists(r.Transport) {
-		return fmt.Errorf("route %q has invalid transport: %s", r.ID, r.Transport)
-	}
-
-	if r.Socket == "tcp" && r.Transport == "none" {
-		return fmt.Errorf("transport is required for tcp to work reliably")
-	}
-
-	if net.ParseIP(r.Address) == nil {
-		return fmt.Errorf("invalid address: %s", r.Address)
-	}
-
-	if !common.ConnectionsHolder.Exists(r.Conn) && r.Conn != "" {
-		return fmt.Errorf("route %q has invalid connection type: %s", r.ID, r.Conn)
-	}
-
-	switch r.Encryption {
-	case "handshake", "full":
-		// OK
-	case "":
-		r.Encryption = "handshake"
-	default:
-		return fmt.Errorf("route %q has invalid encryption mode: %s", r.ID, r.Encryption)
-	}
-
-	return nil
-}
-
-// GetClientConfig generates a ClientConfig for the specified User and ordered set of Routes
-func (s *ServerConfig) GetClientConfig(user *User, routes []*Route) (*ClientConfig, error) {
-	if len(routes) == 0 {
-		return nil, errors.New("at least one route is required")
-	}
-
-	clientRoutes := make([]ClientRoute, 0, len(routes))
-	names := make([]string, 0, len(routes))
-	encryption := "handshake"
-
-	for _, route := range routes {
-		isAllowed := false
-		for _, rID := range user.AllowedRoutes {
-			if rID == route.ID {
-				isAllowed = true
-				break
-			}
-		}
-		if !isAllowed {
-			return nil, fmt.Errorf("user %s is not authorized for route %s", user.UUID, route.ID)
-		}
-
-		trans := route.Transport
-		if trans == "none" {
-			trans = ""
-		}
-
-		clientRoutes = append(clientRoutes, ClientRoute{
-			RouteID:   route.ID,
-			Socket:    route.Socket,
-			Transport: trans,
-		})
-
-		if route.Name != "" {
-			names = append(names, route.Name)
-		}
-		if route.Encryption == "full" {
-			encryption = "full"
-		}
-	}
-
-	combinedName := strings.Join(names, ", ")
-
-	cfg := &ClientConfig{
-		UserUUID:   user.UUID,
-		Username:   user.Username,
-		PlatformID: s.PlatformID,
-		CallID:     s.CallID,
-		PubKey:     s.PubKey,
-		Routes:     clientRoutes,
-		Type:       user.Type,
-		ForceTurn:  user.ForceTurn,
-		Peers:      max(user.Peers, 1),
-		Encryption: encryption,
-		Name:       combinedName,
-	}
-
-	if s.Relay.Enabled {
-		cfg.Gateway = fmt.Sprintf("%s:%d", s.Relay.PublicIP, *s.Relay.Port)
-		cfg.Proto = s.Relay.Proto
-		cfg.Cloak = s.Relay.Cloak
-	}
-
-	if s.P2P.Enabled {
-		cfg.GatewayUsername = s.P2P.Username
-		cfg.Cloak = s.P2P.Cloak
-	}
-
-	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	return cfg, nil
-}
-
-// GetRoute fetches a Route based on it's ID
-func (s *ServerConfig) GetRoute(id string) (*Route, error) {
-	if s.provider == nil {
-		return nil, fmt.Errorf("no config provider initialized, call RefreshProvider first")
-	}
-
-	return s.provider.GetRoute(id)
-}
-
-// GetUser fetches a User based on it's UUID
-func (s *ServerConfig) GetUser(uuid string) (*User, error) {
-	if s.provider == nil {
-		return nil, fmt.Errorf("no config provider initialized, call RefreshProvider first")
-	}
-
-	return s.provider.GetUser(uuid)
-}
-
-// GetAllRoutes fetches all available routes
-func (s *ServerConfig) GetAllRoutes() []Route {
-	if s.provider == nil {
-		return nil
-	}
-
-	return s.provider.GetAllRoutes()
-}
-
-// AddRoute adds or updates a route in the active provider
-func (s *ServerConfig) AddRoute(route *Route) error {
-	if s.provider == nil {
-		return fmt.Errorf("no config provider initialized, call UpdateProvider first")
-	}
-
-	return s.provider.AddRoute(route)
-}
-
-// AddUser adds or updates a user in the active provider
-func (s *ServerConfig) AddUser(user *User) error {
-	if s.provider == nil {
-		return fmt.Errorf("no config provider initialized, call UpdateProvider first")
-	}
-
-	return s.provider.AddUser(user)
-}
-
-// DeleteRoute removes a route by ID from the active provider
-func (s *ServerConfig) DeleteRoute(id string) error {
-	if s.provider == nil {
-		return fmt.Errorf("no config provider initialized, call UpdateProvider first")
-	}
-
-	return s.provider.DeleteRoute(id)
-}
-
-// DeleteUser removes a user by UUID from the active provider
-func (s *ServerConfig) DeleteUser(uuid string) error {
-	if s.provider == nil {
-		return fmt.Errorf("no config provider initialized, call UpdateProvider first")
-	}
-
-	return s.provider.DeleteUser(uuid)
-}
-
-// ProviderID returns the ID of the active provider, or empty string if none is set
-func (s *ServerConfig) ProviderID() string {
-	if s.provider == nil {
-		return ""
-	}
-
-	return s.provider.ID()
-}
-
-// ToJSON serializes this ServerConfig to a JSON file
-func (s *ServerConfig) ToJSON(indented bool) (string, error) {
-	if s.provider != nil {
-		cfg, err := s.provider.ToJSON()
-		if err != nil {
-			return "", err
-		}
-
-		if cfg != nil {
-			s.Provider = cfg
-		}
-	}
-
-	var b []byte
-	var err error
-
-	if indented {
-		b, err = json.MarshalIndent(s, "", "    ")
-	} else {
-		b, err = json.Marshal(s)
-	}
-
+	handler, err := common.ConnectionsHolder.GetAny(cfg.Type)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return string(b), nil
+	parser, _ := handler.(HandlerAccessor)
+	target := parser.GetBlankServerConfig()
+	if target == nil {
+		return nil, fmt.Errorf("config: connection type %s doesn't support server mode", cfg.Type)
+	}
+
+	if err := ParseConfig(raw, target); err != nil {
+		return nil, err
+	}
+
+	return target, nil
+}
+
+// GetProvider parses the provider config for specified provider ID and returns a provider instance without initializing it
+func (s *ServersConfig) GetProvider(id string) (providers.Provider, error) {
+	raw, ok := s.Providers[id]
+	if !ok {
+		return nil, fmt.Errorf("config: provider '%s' not found", id)
+	}
+
+	cfg, err := ParseConfigGeneric[ProviderConfig](raw)
+	if err != nil {
+		return nil, err
+	}
+
+	handler, err := common.ProvidersHolder.GetAny(cfg.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	provider, _ := handler.(providers.Provider)
+	return provider, nil
 }

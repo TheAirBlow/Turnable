@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
-	"github.com/theairblow/turnable/pkg/config"
 )
 
 const (
@@ -34,7 +34,7 @@ func (D *DTLSHandler) ID() string {
 }
 
 // Start starts the server listener
-func (D *DTLSHandler) Start(config config.ServerConfig) error {
+func (D *DTLSHandler) Start(listenAddr string) error {
 	if !D.running.CompareAndSwap(false, true) {
 		return errors.New("already running")
 	}
@@ -49,19 +49,23 @@ func (D *DTLSHandler) Start(config config.ServerConfig) error {
 		}
 	}()
 
-	if !config.Relay.Enabled {
-		return errors.New("dtls relay start requires relay mode to be enabled")
+	host, portStr, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return err
 	}
-	if config.Relay.Port == nil {
-		return errors.New("dtls relay start requires server port")
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return fmt.Errorf("invalid listen port %q: %w", portStr, err)
 	}
 
 	addr := &net.UDPAddr{
-		IP:   net.ParseIP(config.Relay.PublicIP),
-		Port: *config.Relay.Port,
+		IP:   net.ParseIP(host),
+		Port: port,
 	}
+
 	if addr.IP == nil {
-		return fmt.Errorf("invalid relay listen ip %q", config.Relay.PublicIP)
+		return fmt.Errorf("invalid listen IP: %q", host)
 	}
 
 	certificate, err := selfsign.GenerateSelfSigned()

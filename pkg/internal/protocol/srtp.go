@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/rtp"
 	"github.com/pion/srtp/v3"
-	"github.com/theairblow/turnable/pkg/config"
 )
 
 const (
@@ -45,7 +45,7 @@ func (S *SRTPHandler) SetLogger(log *slog.Logger) {
 }
 
 // Start starts the server listener
-func (S *SRTPHandler) Start(cfg config.ServerConfig) error {
+func (S *SRTPHandler) Start(listenAddr string) error {
 	if !S.running.CompareAndSwap(false, true) {
 		return errors.New("already running")
 	}
@@ -57,19 +57,23 @@ func (S *SRTPHandler) Start(cfg config.ServerConfig) error {
 		}
 	}()
 
-	if !cfg.Relay.Enabled {
-		return errors.New("srtp relay start requires relay mode to be enabled")
+	host, portStr, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return err
 	}
-	if cfg.Relay.Port == nil {
-		return errors.New("srtp relay start requires server port")
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return fmt.Errorf("invalid listen port %q: %w", portStr, err)
 	}
 
 	addr := &net.UDPAddr{
-		IP:   net.ParseIP(cfg.Relay.PublicIP),
-		Port: *cfg.Relay.Port,
+		IP:   net.ParseIP(host),
+		Port: port,
 	}
+
 	if addr.IP == nil {
-		return fmt.Errorf("invalid relay listen ip %q", cfg.Relay.PublicIP)
+		return fmt.Errorf("invalid listen IP: %q", host)
 	}
 
 	raw, err := net.ListenUDP("udp", addr)
