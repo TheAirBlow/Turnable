@@ -1,9 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/config/providers"
@@ -29,27 +29,22 @@ type ProviderConfig struct {
 }
 
 // ParseServersConfig parses the servers config JSON and initializes providers
-func ParseServersConfig(raw string) (ServersConfig, error) {
+func ParseServersConfig(raw []byte) (ServersConfig, error) {
 	var target ServersConfig
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return target, fmt.Errorf("config: empty configuration string")
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return target, fmt.Errorf("empty configuration string")
 	}
 
-	if err := json.Unmarshal([]byte(raw), &target); err != nil {
-		return target, fmt.Errorf("config: failed to parse JSON: %w", err)
+	if err := json.Unmarshal(raw, &target); err != nil {
+		return target, fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
 	return target, nil
 }
 
-// GetServerConfig parses the server config for specified server ID
-func (s *ServersConfig) GetServerConfig(id string) (Config, error) {
-	raw, ok := s.Servers[id]
-	if !ok {
-		return nil, fmt.Errorf("config: server '%s' not found", id)
-	}
-
+// ParseServerConfig parses a server config from a JSON or URL
+func ParseServerConfig(raw []byte) (Config, error) {
 	cfg, err := ParseConfigGeneric[ServerConfig](raw)
 	if err != nil {
 		return nil, err
@@ -63,7 +58,7 @@ func (s *ServersConfig) GetServerConfig(id string) (Config, error) {
 	parser, _ := handler.(HandlerAccessor)
 	target := parser.GetBlankServerConfig()
 	if target == nil {
-		return nil, fmt.Errorf("config: connection type %s doesn't support server mode", cfg.Type)
+		return nil, fmt.Errorf("connection type %s doesn't support server mode", cfg.Type)
 	}
 
 	if err := ParseConfig(raw, target); err != nil {
@@ -73,11 +68,21 @@ func (s *ServersConfig) GetServerConfig(id string) (Config, error) {
 	return target, nil
 }
 
+// GetServerConfig parses the server config for specified server ID
+func (s *ServersConfig) GetServerConfig(id string) (Config, error) {
+	raw, ok := s.Servers[id]
+	if !ok {
+		return nil, fmt.Errorf("server '%s' not found", id)
+	}
+
+	return ParseServerConfig(raw)
+}
+
 // GetProvider parses the provider config for specified provider ID and returns a provider instance without initializing it
 func (s *ServersConfig) GetProvider(id string) (providers.Provider, error) {
 	raw, ok := s.Providers[id]
 	if !ok {
-		return nil, fmt.Errorf("config: provider '%s' not found", id)
+		return nil, fmt.Errorf("provider '%s' not found", id)
 	}
 
 	cfg, err := ParseConfigGeneric[ProviderConfig](raw)

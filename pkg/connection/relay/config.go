@@ -17,20 +17,17 @@ import (
 // ClientConfig represents the relay mode client config
 type ClientConfig struct {
 	config.ClientConfig
-	Routes     []ClientRoute `json:"routes,omitempty" url:"path"`                       // Ordered list of tunnel routes
-	Gateway    string        `json:"gateway,omitempty"  url:"query,gateway,2"`          // Gateway's IP and port
-	Proto      string        `json:"proto,omitempty" url:"query,proto,3"`               // Protocol to use
-	Cloak      string        `json:"cloak,omitempty" url:"query,cloak,4"`               // Cloak method
-	Peers      int           `json:"peers,omitempty" url:"query,peers,5"`               // Peer connections per session
-	Encryption string        `json:"encryption,omitempty" url:"query,encryption,6"`     // Encryption mode
-	PubKey     string        `json:"pub_key,omitempty" url:"query,pub_key,7,omitempty"` // Public key of the server
+	Gateway    string `json:"gateway,omitempty"  url:"query,gateway,2"`          // Gateway's IP and port
+	Proto      string `json:"proto,omitempty" url:"query,proto,3"`               // Protocol to use
+	Cloak      string `json:"cloak,omitempty" url:"query,cloak,4"`               // Cloak method
+	Peers      int    `json:"peers,omitempty" url:"query,peers,5"`               // Peer connections per session
+	Encryption string `json:"encryption,omitempty" url:"query,encryption,6"`     // Encryption mode
+	PubKey     string `json:"pub_key,omitempty" url:"query,pub_key,7,omitempty"` // Public key of the server
 }
 
-// ClientRoute represents one tunnel route inside a multi-route client config
-type ClientRoute struct {
-	RouteID   string `json:"route_id"`            // Route's unique ID
-	Socket    string `json:"socket"`              // Socket protocol to use
-	Transport string `json:"transport,omitempty"` // Transport protocol to use
+// GetInner returns the inner shared configuration struct
+func (c ClientConfig) GetInner() any {
+	return c.ClientConfig
 }
 
 // ServerConfig represents the relay mode server config
@@ -42,6 +39,11 @@ type ServerConfig struct {
 	Cloak      string `json:"cloak"`       // Cloak method to use
 	PublicIP   string `json:"public_ip"`   // Server's public IP
 	ListenAddr string `json:"listen_addr"` // Listening address (IP:port)
+}
+
+// GetInner returns the inner shared configuration struct
+func (s ServerConfig) GetInner() any {
+	return s.ServerConfig
 }
 
 // Validate validates the config
@@ -147,10 +149,10 @@ func (c ClientConfig) Validate() error {
 func (c ClientConfig) ToJSON(indented bool, stripped bool) ([]byte, error) {
 	if stripped {
 		data := struct {
-			UserUUID   string        `json:"user_uuid"`
-			Routes     []ClientRoute `json:"routes"`
-			Type       string        `json:"type"`
-			Encryption string        `json:"encryption"`
+			UserUUID   string               `json:"user_uuid"`
+			Routes     []config.ClientRoute `json:"routes"`
+			Type       string               `json:"type"`
+			Encryption string               `json:"encryption"`
 		}{
 			UserUUID:   c.UserUUID,
 			Routes:     c.Routes,
@@ -257,7 +259,7 @@ func (D *Handler) GetClientConfig(user *providers.User, routes []*providers.Rout
 		return nil, errors.New("at least one route is required")
 	}
 
-	clientRoutes := make([]ClientRoute, 0, len(routes))
+	clientRoutes := make([]config.ClientRoute, 0, len(routes))
 	names := make([]string, 0, len(routes))
 	encryption := "handshake"
 
@@ -278,7 +280,7 @@ func (D *Handler) GetClientConfig(user *providers.User, routes []*providers.Rout
 			trans = ""
 		}
 
-		clientRoutes = append(clientRoutes, ClientRoute{
+		clientRoutes = append(clientRoutes, config.ClientRoute{
 			RouteID:   route.ID,
 			Socket:    route.Socket,
 			Transport: trans,
@@ -300,13 +302,13 @@ func (D *Handler) GetClientConfig(user *providers.User, routes []*providers.Rout
 	cfg := &ClientConfig{
 		ClientConfig: config.ClientConfig{
 			UserUUID:   user.UUID,
+			Routes:     clientRoutes,
 			PlatformID: serverCfg.PlatformID,
 			CallID:     serverCfg.CallID,
 			Type:       user.Type,
 			Name:       combinedName,
 		},
 		PubKey:     serverCfg.PubKey,
-		Routes:     clientRoutes,
 		Peers:      max(user.Peers, 1),
 		Encryption: encryption,
 		Gateway:    fmt.Sprintf("%s:%d", serverCfg.PublicIP, port),

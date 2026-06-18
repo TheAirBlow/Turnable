@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	serviceVersion = uint32(1) // Server protocol version
+	serviceVersion = uint32(2) // Server protocol version
 )
 
 // writeFramed writes a length-prefixed proto message without encryption

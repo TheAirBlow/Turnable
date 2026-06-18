@@ -2,15 +2,14 @@ package init
 
 import (
 	"github.com/theairblow/turnable/pkg/common"
-	"github.com/theairblow/turnable/pkg/config"
 	"github.com/theairblow/turnable/pkg/config/providers"
-	"github.com/theairblow/turnable/pkg/internal/connection"
-	"github.com/theairblow/turnable/pkg/internal/connection/direct"
-	"github.com/theairblow/turnable/pkg/internal/connection/relay"
-	"github.com/theairblow/turnable/pkg/internal/platform"
-	"github.com/theairblow/turnable/pkg/internal/platform/vk"
-	"github.com/theairblow/turnable/pkg/internal/protocol"
-	"github.com/theairblow/turnable/pkg/internal/transport"
+	"github.com/theairblow/turnable/pkg/connection"
+	"github.com/theairblow/turnable/pkg/connection/direct"
+	"github.com/theairblow/turnable/pkg/connection/relay"
+	"github.com/theairblow/turnable/pkg/platform"
+	"github.com/theairblow/turnable/pkg/platform/vk"
+	"github.com/theairblow/turnable/pkg/protocol"
+	"github.com/theairblow/turnable/pkg/transport"
 )
 
 func init() {

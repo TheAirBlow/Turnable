@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/theairblow/turnable/pkg/internal/transport"
+	"github.com/theairblow/turnable/pkg/transport"
 	"golang.org/x/time/rate"
 )
 

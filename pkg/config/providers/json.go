@@ -255,6 +255,18 @@ func (j *JSONProvider) DeleteUser(uuid string) error {
 	return j.saveToDiskLocked()
 }
 
+// GetAllUsers fetches all available users
+func (j *JSONProvider) GetAllUsers() []User {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	users := make([]User, 0, len(j.data.Users))
+	for _, r := range j.data.Users {
+		users = append(users, r)
+	}
+	return users
+}
+
 // Stop stops the provider connection
 func (j *JSONProvider) Stop() error {
 	return nil

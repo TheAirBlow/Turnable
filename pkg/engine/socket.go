@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/theairblow/turnable/pkg/common"
-	"github.com/theairblow/turnable/pkg/config"
+	"github.com/theairblow/turnable/pkg/config/providers"
 )
 
 // udpIdleTimeout is the duration of inactivity after which a UDP connection is torn down
@@ -54,16 +54,18 @@ func (S *SocketHandler) Open(ctx context.Context, socketType string, listenAddr 
 }
 
 // Connect dials a remote TCP or UDP address from the route
-func (S *SocketHandler) Connect(ctx context.Context, route *config.Route) (net.Conn, error) {
+func (S *SocketHandler) Connect(ctx context.Context, route *providers.Route) (net.Conn, error) {
 	address := net.JoinHostPort(route.Address, fmt.Sprintf("%d", route.Port))
 	conn, err := common.ResolverDialContext()(ctx, strings.ToLower(route.Socket), address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s route: %w", route.Socket, err)
 	}
+
 	go func() {
 		<-ctx.Done()
 		_ = conn.Close()
 	}()
+
 	return conn, nil
 }
 

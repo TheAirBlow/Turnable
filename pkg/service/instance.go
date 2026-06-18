@@ -1,25 +1,30 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
 
+	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/config"
+	"github.com/theairblow/turnable/pkg/config/providers"
 	"github.com/theairblow/turnable/pkg/engine"
 	pb "github.com/theairblow/turnable/pkg/service/proto"
 )
 
-// Instance represents a managed Turnable server or client
+// Instance represents a managed Turnable server or client instance
 type Instance struct {
-	ID          string
-	Name        string
-	Autostart   bool
-	config      string
-	listenAddrs []string
-	server      *engine.TurnableServer
-	client      *engine.TurnableClient
-	status      atomic.Int32
+	ID           string                 // Unique instance ID
+	Name         string                 // Display name
+	Autostart    bool                   // Auto-start on service boot
+	ProviderUUID string                 // UUID of the provider this instance uses (servers only)
+	config       string                 // Raw config JSON
+	listenAddrs  []string               // Listen addresses (clients only)
+	server       *engine.TurnableServer // Server instance (nil for clients)
+	client       *engine.TurnableClient // Client instance (nil for servers)
+	status       atomic.Int32           // Current status
+	provider     providers.Provider     // Provider instance (servers only)
 }
 
 // Stop stops the instance
@@ -28,7 +33,11 @@ func (i *Instance) Stop() error {
 		return i.server.Stop()
 	}
 
-	return i.client.Stop()
+	if i.client != nil {
+		return i.client.Stop()
+	}
+
+	return nil
 }
 
 // Info returns a protobuf description of this instance
@@ -59,9 +68,9 @@ func (i *Instance) GetStatus() pb.InstanceStatus {
 	return pb.InstanceStatus(i.status.Load())
 }
 
-// buildServerInstance returns a TurnableServer and its provider from a StartServerRequest
-func buildServerInstance(req *pb.StartServerRequest) (*engine.TurnableServer, error) {
-	cfg, err := config.NewServerConfigFromJSON(req.Config)
+// buildServerInstance returns a TurnableServer from a StartServerRequest and provider
+func buildServerInstance(req *pb.StartServerRequest, provider providers.Provider) (*engine.TurnableServer, error) {
+	cfg, err := config.ParseServerConfig([]byte(req.Config))
 	if err != nil {
 		return nil, fmt.Errorf("parse server config: %w", err)
 	}
@@ -70,12 +79,12 @@ func buildServerInstance(req *pb.StartServerRequest) (*engine.TurnableServer, er
 		return nil, fmt.Errorf("validate server config: %w", err)
 	}
 
-	return engine.NewTurnableServer(*cfg), nil
+	return engine.NewTurnableServer(cfg, provider), nil
 }
 
 // buildClientInstance returns a TurnableClient from a StartClientRequest
 func buildClientInstance(req *pb.StartClientRequest) (*engine.TurnableClient, error) {
-	cfg, err := parseClientConfig(req.Config)
+	cfg, err := config.ParseClientConfig([]byte(req.Config))
 	if err != nil {
 		return nil, err
 	}
@@ -84,21 +93,12 @@ func buildClientInstance(req *pb.StartClientRequest) (*engine.TurnableClient, er
 		return nil, fmt.Errorf("validate client config: %w", err)
 	}
 
-	return engine.NewTurnableClient(*cfg), nil
+	return engine.NewTurnableClient(cfg), nil
 }
 
-// parseClientConfig auto-detects JSON vs URL and parses accordingly
-func parseClientConfig(raw string) (*config.ClientConfig, error) {
-	if strings.HasPrefix(strings.TrimSpace(raw), "turnable://") {
-		return config.NewClientConfigFromURL(raw)
-	}
-
-	return config.NewClientConfigFromJSON(raw)
-}
-
-// handleValidateServerConfig validates a server config against a provider config
+// handleValidateServerConfig validates a server config
 func handleValidateServerConfig(req *pb.ValidateServerConfigRequest) *pb.ValidateServerConfigResponse {
-	cfg, err := config.NewServerConfigFromJSON(req.Config)
+	cfg, err := config.ParseServerConfig([]byte(req.Config))
 	if err != nil {
 		return &pb.ValidateServerConfigResponse{Error: err.Error()}
 	}
@@ -112,7 +112,7 @@ func handleValidateServerConfig(req *pb.ValidateServerConfigRequest) *pb.Validat
 
 // handleValidateClientConfig validates a client config JSON or URL
 func handleValidateClientConfig(req *pb.ValidateClientConfigRequest) *pb.ValidateClientConfigResponse {
-	cfg, err := parseClientConfig(req.Config)
+	cfg, err := config.ParseClientConfig([]byte(req.Config))
 	if err != nil {
 		return &pb.ValidateClientConfigResponse{Error: err.Error()}
 	}
@@ -126,19 +126,45 @@ func handleValidateClientConfig(req *pb.ValidateClientConfigRequest) *pb.Validat
 
 // handleConvertClientConfig converts a client config between JSON and URL form
 func handleConvertClientConfig(req *pb.ConvertClientConfigRequest) (*pb.ConvertClientConfigResponse, error) {
-	cfg, err := parseClientConfig(req.Config)
+	cfg, err := config.ParseClientConfig([]byte(req.Config))
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
 	if strings.HasPrefix(strings.TrimSpace(req.Config), "turnable://") {
-		out, err := cfg.ToJSON(false)
+		out, err := cfg.ToJSON(false, false)
 		if err != nil {
 			return nil, fmt.Errorf("convert to json: %w", err)
 		}
 
-		return &pb.ConvertClientConfigResponse{Config: out}, nil
+		return &pb.ConvertClientConfigResponse{Config: string(out)}, nil
 	}
 
-	return &pb.ConvertClientConfigResponse{Config: cfg.ToURL()}, nil
+	out, err := cfg.ToURL()
+	if err != nil {
+		return nil, fmt.Errorf("convert to url: %w", err)
+	}
+	return &pb.ConvertClientConfigResponse{Config: out}, nil
+}
+
+// handleValidateProviderConfig validates a provider config
+func handleValidateProviderConfig(req *pb.ValidateProviderConfigRequest) *pb.ValidateProviderConfigResponse {
+	var providerCfg map[string]any
+	if err := json.Unmarshal([]byte(req.Config), &providerCfg); err != nil {
+		return &pb.ValidateProviderConfigResponse{Error: fmt.Sprintf("parse config: %v", err)}
+	}
+
+	providerType, ok := providerCfg["type"].(string)
+	if !ok {
+		return &pb.ValidateProviderConfigResponse{Error: "provider config must have a 'type' field"}
+	}
+
+	_, err := common.ProvidersHolder.GetAny(providerType)
+	if err != nil {
+		return &pb.ValidateProviderConfigResponse{Error: fmt.Sprintf("invalid provider type: %v", err)}
+	}
+
+	// TODO: providers dont have any validation routines just yet
+
+	return &pb.ValidateProviderConfigResponse{Valid: true}
 }

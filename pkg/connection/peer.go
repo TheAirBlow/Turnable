@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/theairblow/turnable/pkg/internal/protocol"
+	"github.com/theairblow/turnable/pkg/protocol"
 )
 
 // ErrPeerDone is returned by a reconnectFn to signal that this peer slot should be removed

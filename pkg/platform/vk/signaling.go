@@ -17,7 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/sdp/v3"
-	"github.com/theairblow/turnable/pkg/internal/platform"
+	"github.com/theairblow/turnable/pkg/platform"
 
 	"github.com/theairblow/turnable/pkg/common"
 )

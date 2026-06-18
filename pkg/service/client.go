@@ -153,14 +153,15 @@ func (c *Client) sendRequest(req *pb.Request) (*pb.Response, error) {
 	}
 }
 
-// StartServer requests a new server instance
-func (c *Client) StartServer(config, instanceID, name string) (string, error) {
+// StartServer requests a new server instance with a provider UUID
+func (c *Client) StartServer(config, instanceID, name, providerUUID string) (string, error) {
 	req := &pb.Request{
 		Payload: &pb.Request_StartServer{
 			StartServer: &pb.StartServerRequest{
-				Config:     config,
-				InstanceId: instanceID,
-				Name:       name,
+				Config:       config,
+				InstanceId:   instanceID,
+				Name:         name,
+				ProviderUuid: providerUUID,
 			},
 		},
 	}
@@ -227,29 +228,6 @@ func (c *Client) StopInstance(instanceID string) error {
 		if sr.Error != "" {
 			return fmt.Errorf("stop instance: %s", sr.Error)
 		}
-		return nil
-	}
-
-	return fmt.Errorf("unexpected response type")
-}
-
-// UpdateProvider requests to update a provider config
-func (c *Client) UpdateProvider(instanceID string, cfg string) error {
-	req := &pb.Request{
-		Payload: &pb.Request_UpdateProvider{
-			UpdateProvider: &pb.UpdateProviderRequest{
-				InstanceId:     instanceID,
-				ProviderConfig: cfg,
-			},
-		},
-	}
-
-	resp, err := c.sendRequest(req)
-	if err != nil {
-		return err
-	}
-
-	if resp.GetUpdateProvider() != nil {
 		return nil
 	}
 
@@ -373,13 +351,14 @@ func (c *Client) ConvertClientConfig(config string) (string, error) {
 	return "", fmt.Errorf("unexpected response type")
 }
 
-// AddRoute adds or updates a route on a server instance
-func (c *Client) AddRoute(instanceID string, routeJSON string) error {
+// AddProvider adds a new managed provider
+func (c *Client) AddProvider(uuid, name, config string) error {
 	req := &pb.Request{
-		Payload: &pb.Request_AddRoute{
-			AddRoute: &pb.AddRouteRequest{
-				InstanceId: instanceID,
-				RouteJson:  routeJSON,
+		Payload: &pb.Request_AddProvider{
+			AddProvider: &pb.AddProviderRequest{
+				Uuid:   uuid,
+				Name:   name,
+				Config: config,
 			},
 		},
 	}
@@ -389,9 +368,130 @@ func (c *Client) AddRoute(instanceID string, routeJSON string) error {
 		return err
 	}
 
-	if ar := resp.GetAddRoute(); ar != nil {
+	if ap := resp.GetAddProvider(); ap != nil {
+		if ap.Error != "" {
+			return fmt.Errorf("add provider: %s", ap.Error)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unexpected response type")
+}
+
+// GetProvider retrieves a managed provider by UUID
+func (c *Client) GetProvider(uuid string) (*pb.ProviderInfo, error) {
+	req := &pb.Request{
+		Payload: &pb.Request_GetProvider{
+			GetProvider: &pb.GetProviderRequest{
+				Uuid: uuid,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if gp := resp.GetGetProvider(); gp != nil {
+		if gp.Error != "" {
+			return nil, fmt.Errorf("get provider: %s", gp.Error)
+		}
+		return gp.Provider, nil
+	}
+
+	return nil, fmt.Errorf("unexpected response type")
+}
+
+// ListProviders retrieves all managed providers
+func (c *Client) ListProviders() ([]*pb.ProviderInfo, error) {
+	req := &pb.Request{
+		Payload: &pb.Request_ListProviders{
+			ListProviders: &pb.ListProvidersRequest{},
+		},
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if lp := resp.GetListProviders(); lp != nil {
+		return lp.Providers, nil
+	}
+
+	return nil, fmt.Errorf("unexpected response type")
+}
+
+// DeleteProvider removes a managed provider by UUID
+func (c *Client) DeleteProvider(uuid string) error {
+	req := &pb.Request{
+		Payload: &pb.Request_DeleteProvider{
+			DeleteProvider: &pb.DeleteProviderRequest{
+				Uuid: uuid,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return err
+	}
+
+	if dp := resp.GetDeleteProvider(); dp != nil {
+		if dp.Error != "" {
+			return fmt.Errorf("delete provider: %s", dp.Error)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unexpected response type")
+}
+
+// ValidateProviderConfig validates a provider config
+func (c *Client) ValidateProviderConfig(config string) (bool, error) {
+	req := &pb.Request{
+		Payload: &pb.Request_ValidateProviderConfig{
+			ValidateProviderConfig: &pb.ValidateProviderConfigRequest{
+				Config: config,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return false, err
+	}
+
+	if vp := resp.GetValidateProviderConfig(); vp != nil {
+		if !vp.Valid && vp.Error != "" {
+			return false, fmt.Errorf("validate provider config: %s", vp.Error)
+		}
+		return vp.Valid, nil
+	}
+
+	return false, fmt.Errorf("unexpected response type")
+}
+
+// AddProviderRoute adds a route to a provider
+func (c *Client) AddProviderRoute(providerUUID string, route *pb.RouteInfo) error {
+	req := &pb.Request{
+		Payload: &pb.Request_AddProviderRoute{
+			AddProviderRoute: &pb.AddProviderRouteRequest{
+				ProviderUuid: providerUUID,
+				Route:        route,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return err
+	}
+
+	if ar := resp.GetAddProviderRoute(); ar != nil {
 		if ar.Error != "" {
-			return fmt.Errorf("add route: %s", ar.Error)
+			return fmt.Errorf("add provider route: %s", ar.Error)
 		}
 		return nil
 	}
@@ -399,13 +499,13 @@ func (c *Client) AddRoute(instanceID string, routeJSON string) error {
 	return fmt.Errorf("unexpected response type")
 }
 
-// DeleteRoute removes a route from a server instance by route ID
-func (c *Client) DeleteRoute(instanceID string, routeID string) error {
+// DeleteProviderRoute removes a route from a provider
+func (c *Client) DeleteProviderRoute(providerUUID string, routeID string) error {
 	req := &pb.Request{
-		Payload: &pb.Request_DeleteRoute{
-			DeleteRoute: &pb.DeleteRouteRequest{
-				InstanceId: instanceID,
-				RouteId:    routeID,
+		Payload: &pb.Request_DeleteProviderRoute{
+			DeleteProviderRoute: &pb.DeleteProviderRouteRequest{
+				ProviderUuid: providerUUID,
+				RouteId:      routeID,
 			},
 		},
 	}
@@ -415,9 +515,9 @@ func (c *Client) DeleteRoute(instanceID string, routeID string) error {
 		return err
 	}
 
-	if dr := resp.GetDeleteRoute(); dr != nil {
+	if dr := resp.GetDeleteProviderRoute(); dr != nil {
 		if dr.Error != "" {
-			return fmt.Errorf("delete route: %s", dr.Error)
+			return fmt.Errorf("delete provider route: %s", dr.Error)
 		}
 		return nil
 	}
@@ -425,13 +525,38 @@ func (c *Client) DeleteRoute(instanceID string, routeID string) error {
 	return fmt.Errorf("unexpected response type")
 }
 
-// AddUser adds or updates a user on a server instance
-func (c *Client) AddUser(instanceID string, userJSON string) error {
+// ListProviderRoutes lists all routes from a provider
+func (c *Client) ListProviderRoutes(providerUUID string) ([]*pb.RouteInfo, error) {
 	req := &pb.Request{
-		Payload: &pb.Request_AddUser{
-			AddUser: &pb.AddUserRequest{
-				InstanceId: instanceID,
-				UserJson:   userJSON,
+		Payload: &pb.Request_ListProviderRoutes{
+			ListProviderRoutes: &pb.ListProviderRoutesRequest{
+				ProviderUuid: providerUUID,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if lr := resp.GetListProviderRoutes(); lr != nil {
+		if lr.Error != "" {
+			return nil, fmt.Errorf("list provider routes: %s", lr.Error)
+		}
+		return lr.Routes, nil
+	}
+
+	return nil, fmt.Errorf("unexpected response type")
+}
+
+// AddProviderUser adds a user to a provider
+func (c *Client) AddProviderUser(providerUUID string, user *pb.UserInfo) error {
+	req := &pb.Request{
+		Payload: &pb.Request_AddProviderUser{
+			AddProviderUser: &pb.AddProviderUserRequest{
+				ProviderUuid: providerUUID,
+				User:         user,
 			},
 		},
 	}
@@ -441,9 +566,9 @@ func (c *Client) AddUser(instanceID string, userJSON string) error {
 		return err
 	}
 
-	if au := resp.GetAddUser(); au != nil {
+	if au := resp.GetAddProviderUser(); au != nil {
 		if au.Error != "" {
-			return fmt.Errorf("add user: %s", au.Error)
+			return fmt.Errorf("add provider user: %s", au.Error)
 		}
 		return nil
 	}
@@ -451,13 +576,13 @@ func (c *Client) AddUser(instanceID string, userJSON string) error {
 	return fmt.Errorf("unexpected response type")
 }
 
-// DeleteUser removes a user from a server instance by UUID
-func (c *Client) DeleteUser(instanceID string, userUUID string) error {
+// DeleteProviderUser removes a user from a provider
+func (c *Client) DeleteProviderUser(providerUUID string, userUUID string) error {
 	req := &pb.Request{
-		Payload: &pb.Request_DeleteUser{
-			DeleteUser: &pb.DeleteUserRequest{
-				InstanceId: instanceID,
-				UserUuid:   userUUID,
+		Payload: &pb.Request_DeleteProviderUser{
+			DeleteProviderUser: &pb.DeleteProviderUserRequest{
+				ProviderUuid: providerUUID,
+				UserUuid:     userUUID,
 			},
 		},
 	}
@@ -467,9 +592,9 @@ func (c *Client) DeleteUser(instanceID string, userUUID string) error {
 		return err
 	}
 
-	if du := resp.GetDeleteUser(); du != nil {
+	if du := resp.GetDeleteProviderUser(); du != nil {
 		if du.Error != "" {
-			return fmt.Errorf("delete user: %s", du.Error)
+			return fmt.Errorf("delete provider user: %s", du.Error)
 		}
 		return nil
 	}
@@ -477,29 +602,27 @@ func (c *Client) DeleteUser(instanceID string, userUUID string) error {
 	return fmt.Errorf("unexpected response type")
 }
 
-// UpdateMetadata updates instance metadata like name and autostart toggle
-func (c *Client) UpdateMetadata(instanceID, name string, autostart bool) error {
+// ListProviderUsers lists all users from a provider
+func (c *Client) ListProviderUsers(providerUUID string) ([]*pb.UserInfo, error) {
 	req := &pb.Request{
-		Payload: &pb.Request_UpdateMetadata{
-			UpdateMetadata: &pb.UpdateMetadataRequest{
-				InstanceId: instanceID,
-				Name:       name,
-				Autostart:  autostart,
+		Payload: &pb.Request_ListProviderUsers{
+			ListProviderUsers: &pb.ListProviderUsersRequest{
+				ProviderUuid: providerUUID,
 			},
 		},
 	}
 
 	resp, err := c.sendRequest(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if um := resp.GetUpdateMetadata(); um != nil {
-		if um.Error != "" {
-			return fmt.Errorf("update metadata: %s", um.Error)
+	if lu := resp.GetListProviderUsers(); lu != nil {
+		if lu.Error != "" {
+			return nil, fmt.Errorf("list provider users: %s", lu.Error)
 		}
-		return nil
+		return lu.Users, nil
 	}
 
-	return fmt.Errorf("unexpected response type")
+	return nil, fmt.Errorf("unexpected response type")
 }

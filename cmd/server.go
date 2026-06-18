@@ -46,26 +46,45 @@ func serverMain(opts *serverOptions) error {
 
 	configData, err := os.ReadFile(opts.configPath)
 	if err != nil {
-		return fmt.Errorf("failed to read cfg json file: %w", err)
+		return fmt.Errorf("failed to read config json file: %w", err)
 	}
 
-	cfg, err := config.NewServerConfigFromJSON(string(configData))
+	serversConfig, err := config.ParseServersConfig(configData)
 	if err != nil {
-		return fmt.Errorf("failed to parse cfg json file: %w", err)
+		return fmt.Errorf("failed to parse config json file: %w", err)
 	}
 
-	err = cfg.Validate()
-	if err != nil {
-		return fmt.Errorf("failed to validate server cfg: %w", err)
+	slog.Info("starting turnable servers")
+
+	var servers []*engine.TurnableServer
+
+	for serverKey := range serversConfig.Servers {
+		serverConfig, err := serversConfig.GetServerConfig(serverKey)
+		if err != nil {
+			return fmt.Errorf("failed to get config for server %q: %w", serverKey, err)
+		}
+
+		innerCfg := serverConfig.GetInner().(config.ServerConfig)
+		providerConfig, err := serversConfig.GetProvider(innerCfg.Provider)
+		if err != nil {
+			return fmt.Errorf("failed to get provider for server %q: %w", serverKey, err)
+		}
+
+		providerData := serversConfig.Providers[innerCfg.Provider]
+		if err := providerConfig.Update(providerData); err != nil {
+			return fmt.Errorf("failed to update provider for server %q: %w", serverKey, err)
+		}
+
+		server := engine.NewTurnableServer(serverConfig, providerConfig)
+		if err := server.Start(); err != nil {
+			return fmt.Errorf("failed to start server %q: %w", serverKey, err)
+		}
+
+		servers = append(servers, server)
+		slog.Info("started server instance", "server", serverKey)
 	}
 
-	slog.Info("starting turnable server")
-	server := engine.NewTurnableServer(*cfg)
-	if err := server.Start(); err != nil {
-		return fmt.Errorf("failed to start VPN server: %w", err)
-	}
-
-	slog.Info("turnable server started")
+	slog.Info("all turnable servers started")
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -79,9 +98,11 @@ func serverMain(opts *serverOptions) error {
 		os.Exit(130)
 	}()
 
-	slog.Info("stopping turnable server")
-	if err := server.Stop(); err != nil {
-		return fmt.Errorf("failed to stop VPN server: %w", err)
+	slog.Info("stopping turnable servers")
+	for _, server := range servers {
+		if err := server.Stop(); err != nil {
+			slog.Error("failed to stop server", "error", err)
+		}
 	}
 
 	return nil

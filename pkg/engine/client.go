@@ -10,12 +10,12 @@ import (
 	"sync/atomic"
 
 	"github.com/theairblow/turnable/pkg/config"
-	"github.com/theairblow/turnable/pkg/internal/connection"
+	"github.com/theairblow/turnable/pkg/connection"
 )
 
 // TurnableClient represents a Turnable client
 type TurnableClient struct {
-	Config config.ClientConfig
+	Config config.Config
 
 	running atomic.Bool
 	handler connection.Handler
@@ -35,7 +35,7 @@ func (c *TurnableClient) SetLogger(log *slog.Logger) {
 }
 
 // NewTurnableClient creates a new Turnable client from the specified ClientConfig
-func NewTurnableClient(cfg config.ClientConfig) *TurnableClient {
+func NewTurnableClient(cfg config.Config) *TurnableClient {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &TurnableClient{
 		Config: cfg,
@@ -61,7 +61,13 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 	socket := SocketHandler{}
 	socket.SetLogger(c.log)
 
-	connHandler, err := connection.GetHandler(c.Config.Type)
+	if err := c.Config.Validate(); err != nil {
+		return fmt.Errorf("failed to validate client config: %w", err)
+	}
+
+	innerCfg := c.Config.GetInner().(config.ClientConfig)
+
+	connHandler, err := connection.GetHandler(innerCfg.Type)
 	if err != nil {
 		return fmt.Errorf("get connection handler: %w", err)
 	}
@@ -90,7 +96,7 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 		return fmt.Errorf("invalid port in base listen address %q: %w", baseAddr, err)
 	}
 
-	for i, route := range c.Config.Routes {
+	for i, route := range innerCfg.Routes {
 		var addr string
 		if i < len(listenAddrs) {
 			addr = listenAddrs[i]
@@ -155,25 +161,15 @@ func (c *TurnableClient) handleClient(local AcceptedClient, routeIdx byte) {
 		return
 	}
 
-	deadline := time.Now().Add(channelOpenTimeout)
-	var channel net.Conn
-	for {
-		var err error
 	channel, err := c.handler.OpenChannel(routeIdx)
 	if err != nil {
-			return
+		if !errors.Is(err, connection.ErrReconnecting) {
+			c.log.Warn("failed to open channel for local client", "error", err)
 		}
 		_ = local.Stream.Close()
 		return
-		if time.Now().After(deadline) {
-			c.log.Warn("timed out waiting for reconnect to open channel")
-			_ = local.Stream.Close()
-			return
-		}
-		select {
-		case <-c.ctx.Done():
-			_ = local.Stream.Close()
-			return
-		case <-time.After(500 * time.Millisecond):
+	}
+
+	c.log.Debug("piping local client to channel", "route_idx", routeIdx)
 	pipeStreams(local.Stream, channel)
 }

@@ -202,6 +202,18 @@ func (j *RawProvider) DeleteUser(uuid string) error {
 	return nil
 }
 
+// GetAllUsers fetches all available users
+func (j *RawProvider) GetAllUsers() []User {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+
+	users := make([]User, 0, len(j.data.Users))
+	for _, r := range j.data.Users {
+		users = append(users, r)
+	}
+	return users
+}
+
 // Stop stops the provider connection
 func (j *RawProvider) Stop() error {
 	return nil

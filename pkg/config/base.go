@@ -13,6 +13,7 @@ type Config interface {
 	Validate() error                                     // Validates the config
 	ToJSON(indented bool, stripped bool) ([]byte, error) // Serializes the config to a JSON string
 	ToURL() (string, error)                              // Serializes the config to a URL string
+	GetInner() any                                       // Returns the inner shared configuration struct
 }
 
 // HandlerAccessor represents a connection handler accessor (hacky as fuck but works)
@@ -36,7 +37,7 @@ func ToJSON(cfg any, indented bool) ([]byte, error) {
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("config: failed to serialize to JSON: %w", err)
+		return nil, fmt.Errorf("failed to serialize to JSON: %w", err)
 	}
 
 	return out, nil
@@ -46,7 +47,7 @@ func ToJSON(cfg any, indented bool) ([]byte, error) {
 func ToURL(cfg any) (string, error) {
 	urlStr, err := common.MarshalURL(cfg, urlSchema)
 	if err != nil {
-		return "", fmt.Errorf("config: failed to serialize to URL: %w", err)
+		return "", fmt.Errorf("failed to serialize to URL: %w", err)
 	}
 
 	return urlStr, nil
@@ -66,16 +67,16 @@ func ParseConfigGeneric[T any](raw []byte) (T, error) {
 func ParseConfig(raw []byte, v any) error {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
-		return fmt.Errorf("config: empty configuration string")
+		return fmt.Errorf("empty configuration string")
 	}
 
 	if bytes.HasPrefix(raw, []byte("{")) {
 		if err := json.Unmarshal(raw, &v); err != nil {
-			return fmt.Errorf("config: failed to parse JSON: %w", err)
+			return fmt.Errorf("failed to parse JSON: %w", err)
 		}
 	} else {
 		if err := common.UnmarshalURL(string(raw), urlSchema, &v); err != nil {
-			return fmt.Errorf("config: failed to parse URL: %w", err)
+			return fmt.Errorf("failed to parse URL: %w", err)
 		}
 	}
 

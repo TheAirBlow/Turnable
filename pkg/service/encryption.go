@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/theairblow/turnable/pkg/internal/connection"
+	"github.com/theairblow/turnable/pkg/connection"
 )
 
 // KeyPair holds a parsed ML-KEM768 keypair for service encryption

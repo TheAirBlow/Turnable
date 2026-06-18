@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/theairblow/turnable/pkg/internal/platform"
+	"github.com/theairblow/turnable/pkg/platform"
 	http "github.com/useflyent/fhttp"
 
 	"github.com/gorilla/websocket"

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -17,11 +16,15 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/config"
+	"github.com/theairblow/turnable/pkg/config/providers"
+	"github.com/theairblow/turnable/pkg/connection"
+	"github.com/theairblow/turnable/pkg/connection/direct"
 )
 
 // configGenerateOptions holds CLI flags for the config generate subcommand
 type configGenerateOptions struct {
 	configPath string
+	serverId   string
 	userUUID   string
 	routeIDs   []string
 	json       bool
@@ -66,14 +69,15 @@ func newConfigGenerateCommand() *cobra.Command {
 	opts := &configGenerateOptions{}
 
 	cmd := &cobra.Command{
-		Use:   "generate <user-uuid> <route-id1> [route-id2 ...]",
+		Use:   "generate <server-id> <user-uuid> <route-id1> [route-id2 ...]",
 		Short: "Generates a client config from server config",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) < 2 {
-				return errors.New("expected at least 2 positional arguments: <user-uuid> <route-id1> [route-id2 ...]")
+			if len(args) < 3 {
+				return errors.New("expected at least 3 positional arguments: <server-id> <user-uuid> <route-id1> [route-id2 ...]")
 			}
-			opts.userUUID = args[0]
-			opts.routeIDs = args[1:]
+			opts.serverId = args[0]
+			opts.userUUID = args[1]
+			opts.routeIDs = args[2:]
 			return configMain(opts)
 		},
 	}
@@ -146,33 +150,54 @@ func configMain(opts *configGenerateOptions) error {
 		return fmt.Errorf("failed to read config json file: %w", err)
 	}
 
-	serverCfg, err := config.NewServerConfigFromJSON(string(configData))
+	serversCfg, err := config.ParseServersConfig(configData)
 	if err != nil {
 		return fmt.Errorf("failed to parse config json file: %w", err)
 	}
-	if err := serverCfg.Validate(); err != nil {
-		return fmt.Errorf("failed to validate server config: %w", err)
+
+	serverCfg, err := serversCfg.GetServerConfig(opts.serverId)
+	if err != nil {
+		return fmt.Errorf("failed to parse server config for %s: %w", opts.serverId, err)
 	}
 
-	if err := serverCfg.UpdateProvider(); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+	if err = serverCfg.Validate(); err != nil {
+		return fmt.Errorf("failed to validate server config for %s: %w", opts.serverId, err)
 	}
 
-	user, err := serverCfg.GetUser(opts.userUUID)
+	innerCfg := serverCfg.GetInner().(config.ServerConfig)
+
+	provider, err := serversCfg.GetProvider(innerCfg.Provider)
+	if err != nil {
+		return fmt.Errorf("failed to get provider for %s: %w", innerCfg.Provider, err)
+	}
+
+	defer provider.Stop()
+
+	err = provider.Update(serversCfg.Providers[innerCfg.Provider])
+	if err != nil {
+		return fmt.Errorf("failed to configure provider for %s: %w", innerCfg.Provider, err)
+	}
+
+	connHandler, err := connection.GetHandler(innerCfg.Type)
+	if err != nil {
+		return fmt.Errorf("failed to get handler: %w", err)
+	}
+
+	user, err := provider.GetUser(opts.userUUID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve user: %w", err)
 	}
 
-	routes := make([]*config.Route, 0, len(opts.routeIDs))
+	routes := make([]*providers.Route, 0, len(opts.routeIDs))
 	for _, rid := range opts.routeIDs {
-		route, err := serverCfg.GetRoute(rid)
+		route, err := provider.GetRoute(rid)
 		if err != nil {
 			return fmt.Errorf("failed to resolve route %q: %w", rid, err)
 		}
 		routes = append(routes, route)
 	}
 
-	clientCfg, err := serverCfg.GetClientConfig(user, routes)
+	clientCfg, err := connHandler.GetClientConfig(user, routes)
 	if err != nil {
 		return fmt.Errorf("failed to generate client config: %w", err)
 	}
@@ -182,7 +207,7 @@ func configMain(opts *configGenerateOptions) error {
 	}
 
 	if opts.json {
-		out, err := clientCfg.ToJSON(false)
+		out, err := clientCfg.ToJSON(false, false)
 		if err != nil {
 			return err
 		}
@@ -224,18 +249,18 @@ func keygenMain(opts *configKeygenOptions) error {
 
 // directConfigMain runs the direct relay config command
 func directConfigMain(opts *configDirectOptions) error {
-	clientCfg := config.ClientConfig{
-		UserUUID:   "INSECURE-DIRECT-RELAY",
-		PlatformID: opts.platformId,
-		CallID:     opts.callId,
-		Username:   opts.username,
-		Gateway:    opts.gateway,
-		Peers:      opts.peers,
-		Type:       "direct",
-		Proto:      "none",
-		Routes: []config.ClientRoute{
-			{RouteID: "direct", Socket: "udp", Transport: "none"},
+	clientCfg := direct.ClientConfig{
+		ClientConfig: config.ClientConfig{
+			UserUUID:   "INSECURE-DIRECT-RELAY",
+			PlatformID: opts.platformId,
+			CallID:     opts.callId,
+			Type:       "direct",
+			Routes: []config.ClientRoute{
+				{RouteID: "direct", Socket: "udp", Transport: "none"},
+			},
 		},
+		Gateway: opts.gateway,
+		Peers:   opts.peers,
 	}
 
 	if err := clientCfg.Validate(); err != nil {
@@ -243,7 +268,7 @@ func directConfigMain(opts *configDirectOptions) error {
 	}
 
 	if opts.json {
-		out, err := clientCfg.ToJSON(false)
+		out, err := clientCfg.ToJSON(false, false)
 		if err != nil {
 			return err
 		}
@@ -355,6 +380,218 @@ func bootstrapMain(opts *configBootstrapOptions) error {
 func bootstrapServerMain(opts *configBootstrapOptions) error {
 	r := bufio.NewReader(os.Stdin)
 
+	fmt.Println("=== PROVIDER CONFIGURATION ===")
+	providerConfigs := make(map[string]map[string]any)
+	var providerIDs []string
+
+	fmt.Println()
+	firstProviderID, firstProviderCfg, err := configureProvider(r, 1)
+	if err != nil {
+		return err
+	}
+	providerConfigs[firstProviderID] = firstProviderCfg
+	providerIDs = append(providerIDs, firstProviderID)
+	fmt.Printf("* Provider %q configured\n", firstProviderID)
+
+	addProviderStr := promptChoice(r, "Add another provider?", []string{"yes", "no"}, "no")
+	providerCount := 2
+	for addProviderStr == "yes" {
+		fmt.Println()
+		providerID, providerCfg, err := configureProvider(r, providerCount)
+		if err != nil {
+			return err
+		}
+		providerConfigs[providerID] = providerCfg
+		providerIDs = append(providerIDs, providerID)
+		fmt.Printf("* Provider %q configured\n", providerID)
+
+		addProviderStr = promptChoice(r, "Add another provider?", []string{"yes", "no"}, "no")
+		providerCount++
+	}
+
+	fmt.Println()
+	fmt.Println("=== SERVER CONFIGURATION ===")
+	servers := make(map[string]map[string]any)
+	var serverIDs []string
+
+	fmt.Println()
+	fmt.Printf("Available providers: %s\n", strings.Join(providerIDs, ", "))
+	firstServerID, firstServerCfg, err := configureRelayServer(r, providerIDs, 1)
+	if err != nil {
+		return err
+	}
+	servers[firstServerID] = firstServerCfg
+	serverIDs = append(serverIDs, firstServerID)
+	fmt.Printf("* Server %q configured\n", firstServerID)
+
+	addServerStr := promptChoice(r, "Add another server?", []string{"yes", "no"}, "no")
+	serverCount := 2
+	for addServerStr == "yes" {
+		fmt.Println()
+		fmt.Printf("Available providers: %s\n", strings.Join(providerIDs, ", "))
+		serverID, serverCfg, err := configureRelayServer(r, providerIDs, serverCount)
+		if err != nil {
+			return err
+		}
+		servers[serverID] = serverCfg
+		serverIDs = append(serverIDs, serverID)
+		fmt.Printf("* Server %q configured\n", serverID)
+
+		addServerStr = promptChoice(r, "Add another server?", []string{"yes", "no"}, "no")
+		serverCount++
+	}
+
+	serversConfig := map[string]any{
+		"servers":   servers,
+		"providers": providerConfigs,
+	}
+
+	outJSON, err := json.MarshalIndent(serversConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("serialize config: %w", err)
+	}
+
+	if err := os.WriteFile(opts.output, outJSON, 0o640); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Printf("* Configuration written to %s\n", opts.output)
+
+	return nil
+}
+
+// configureProvider prompts the user to configure a provider and returns its ID and config
+func configureProvider(r *bufio.Reader, index int) (string, map[string]any, error) {
+	fmt.Printf("--- Provider #%d ---\n", index)
+	providerType := promptChoice(r, "Provider type", []string{"raw", "json"}, "raw")
+
+	var providerCfg map[string]any
+	var providerID string
+
+	if providerType == "json" {
+		providerID = prompt(r, "Provider ID", fmt.Sprintf("provider_%d", index))
+		jsonPath := prompt(r, "Path to provider JSON file", "provider.json")
+		providerCfg = map[string]any{
+			"type": "json",
+			"path": jsonPath,
+		}
+	} else {
+		providerID = prompt(r, "Provider ID", fmt.Sprintf("provider_%d", index))
+
+		fmt.Println()
+		addRouteStr := promptChoice(r, "Add a route now?", []string{"yes", "no"}, "yes")
+
+		var routes []providers.Route
+		for addRouteStr == "yes" {
+			fmt.Println()
+			routeID := promptRequired(r, "Route ID")
+			address := promptIP(r, "Destination IP address")
+			port := promptPort(r, "Destination port", 51820)
+			socket := promptChoice(r, "Socket type", []string{"udp", "tcp"}, "udp")
+
+			transports := common.TransportsHolder.List()
+			if len(transports) == 0 {
+				transports = []string{"none"}
+			}
+
+			transport := "none"
+			if socket == "tcp" {
+				transport = promptChoice(r, "Transport", transports, transports[0])
+			} else {
+				transport = promptChoice(r, "Transport", transports, "none")
+			}
+
+			encryption := promptChoice(r, "Encryption mode", []string{"handshake", "full"}, "handshake")
+			displayName := prompt(r, "Display name for generated client configs", routeID)
+
+			routes = append(routes, providers.Route{
+				ID:         routeID,
+				Address:    address,
+				Port:       port,
+				Socket:     socket,
+				Transport:  transport,
+				Encryption: encryption,
+				Name:       displayName,
+			})
+
+			fmt.Printf("* Route %q added\n\n", routeID)
+			addRouteStr = promptChoice(r, "Add another route?", []string{"yes", "no"}, "no")
+		}
+
+		fmt.Println()
+		addUserStr := promptChoice(r, "Add a user now?", []string{"yes", "no"}, "yes")
+
+		var users []providers.User
+		var routeIDs []string
+		for _, r := range routes {
+			routeIDs = append(routeIDs, r.ID)
+		}
+
+		for addUserStr == "yes" {
+			fmt.Println()
+
+			var userUUID string
+			for {
+				userUUID = prompt(r, "User UUID (leave empty to auto-generate)", "")
+				if userUUID == "" {
+					userUUID = uuid.New().String()
+					fmt.Printf("* Auto-generated UUID: %s\n\n", userUUID)
+				} else if _, err := uuid.Parse(userUUID); err != nil {
+					fmt.Println("* Invalid UUID")
+					continue
+				}
+
+				break
+			}
+
+			fmt.Printf("Available routes: %s\n", strings.Join(routeIDs, ", "))
+			allowedRaw := prompt(r, "Allowed routes (comma-separated, empty = all)", "")
+
+			var allowedRoutes []string
+			if strings.TrimSpace(allowedRaw) == "" {
+				allowedRoutes = append([]string(nil), routeIDs...)
+			} else {
+				for _, rid := range strings.Split(allowedRaw, ",") {
+					if rid = strings.TrimSpace(rid); rid != "" {
+						allowedRoutes = append(allowedRoutes, rid)
+					}
+				}
+			}
+
+			connections := common.ConnectionsHolder.List()
+			connType := promptChoice(r, "Connection type", connections, "relay")
+
+			peers := promptInt(r, "Peer connections per session", 1)
+			forceTurnStr := promptChoice(r, "Force TURN in P2P mode?", []string{"yes", "no"}, "no")
+
+			users = append(users, providers.User{
+				UUID:          userUUID,
+				AllowedRoutes: allowedRoutes,
+				Type:          connType,
+				Peers:         peers,
+				ForceTurn:     forceTurnStr == "yes",
+			})
+
+			fmt.Printf("* User %s added\n\n", userUUID)
+			addUserStr = promptChoice(r, "Add another user?", []string{"yes", "no"}, "no")
+		}
+
+		providerCfg = map[string]any{
+			"type":   "raw",
+			"routes": routes,
+			"users":  users,
+		}
+	}
+
+	return providerID, providerCfg, nil
+}
+
+// configureRelayServer prompts the user to configure a relay server and returns its ID and config
+func configureRelayServer(r *bufio.Reader, providerIDs []string, index int) (string, map[string]any, error) {
+	fmt.Printf("--- Relay Server #%d ---\n", index)
+	serverID := prompt(r, "Server ID", fmt.Sprintf("server_%d", index))
+
 	platforms := common.PlatformsHolder.List()
 	fmt.Printf("Available platforms: %s\n", strings.Join(platforms, ", "))
 	platformID := promptChoice(r, "Platform ID", platforms, platforms[0])
@@ -362,205 +599,40 @@ func bootstrapServerMain(opts *configBootstrapOptions) error {
 
 	dk, err := mlkem.GenerateKey768()
 	if err != nil {
-		return fmt.Errorf("keygen: %w", err)
+		return "", nil, fmt.Errorf("keygen: %w", err)
 	}
 	privKey := base64.StdEncoding.EncodeToString(dk.Bytes())
 	pubKey := base64.StdEncoding.EncodeToString(dk.EncapsulationKey().Bytes())
 
 	fmt.Println()
-	enableRelayStr := promptChoice(r, "Enable relay mode?", []string{"yes", "no"}, "yes")
-	enableRelay := enableRelayStr == "yes"
+	publicIP := promptIP(r, "Server public IP")
+	listenPort := promptPort(r, "Server UDP listen port", 56000)
+	listenAddr := net.JoinHostPort("0.0.0.0", strconv.Itoa(listenPort))
 
-	relayCfg := config.RelayServerConfig{Enabled: enableRelay, Proto: "none"}
-	if enableRelay {
-		relayCfg.PublicIP = promptIP(r, "Relay public IP")
-		port := promptPort(r, "Relay UDP port", 56000)
-		relayCfg.Port = &port
-
-		protos := common.ProtocolsHolder.List()
-		if len(protos) == 0 {
-			protos = []string{"none"}
-		}
-		relayCfg.Proto = promptChoice(r, "Relay protocol", protos, "none")
+	protos := common.ProtocolsHolder.List()
+	if len(protos) == 0 {
+		protos = []string{"none"}
 	}
+	proto := promptChoice(r, "Protocol", protos, "none")
+	cloak := prompt(r, "Cloak method (leave empty for none)", "")
 
 	fmt.Println()
+	providerID := promptChoice(r, "Provider to use", providerIDs, providerIDs[0])
 
-	enableP2PStr := promptChoice(r, "Enable P2P mode?", []string{"yes", "no"}, "no")
-	enableP2P := enableP2PStr == "yes"
-
-	p2pCfg := config.P2PServerConfig{Enabled: enableP2P}
-	if enableP2P {
-		p2pCfg.Username = promptRequired(r, "Username in the call")
+	serverCfg := map[string]any{
+		"type":        "relay",
+		"provider":    providerID,
+		"platform_id": platformID,
+		"call_id":     callID,
+		"pub_key":     pubKey,
+		"priv_key":    privKey,
+		"proto":       proto,
+		"cloak":       cloak,
+		"public_ip":   publicIP,
+		"listen_addr": listenAddr,
 	}
 
-	if !enableRelay && !enableP2P {
-		return errors.New("at least one server mode must be enabled")
-	}
-
-	fmt.Println()
-	providerType := promptChoice(r, "Provider type", []string{"raw", "json"}, "raw")
-
-	var providerCfg map[string]any
-	var jsonProviderPath string
-	if providerType == "json" {
-		jsonProviderPath = prompt(r, "Path to provider JSON file", "provider.json")
-		providerCfg = map[string]any{"type": "json", "path": jsonProviderPath}
-	} else {
-		providerCfg = map[string]any{"type": "raw", "routes": []any{}, "users": []any{}}
-	}
-
-	fmt.Println()
-
-	addRouteStr := promptChoice(r, "Add a route now?", []string{"yes", "no"}, "yes")
-
-	var routes []config.Route
-	var routeIDs []string
-	for addRouteStr == "yes" {
-		fmt.Println()
-		routeID := promptRequired(r, "Route ID")
-		address := promptIP(r, "Destination IP address")
-		port := promptPort(r, "Destination port", 51820)
-		socket := promptChoice(r, "Socket type", []string{"udp", "tcp"}, "udp")
-
-		transports := common.TransportsHolder.List()
-		if len(transports) == 0 {
-			transports = []string{"none"}
-		}
-
-		transport := "none"
-		if socket == "tcp" {
-			transport = promptChoice(r, "Transport", transports, transports[0])
-		} else {
-			transport = promptChoice(r, "Transport", transports, "none")
-		}
-
-		encryption := promptChoice(r, "Encryption mode", []string{"handshake", "full"}, "handshake")
-		displayName := prompt(r, "Display name for generated client configs", routeID)
-
-		routes = append(routes, config.Route{
-			ID:         routeID,
-			Address:    address,
-			Port:       port,
-			Socket:     socket,
-			Transport:  transport,
-			Encryption: encryption,
-			Name:       displayName,
-		})
-		routeIDs = append(routeIDs, routeID)
-
-		fmt.Printf("* Route %q added\n\n", routeID)
-		addRouteStr = promptChoice(r, "Add another route?", []string{"yes", "no"}, "no")
-	}
-
-	fmt.Println()
-
-	addUserStr := promptChoice(r, "Add a user now?", []string{"yes", "no"}, "yes")
-
-	var users []config.User
-	for addUserStr == "yes" {
-		fmt.Println()
-
-		var userUUID string
-		for {
-			userUUID = prompt(r, "User UUID (leave empty to auto-generate)", "")
-			if userUUID == "" {
-				userUUID = uuid.New().String()
-				fmt.Printf("* Auto-generated UUID: %s\n\n", userUUID)
-			} else if _, err := uuid.Parse(userUUID); err != nil {
-				fmt.Println("* Invalid UUID")
-				continue
-			}
-
-			break
-		}
-
-		fmt.Printf("Available routes: %s\n", strings.Join(routeIDs, ", "))
-		allowedRaw := prompt(r, "Allowed routes (comma-separated, empty = all)", "")
-
-		var allowedRoutes []string
-		if strings.TrimSpace(allowedRaw) == "" {
-			allowedRoutes = append([]string(nil), routeIDs...)
-		} else {
-			for _, rid := range strings.Split(allowedRaw, ",") {
-				if rid = strings.TrimSpace(rid); rid != "" {
-					allowedRoutes = append(allowedRoutes, rid)
-				}
-			}
-		}
-
-		username := promptRequired(r, "Username to use in the call")
-
-		connections := common.ConnectionsHolder.List()
-		connections = slices.DeleteFunc(connections, func(e string) bool {
-			return e == "direct"
-		})
-		connType := promptChoice(r, "Connection type", connections, "relay")
-
-		peers := promptInt(r, "Peer connections per session", 1)
-		forceTurnStr := promptChoice(r, "Force TURN in P2P mode?", []string{"yes", "no"}, "no")
-
-		users = append(users, config.User{
-			UUID:          userUUID,
-			AllowedRoutes: allowedRoutes,
-			Username:      username,
-			Type:          connType,
-			Peers:         peers,
-			ForceTurn:     forceTurnStr == "yes",
-		})
-
-		fmt.Printf("* User %s added\n\n", userUUID)
-		addUserStr = promptChoice(r, "Add another user?", []string{"yes", "no"}, "no")
-	}
-
-	if providerType == "raw" {
-		providerCfg["routes"] = routes
-		providerCfg["users"] = users
-	} else {
-		pData := map[string]any{"routes": routes, "users": users}
-		pJSON, err := json.MarshalIndent(pData, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal provider data: %w", err)
-		}
-		if err := os.WriteFile(jsonProviderPath, pJSON, 0o640); err != nil {
-			return fmt.Errorf("write provider file: %w", err)
-		}
-
-		fmt.Printf("* Users and route written to %s\n", jsonProviderPath)
-	}
-
-	providerJSON, err := json.Marshal(providerCfg)
-	if err != nil {
-		return fmt.Errorf("marshal provider config: %w", err)
-	}
-
-	serverCfg := config.ServerConfig{
-		PlatformID: platformID,
-		CallID:     callID,
-		PubKey:     pubKey,
-		PrivKey:    privKey,
-		Relay:      relayCfg,
-		P2P:        p2pCfg,
-		Provider:   providerJSON,
-	}
-
-	if err := serverCfg.Validate(); err != nil {
-		return fmt.Errorf("generated config failed validation: %w", err)
-	}
-
-	outJSON, err := serverCfg.ToJSON(true)
-	if err != nil {
-		return fmt.Errorf("serialize config: %w", err)
-	}
-
-	if err := os.WriteFile(opts.output, []byte(outJSON), 0o640); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-
-	fmt.Println()
-	fmt.Printf("* Server config written to %s\n", opts.output)
-
-	return nil
+	return serverID, serverCfg, nil
 }
 
 // bootstrapServiceMain runs the interactive service config wizard

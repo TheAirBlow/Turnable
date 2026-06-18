@@ -36,7 +36,15 @@ func (c ClientConfig) Validate() error {
 	}
 
 	if c.UserUUID != "INSECURE-DIRECT-RELAY" {
-		return fmt.Errorf("invalid user UUID: %s (must be INSECURE-DIRECT-RELAY)", c.UserUUID)
+		return fmt.Errorf("invalid user UUID: %s (must be INSECURE-DIRECT-RELAY for warning purposes)", c.UserUUID)
+	}
+
+	if len(c.Routes) == 0 {
+		return fmt.Errorf("routes is required")
+	}
+
+	if len(c.Routes) != 1 || c.Routes[0].Socket != "udp" || c.Routes[0].Transport != "none" {
+		return fmt.Errorf("there must only be one route with socket=udp and transport=none")
 	}
 
 	if c.Peers <= 0 {
@@ -69,6 +77,11 @@ func (c ClientConfig) ToURL() (string, error) {
 	return config.ToURL(c)
 }
 
+// GetInner returns the inner shared configuration struct
+func (c ClientConfig) GetInner() any {
+	return c.ClientConfig
+}
+
 // GetBlankServerConfig returns a blank server config struct
 func (D *Handler) GetBlankServerConfig() config.Config {
 	return nil
@@ -80,6 +93,6 @@ func (D *Handler) GetBlankClientConfig() config.Config {
 }
 
 // GetClientConfig returns a client config for the specified user and routes
-func (D *Handler) GetClientConfig(_ *providers.User, _ []*providers.Route) (*config.Config, error) {
+func (D *Handler) GetClientConfig(_ *providers.User, _ []*providers.Route) (config.Config, error) {
 	return nil, errors.New("direct handler does not support server mode")
 }

@@ -20,6 +20,7 @@ type Provider interface {
 	DeleteRoute(id string) error         // Removes a route by ID
 	DeleteUser(uuid string) error        // Removes a user by UUID
 	GetAllRoutes() []Route               // Fetches all available routes
+	GetAllUsers() []User                 // Fetches all available users
 	Stop() error                         // Stops the provider connection
 }
 

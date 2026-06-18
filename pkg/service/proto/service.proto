@@ -81,6 +81,7 @@ message StartServerRequest {
   string instance_id = 2;
   string name = 3;
   bool autostart = 4;
+  string provider_uuid = 5;
 }
 
 // StartServerResponse carries the new server instance ID or an error
@@ -111,27 +112,6 @@ message StopInstanceRequest {
 
 // StopInstanceResponse is sent in reply to StopInstanceRequest
 message StopInstanceResponse {
-  string error = 1;
-}
-
-// UpdateProviderRequest updates config provider data for a running server
-message UpdateProviderRequest {
-  string instance_id = 1;
-  string provider_config = 2;
-}
-
-// UpdateProviderResponse is sent in reply to UpdateProviderRequest
-message UpdateProviderResponse {}
-
-// UpdateMetadataRequest updates instance metadata like name and autostart toggle
-message UpdateMetadataRequest {
-  string instance_id = 1;
-  string name = 2;
-  bool autostart = 3;
-}
-
-// UpdateMetadataResponse is sent in reply to UpdateMetadataRequest
-message UpdateMetadataResponse {
   string error = 1;
 }
 
@@ -175,6 +155,153 @@ message ConvertClientConfigResponse {
   string config = 1;
 }
 
+// ProviderInfo describes a managed provider
+message ProviderInfo {
+  string uuid = 1;
+  string name = 2;
+  string config = 3;
+  bool in_use = 4;
+}
+
+// AddProviderRequest adds a new provider
+message AddProviderRequest {
+  string uuid = 1;
+  string name = 2;
+  string config = 3;
+}
+
+// AddProviderResponse carries the provider UUID or an error
+message AddProviderResponse {
+  string uuid = 1;
+  string error = 2;
+}
+
+// GetProviderRequest requests the full details of a provider
+message GetProviderRequest {
+  string uuid = 1;
+}
+
+// GetProviderResponse returns full provider details or an error
+message GetProviderResponse {
+  ProviderInfo provider = 1;
+  string error = 2;
+}
+
+// ListProvidersRequest requests all managed providers
+message ListProvidersRequest {}
+
+// ListProvidersResponse carries the list of all managed providers
+message ListProvidersResponse {
+  repeated ProviderInfo providers = 1;
+}
+
+// DeleteProviderRequest removes a provider
+message DeleteProviderRequest {
+  string uuid = 1;
+}
+
+// DeleteProviderResponse is sent in reply to DeleteProviderRequest
+message DeleteProviderResponse {
+  string error = 1;
+}
+
+// ValidateProviderConfigRequest validates a provider config
+message ValidateProviderConfigRequest {
+  string config = 1;
+}
+
+// ValidateProviderConfigResponse reports whether the provider config is valid
+message ValidateProviderConfigResponse {
+  bool valid = 1;
+  string error = 2;
+}
+
+// RouteInfo describes a route managed by a provider
+message RouteInfo {
+  string id = 1;
+  string address = 2;
+  int32 port = 3;
+  string socket = 4;
+  string transport = 5;
+  string encryption = 6;
+  string name = 7;
+}
+
+// UserInfo describes a user managed by a provider
+message UserInfo {
+  string uuid = 1;
+  repeated string allowed_routes = 2;
+  string type = 3;
+  bool forceturn = 4;
+  int32 peers = 5;
+}
+
+// AddProviderRouteRequest adds a route to a provider
+message AddProviderRouteRequest {
+  string provider_uuid = 1;
+  RouteInfo route = 2;
+}
+
+// AddProviderRouteResponse carries success or error
+message AddProviderRouteResponse {
+  string error = 1;
+}
+
+// DeleteProviderRouteRequest removes a route from a provider
+message DeleteProviderRouteRequest {
+  string provider_uuid = 1;
+  string route_id = 2;
+}
+
+// DeleteProviderRouteResponse carries success or error
+message DeleteProviderRouteResponse {
+  string error = 1;
+}
+
+// ListProviderRoutesRequest calls all routes from a provider
+message ListProviderRoutesRequest {
+  string provider_uuid = 1;
+}
+
+// ListProviderRoutesResponse carries the list of routes
+message ListProviderRoutesResponse {
+  repeated RouteInfo routes = 1;
+  string error = 2;
+}
+
+// AddProviderUserRequest adds a user to a provider
+message AddProviderUserRequest {
+  string provider_uuid = 1;
+  UserInfo user = 2;
+}
+
+// AddProviderUserResponse carries success or error
+message AddProviderUserResponse {
+  string error = 1;
+}
+
+// DeleteProviderUserRequest removes a user from a provider
+message DeleteProviderUserRequest {
+  string provider_uuid = 1;
+  string user_uuid = 2;
+}
+
+// DeleteProviderUserResponse carries success or error
+message DeleteProviderUserResponse {
+  string error = 1;
+}
+
+// ListProviderUsersRequest calls all users from a provider
+message ListProviderUsersRequest {
+  string provider_uuid = 1;
+}
+
+// ListProviderUsersResponse carries the list of users
+message ListProviderUsersResponse {
+  repeated UserInfo users = 1;
+  string error = 2;
+}
+
 // GetInstanceRequest requests the full details of a single instance
 message GetInstanceRequest {
   string instance_id = 1;
@@ -188,50 +315,6 @@ message GetInstanceResponse {
   string error = 4;
 }
 
-// AddRouteRequest adds or updates a route on a server instance
-message AddRouteRequest {
-  string instance_id = 1;
-  string route_json = 2;
-}
-
-// AddRouteResponse is sent in reply to AddRouteRequest
-message AddRouteResponse {
-  string error = 1;
-}
-
-// DeleteRouteRequest removes a route from a server instance
-message DeleteRouteRequest {
-  string instance_id = 1;
-  string route_id = 2;
-}
-
-// DeleteRouteResponse is sent in reply to DeleteRouteRequest
-message DeleteRouteResponse {
-  string error = 1;
-}
-
-// AddUserRequest adds or updates a user on a server instance
-message AddUserRequest {
-  string instance_id = 1;
-  string user_json = 2;
-}
-
-// AddUserResponse is sent in reply to AddUserRequest
-message AddUserResponse {
-  string error = 1;
-}
-
-// DeleteUserRequest removes a user from a server instance
-message DeleteUserRequest {
-  string instance_id = 1;
-  string user_uuid = 2;
-}
-
-// DeleteUserResponse is sent in reply to DeleteUserRequest
-message DeleteUserResponse {
-  string error = 1;
-}
-
 // ErrorResponse returns a fatal protocol-level error
 message ErrorResponse {
   string message = 1;
@@ -243,17 +326,22 @@ message Request {
     StartServerRequest start_server = 1;
     StartClientRequest start_client = 2;
     StopInstanceRequest stop_instance = 3;
-    UpdateProviderRequest update_provider = 4;
     ListInstancesRequest list_instances = 5;
     ValidateServerConfigRequest validate_server_config = 6;
     ValidateClientConfigRequest validate_client_config = 7;
     ConvertClientConfigRequest convert_client_config = 8;
     GetInstanceRequest get_instance = 9;
-    AddRouteRequest add_route = 10;
-    DeleteRouteRequest delete_route = 11;
-    AddUserRequest add_user = 12;
-    DeleteUserRequest delete_user = 13;
-    UpdateMetadataRequest update_metadata = 14;
+    AddProviderRequest add_provider = 15;
+    GetProviderRequest get_provider = 16;
+    ListProvidersRequest list_providers = 17;
+    DeleteProviderRequest delete_provider = 18;
+    ValidateProviderConfigRequest validate_provider_config = 19;
+    AddProviderRouteRequest add_provider_route = 20;
+    DeleteProviderRouteRequest delete_provider_route = 21;
+    ListProviderRoutesRequest list_provider_routes = 22;
+    AddProviderUserRequest add_provider_user = 23;
+    DeleteProviderUserRequest delete_provider_user = 24;
+    ListProviderUsersRequest list_provider_users = 25;
   }
 }
 
@@ -263,7 +351,6 @@ message Response {
     StartServerResponse start_server = 1;
     StartClientResponse start_client = 2;
     StopInstanceResponse stop_instance = 3;
-    UpdateProviderResponse update_provider = 4;
     ListInstancesResponse list_instances = 5;
     LogRecord log_record = 6;
     ErrorResponse error = 7;
@@ -272,10 +359,16 @@ message Response {
     ConvertClientConfigResponse convert_client_config = 10;
     GetInstanceResponse get_instance = 11;
     InstanceEvent instance_event = 12;
-    AddRouteResponse add_route = 13;
-    DeleteRouteResponse delete_route = 14;
-    AddUserResponse add_user = 15;
-    DeleteUserResponse delete_user = 16;
-    UpdateMetadataResponse update_metadata = 17;
+    AddProviderResponse add_provider = 18;
+    GetProviderResponse get_provider = 19;
+    ListProvidersResponse list_providers = 20;
+    DeleteProviderResponse delete_provider = 21;
+    ValidateProviderConfigResponse validate_provider_config = 22;
+    AddProviderRouteResponse add_provider_route = 23;
+    DeleteProviderRouteResponse delete_provider_route = 24;
+    ListProviderRoutesResponse list_provider_routes = 25;
+    AddProviderUserResponse add_provider_user = 26;
+    DeleteProviderUserResponse delete_provider_user = 27;
+    ListProviderUsersResponse list_provider_users = 28;
   }
 }

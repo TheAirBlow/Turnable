@@ -16,14 +16,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/config"
+	"github.com/theairblow/turnable/pkg/config/providers"
 	pb "github.com/theairblow/turnable/pkg/service/proto"
 )
 
 // Server manages Turnable server or client instances and exposes management via a custom protocol
 type Server struct {
-	running   atomic.Bool
-	mu        sync.RWMutex
+	running atomic.Bool
+	mu      sync.RWMutex
+
 	instances map[string]*Instance
+	providers map[string]*ManagedProvider
 
 	log   *slog.Logger
 	relay *LogRelayHandler
@@ -38,14 +41,23 @@ type Server struct {
 	listeners   []net.Listener
 }
 
+// ManagedProvider represents a provider with metadata
+type ManagedProvider struct {
+	UUID     string
+	Name     string
+	Provider providers.Provider
+	Config   string
+}
+
 // persistRecord is the on-disk representation of a persisted instance
 type persistRecord struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	Config      string   `json:"config"`
-	ListenAddrs []string `json:"listen_addrs,omitempty"`
-	Autostart   bool     `json:"autostart"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Type         string   `json:"type"`
+	Config       string   `json:"config"`
+	ListenAddrs  []string `json:"listen_addrs,omitempty"`
+	Autostart    bool     `json:"autostart"`
+	ProviderUUID string   `json:"provider_uuid,omitempty"`
 }
 
 // NewServer creates a new Server instance
@@ -77,6 +89,7 @@ func NewServer(cfg *config.ServiceConfig) (*Server, error) {
 
 	return &Server{
 		instances:   make(map[string]*Instance),
+		providers:   make(map[string]*ManagedProvider),
 		log:         slog.Default(),
 		relay:       relay,
 		keyPair:     kp,
@@ -223,7 +236,7 @@ func resolveInstanceName(provided string) string {
 }
 
 // startServer creates and starts a Turnable server instance
-func (s *Server) startServer(req *pb.StartServerRequest) (string, error) {
+func (s *Server) startServer(req *pb.StartServerRequest, providerUUID string) (string, error) {
 	id := resolveInstanceID(req.InstanceId)
 	name := resolveInstanceName(req.Name)
 
@@ -234,12 +247,26 @@ func (s *Server) startServer(req *pb.StartServerRequest) (string, error) {
 		return "", fmt.Errorf("instance %q already exists", id)
 	}
 
-	srv, err := buildServerInstance(req)
+	s.mu.RLock()
+	managedProv, providerExists := s.providers[providerUUID]
+	s.mu.RUnlock()
+	if !providerExists {
+		return "", fmt.Errorf("provider with UUID %q not found", providerUUID)
+	}
+
+	srv, err := buildServerInstance(req, managedProv.Provider)
 	if err != nil {
 		return "", err
 	}
 
-	inst := &Instance{ID: id, Name: name, config: req.Config, server: srv}
+	inst := &Instance{
+		ID:           id,
+		Name:         name,
+		config:       req.Config,
+		server:       srv,
+		ProviderUUID: providerUUID,
+		provider:     managedProv.Provider,
+	}
 
 	s.mu.Lock()
 	s.instances[id] = inst
@@ -262,7 +289,7 @@ func (s *Server) startServer(req *pb.StartServerRequest) (string, error) {
 		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTING)
 
 		if err := srv.Start(); err != nil {
-			s.log.Warn("server start failed", "client_id", id, "error", err)
+			s.log.Warn("server start failed", "server_id", id, "error", err)
 			s.broadcastEvent(&pb.InstanceEvent{
 				InstanceId:   id,
 				Name:         name,
@@ -318,7 +345,6 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_CREATED,
 	})
 
-	// Start async
 	go func() {
 		cli.SetLogger(s.log.With("client_id", id))
 		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTING)
@@ -382,189 +408,10 @@ func (s *Server) stopInstance(id string) error {
 	return err
 }
 
-// updateProvider updates config provider for an instance and persists the change
-func (s *Server) updateProvider(id string, cfg string) error {
-	s.mu.RLock()
-	inst, ok := s.instances[id]
-	s.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("instance %q not found", id)
-	}
-
-	if err := inst.server.Config.ReplaceProvider([]byte(cfg)); err != nil {
-		return err
-	}
-
-	updated, err := inst.server.Config.ToJSON(false)
-	if err == nil {
-		inst.config = updated
-		if s.persistDir != "" {
-			s.savePersisted(inst)
-		}
-	}
-
-	return nil
-}
-
-// addRoute adds or updates a route on a server instance
-func (s *Server) addRoute(id string, routeJSON string) error {
-	s.mu.RLock()
-	inst, ok := s.instances[id]
-	s.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("instance %q not found", id)
-	}
-
-	if inst.server == nil {
-		return fmt.Errorf("instance %q is not a server instance", id)
-	}
-
-	var route config.Route
-	if err := json.Unmarshal([]byte(routeJSON), &route); err != nil {
-		return fmt.Errorf("parse route JSON: %w", err)
-	}
-
-	if err := route.Validate(); err != nil {
-		return fmt.Errorf("validate route: %w", err)
-	}
-
-	if err := inst.server.Config.AddRoute(&route); err != nil {
-		return err
-	}
-
-	s.persistAndNotifyProvider(inst)
-	return nil
-}
-
-// deleteRoute removes a route from a server instance
-func (s *Server) deleteRoute(id string, routeID string) error {
-	s.mu.RLock()
-	inst, ok := s.instances[id]
-	s.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("instance %q not found", id)
-	}
-
-	if inst.server == nil {
-		return fmt.Errorf("instance %q is not a server instance", id)
-	}
-
-	if err := inst.server.Config.DeleteRoute(routeID); err != nil {
-		return err
-	}
-
-	s.persistAndNotifyProvider(inst)
-	return nil
-}
-
-// addUser adds or updates a user on a server instance
-func (s *Server) addUser(id string, userJSON string) error {
-	s.mu.RLock()
-	inst, ok := s.instances[id]
-	s.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("instance %q not found", id)
-	}
-
-	if inst.server == nil {
-		return fmt.Errorf("instance %q is not a server instance", id)
-	}
-
-	var user config.User
-	if err := json.Unmarshal([]byte(userJSON), &user); err != nil {
-		return fmt.Errorf("parse user JSON: %w", err)
-	}
-
-	if user.UUID == "" {
-		return fmt.Errorf("user uuid is required")
-	}
-
-	// Check if user UUID already exists (reject duplicates if adding new user)
-	existingUser, err := inst.server.Config.GetUser(user.UUID)
-	if err == nil && existingUser != nil {
-		// User exists, so we're updating (this is allowed)
-	} else if err != nil && !strings.Contains(err.Error(), "not found") {
-		// Some other error occurred
-		return fmt.Errorf("failed to check existing user: %w", err)
-	}
-
-	if err := inst.server.Config.AddUser(&user); err != nil {
-		return err
-	}
-
-	s.persistAndNotifyProvider(inst)
-	return nil
-}
-
-// deleteUser removes a user from a server instance
-func (s *Server) deleteUser(id string, userUUID string) error {
-	s.mu.RLock()
-	inst, ok := s.instances[id]
-	s.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("instance %q not found", id)
-	}
-
-	if inst.server == nil {
-		return fmt.Errorf("instance %q is not a server instance", id)
-	}
-
-	if err := inst.server.Config.DeleteUser(userUUID); err != nil {
-		return err
-	}
-
-	s.persistAndNotifyProvider(inst)
-	return nil
-}
-
-// updateMetadata updates instance metadata like name and autostart toggle
-func (s *Server) updateMetadata(id, name string, autostart bool) error {
-	s.mu.RLock()
-	inst, ok := s.instances[id]
-	s.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("instance %q not found", id)
-	}
-
-	// Update metadata
-	if name != "" {
-		inst.Name = name
-	}
-	inst.Autostart = autostart
-
-	// Persist the change
+// persistInstance persists the instance config to disk
+func (s *Server) persistInstance(inst *Instance) {
 	if s.persistDir != "" {
 		s.savePersisted(inst)
-	}
-
-	// Broadcast update event
-	s.broadcastEvent(&pb.InstanceEvent{
-		InstanceId: id,
-		Name:       inst.Name,
-		InstanceType: func() pb.InstanceType {
-			if inst.server != nil {
-				return pb.InstanceType_INSTANCE_TYPE_SERVER
-			}
-			return pb.InstanceType_INSTANCE_TYPE_CLIENT
-		}(),
-		EventType: pb.InstanceEventType_INSTANCE_EVENT_TYPE_UPDATED,
-	})
-
-	return nil
-}
-
-// persistAndNotifyProvider persists the instance config and broadcasts an UPDATED event
-func (s *Server) persistAndNotifyProvider(inst *Instance) {
-	if inst.server.Config.ProviderID() == "raw" {
-		updated, err := inst.server.Config.ToJSON(false)
-		if err == nil {
-			inst.config = updated
-			if s.persistDir != "" {
-				s.savePersisted(inst)
-			}
-		} else {
-			s.log.Warn("failed to serialize config", "id", inst.ID, "error", err)
-		}
 	}
 
 	s.broadcastEvent(&pb.InstanceEvent{
@@ -619,11 +466,12 @@ func (s *Server) savePersisted(inst *Instance) {
 	}
 
 	rec := persistRecord{
-		ID:          inst.ID,
-		Name:        inst.Name,
-		Autostart:   inst.Autostart,
-		Config:      inst.config,
-		ListenAddrs: inst.listenAddrs,
+		ID:           inst.ID,
+		Name:         inst.Name,
+		Autostart:    inst.Autostart,
+		Config:       inst.config,
+		ListenAddrs:  inst.listenAddrs,
+		ProviderUUID: inst.ProviderUUID,
 	}
 	if inst.server != nil {
 		rec.Type = "server"
@@ -688,11 +536,12 @@ func (s *Server) loadPersistedInstances() {
 		switch rec.Type {
 		case "server":
 			_, err = s.startServer(&pb.StartServerRequest{
-				Config:     rec.Config,
-				InstanceId: rec.ID,
-				Name:       rec.Name,
-				Autostart:  rec.Autostart,
-			})
+				Config:       rec.Config,
+				InstanceId:   rec.ID,
+				Name:         rec.Name,
+				Autostart:    rec.Autostart,
+				ProviderUuid: rec.ProviderUUID,
+			}, rec.ProviderUUID)
 		case "client":
 			_, err = s.startClient(&pb.StartClientRequest{
 				Config:      rec.Config,
@@ -813,7 +662,7 @@ func (c *clientConn) sendErr(err error) {
 func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 	switch p := req.Payload.(type) {
 	case *pb.Request_StartServer:
-		id, err := c.svc.startServer(p.StartServer)
+		id, err := c.svc.startServer(p.StartServer, p.StartServer.ProviderUuid)
 		resp := &pb.StartServerResponse{InstanceId: id}
 		if err != nil {
 			c.svc.log.Warn("failed to start server instance", "remote", c.remote, "error", err)
@@ -844,14 +693,6 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 		}
 
 		return &pb.Response{Payload: &pb.Response_StopInstance{StopInstance: resp}}, nil
-	case *pb.Request_UpdateProvider:
-		if err := c.svc.updateProvider(p.UpdateProvider.InstanceId, p.UpdateProvider.ProviderConfig); err != nil {
-			c.svc.log.Warn("failed to update provider", "remote", c.remote, "id", p.UpdateProvider.InstanceId, "error", err)
-			return nil, err
-		}
-
-		c.svc.log.Info("updated provider", "remote", c.remote, "id", p.UpdateProvider.InstanceId)
-		return &pb.Response{Payload: &pb.Response_UpdateProvider{UpdateProvider: &pb.UpdateProviderResponse{}}}, nil
 	case *pb.Request_ListInstances:
 		c.svc.log.Debug("listed instances", "remote", c.remote)
 		return &pb.Response{Payload: &pb.Response_ListInstances{ListInstances: &pb.ListInstancesResponse{
@@ -884,56 +725,337 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 
 		c.svc.log.Debug("converted client config", "remote", c.remote)
 		return &pb.Response{Payload: &pb.Response_ConvertClientConfig{ConvertClientConfig: resp}}, nil
-	case *pb.Request_AddRoute:
-		resp := &pb.AddRouteResponse{}
-		if err := c.svc.addRoute(p.AddRoute.InstanceId, p.AddRoute.RouteJson); err != nil {
-			c.svc.log.Warn("failed to add route", "remote", c.remote, "id", p.AddRoute.InstanceId, "error", err)
+	case *pb.Request_AddProvider:
+		resp := &pb.AddProviderResponse{}
+		uuid, err := c.svc.addProvider(p.AddProvider.Uuid, p.AddProvider.Name, p.AddProvider.Config)
+		if err != nil {
+			c.svc.log.Warn("failed to add provider", "remote", c.remote, "error", err)
 			resp.Error = err.Error()
 		} else {
-			c.svc.log.Info("added route", "remote", c.remote, "id", p.AddRoute.InstanceId)
-		}
-		return &pb.Response{Payload: &pb.Response_AddRoute{AddRoute: resp}}, nil
-	case *pb.Request_DeleteRoute:
-		resp := &pb.DeleteRouteResponse{}
-		if err := c.svc.deleteRoute(p.DeleteRoute.InstanceId, p.DeleteRoute.RouteId); err != nil {
-			c.svc.log.Warn("failed to delete route", "remote", c.remote, "id", p.DeleteRoute.InstanceId, "route", p.DeleteRoute.RouteId, "error", err)
-			resp.Error = err.Error()
-		} else {
-			c.svc.log.Info("deleted route", "remote", c.remote, "id", p.DeleteRoute.InstanceId, "route", p.DeleteRoute.RouteId)
+			c.svc.log.Info("added provider", "remote", c.remote, "uuid", uuid)
+			resp.Uuid = uuid
 		}
 
-		return &pb.Response{Payload: &pb.Response_DeleteRoute{DeleteRoute: resp}}, nil
-	case *pb.Request_AddUser:
-		resp := &pb.AddUserResponse{}
-		if err := c.svc.addUser(p.AddUser.InstanceId, p.AddUser.UserJson); err != nil {
-			c.svc.log.Warn("failed to add user", "remote", c.remote, "id", p.AddUser.InstanceId, "error", err)
-			resp.Error = err.Error()
+		return &pb.Response{Payload: &pb.Response_AddProvider{AddProvider: resp}}, nil
+	case *pb.Request_GetProvider:
+		resp := c.svc.getProvider(p.GetProvider.Uuid)
+		if resp.Error != "" {
+			c.svc.log.Warn("get provider failed", "remote", c.remote, "uuid", p.GetProvider.Uuid, "error", resp.Error)
 		} else {
-			c.svc.log.Info("added user", "remote", c.remote, "id", p.AddUser.InstanceId)
+			c.svc.log.Debug("fetched provider", "remote", c.remote, "uuid", p.GetProvider.Uuid)
 		}
 
-		return &pb.Response{Payload: &pb.Response_AddUser{AddUser: resp}}, nil
-	case *pb.Request_DeleteUser:
-		resp := &pb.DeleteUserResponse{}
-		if err := c.svc.deleteUser(p.DeleteUser.InstanceId, p.DeleteUser.UserUuid); err != nil {
-			c.svc.log.Warn("failed to delete user", "remote", c.remote, "id", p.DeleteUser.InstanceId, "uuid", p.DeleteUser.UserUuid, "error", err)
+		return &pb.Response{Payload: &pb.Response_GetProvider{GetProvider: resp}}, nil
+	case *pb.Request_ListProviders:
+		c.svc.log.Debug("listed providers", "remote", c.remote)
+		return &pb.Response{Payload: &pb.Response_ListProviders{ListProviders: &pb.ListProvidersResponse{
+			Providers: c.svc.listProviders(),
+		}}}, nil
+	case *pb.Request_DeleteProvider:
+		resp := &pb.DeleteProviderResponse{}
+		if err := c.svc.deleteProvider(p.DeleteProvider.Uuid); err != nil {
+			c.svc.log.Warn("failed to delete provider", "remote", c.remote, "uuid", p.DeleteProvider.Uuid, "error", err)
 			resp.Error = err.Error()
 		} else {
-			c.svc.log.Info("deleted user", "remote", c.remote, "id", p.DeleteUser.InstanceId, "uuid", p.DeleteUser.UserUuid)
+			c.svc.log.Info("deleted provider", "remote", c.remote, "uuid", p.DeleteProvider.Uuid)
 		}
 
-		return &pb.Response{Payload: &pb.Response_DeleteUser{DeleteUser: resp}}, nil
-	case *pb.Request_UpdateMetadata:
-		resp := &pb.UpdateMetadataResponse{}
-		if err := c.svc.updateMetadata(p.UpdateMetadata.InstanceId, p.UpdateMetadata.Name, p.UpdateMetadata.Autostart); err != nil {
-			c.svc.log.Warn("failed to update metadata", "remote", c.remote, "id", p.UpdateMetadata.InstanceId, "error", err)
+		return &pb.Response{Payload: &pb.Response_DeleteProvider{DeleteProvider: resp}}, nil
+	case *pb.Request_ValidateProviderConfig:
+		c.svc.log.Debug("validated provider config", "remote", c.remote)
+		return &pb.Response{Payload: &pb.Response_ValidateProviderConfig{
+			ValidateProviderConfig: handleValidateProviderConfig(p.ValidateProviderConfig),
+		}}, nil
+	case *pb.Request_AddProviderRoute:
+		resp := &pb.AddProviderRouteResponse{}
+		if err := c.svc.addProviderRoute(p.AddProviderRoute.ProviderUuid, p.AddProviderRoute.Route); err != nil {
+			c.svc.log.Warn("failed to add provider route", "remote", c.remote, "provider", p.AddProviderRoute.ProviderUuid, "error", err)
 			resp.Error = err.Error()
 		} else {
-			c.svc.log.Info("updated metadata", "remote", c.remote, "id", p.UpdateMetadata.InstanceId)
+			c.svc.log.Info("added provider route", "remote", c.remote, "provider", p.AddProviderRoute.ProviderUuid, "route", p.AddProviderRoute.Route.Id)
 		}
-
-		return &pb.Response{Payload: &pb.Response_UpdateMetadata{UpdateMetadata: resp}}, nil
+		return &pb.Response{Payload: &pb.Response_AddProviderRoute{AddProviderRoute: resp}}, nil
+	case *pb.Request_DeleteProviderRoute:
+		resp := &pb.DeleteProviderRouteResponse{}
+		if err := c.svc.deleteProviderRoute(p.DeleteProviderRoute.ProviderUuid, p.DeleteProviderRoute.RouteId); err != nil {
+			c.svc.log.Warn("failed to delete provider route", "remote", c.remote, "provider", p.DeleteProviderRoute.ProviderUuid, "route", p.DeleteProviderRoute.RouteId, "error", err)
+			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("deleted provider route", "remote", c.remote, "provider", p.DeleteProviderRoute.ProviderUuid, "route", p.DeleteProviderRoute.RouteId)
+		}
+		return &pb.Response{Payload: &pb.Response_DeleteProviderRoute{DeleteProviderRoute: resp}}, nil
+	case *pb.Request_ListProviderRoutes:
+		resp := c.svc.listProviderRoutes(p.ListProviderRoutes.ProviderUuid)
+		if resp.Error != "" {
+			c.svc.log.Warn("failed to list provider routes", "remote", c.remote, "provider", p.ListProviderRoutes.ProviderUuid, "error", resp.Error)
+		} else {
+			c.svc.log.Debug("listed provider routes", "remote", c.remote, "provider", p.ListProviderRoutes.ProviderUuid)
+		}
+		return &pb.Response{Payload: &pb.Response_ListProviderRoutes{ListProviderRoutes: resp}}, nil
+	case *pb.Request_AddProviderUser:
+		resp := &pb.AddProviderUserResponse{}
+		if err := c.svc.addProviderUser(p.AddProviderUser.ProviderUuid, p.AddProviderUser.User); err != nil {
+			c.svc.log.Warn("failed to add provider user", "remote", c.remote, "provider", p.AddProviderUser.ProviderUuid, "error", err)
+			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("added provider user", "remote", c.remote, "provider", p.AddProviderUser.ProviderUuid, "user", p.AddProviderUser.User.Uuid)
+		}
+		return &pb.Response{Payload: &pb.Response_AddProviderUser{AddProviderUser: resp}}, nil
+	case *pb.Request_DeleteProviderUser:
+		resp := &pb.DeleteProviderUserResponse{}
+		if err := c.svc.deleteProviderUser(p.DeleteProviderUser.ProviderUuid, p.DeleteProviderUser.UserUuid); err != nil {
+			c.svc.log.Warn("failed to delete provider user", "remote", c.remote, "provider", p.DeleteProviderUser.ProviderUuid, "user", p.DeleteProviderUser.UserUuid, "error", err)
+			resp.Error = err.Error()
+		} else {
+			c.svc.log.Info("deleted provider user", "remote", c.remote, "provider", p.DeleteProviderUser.ProviderUuid, "user", p.DeleteProviderUser.UserUuid)
+		}
+		return &pb.Response{Payload: &pb.Response_DeleteProviderUser{DeleteProviderUser: resp}}, nil
+	case *pb.Request_ListProviderUsers:
+		resp := c.svc.listProviderUsers(p.ListProviderUsers.ProviderUuid)
+		if resp.Error != "" {
+			c.svc.log.Warn("failed to list provider users", "remote", c.remote, "provider", p.ListProviderUsers.ProviderUuid, "error", resp.Error)
+		} else {
+			c.svc.log.Debug("listed provider users", "remote", c.remote, "provider", p.ListProviderUsers.ProviderUuid)
+		}
+		return &pb.Response{Payload: &pb.Response_ListProviderUsers{ListProviderUsers: resp}}, nil
 	default:
 		return nil, fmt.Errorf("unknown request type")
 	}
+}
+
+// addProvider creates and registers a new managed provider with the specified UUID
+func (s *Server) addProvider(uuid, name string, providerData string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.providers[uuid]; exists {
+		return "", fmt.Errorf("provider with UUID %q already exists", uuid)
+	}
+
+	var providerCfg map[string]any
+	if err := json.Unmarshal([]byte(providerData), &providerCfg); err != nil {
+		return "", fmt.Errorf("parse provider config: %w", err)
+	}
+
+	providerType, ok := providerCfg["type"].(string)
+	if !ok {
+		return "", errors.New("provider config must have a 'type' field")
+	}
+
+	handler, err := common.ProvidersHolder.GetAny(providerType)
+	if err != nil {
+		return "", fmt.Errorf("failed to get provider handler for type %q: %w", providerType, err)
+	}
+
+	prov, ok := handler.(providers.Provider)
+	if !ok {
+		return "", fmt.Errorf("provider handler does not implement providers.Provider interface")
+	}
+
+	if err := prov.Update([]byte(providerData)); err != nil {
+		return "", fmt.Errorf("failed to configure provider: %w", err)
+	}
+
+	s.providers[uuid] = &ManagedProvider{
+		UUID:     uuid,
+		Name:     name,
+		Provider: prov,
+		Config:   providerData,
+	}
+
+	s.log.Info("added provider", "uuid", uuid, "name", name, "type", providerType)
+	return uuid, nil
+}
+
+// listProviders returns info for all registered providers with their usage status
+func (s *Server) listProviders() []*pb.ProviderInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	infos := make([]*pb.ProviderInfo, 0, len(s.providers))
+	for _, mp := range s.providers {
+		inUse := false
+		for _, inst := range s.instances {
+			if inst.ProviderUUID == mp.UUID {
+				inUse = true
+				break
+			}
+		}
+		infos = append(infos, &pb.ProviderInfo{
+			Uuid:  mp.UUID,
+			Name:  mp.Name,
+			InUse: inUse,
+		})
+	}
+	return infos
+}
+
+// getProvider returns the full details for a single provider with usage status
+func (s *Server) getProvider(uuid string) *pb.GetProviderResponse {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	mp, ok := s.providers[uuid]
+	if !ok {
+		return &pb.GetProviderResponse{Error: fmt.Sprintf("provider %q not found", uuid)}
+	}
+
+	inUse := false
+	for _, inst := range s.instances {
+		if inst.ProviderUUID == uuid {
+			inUse = true
+			break
+		}
+	}
+
+	return &pb.GetProviderResponse{
+		Provider: &pb.ProviderInfo{
+			Uuid:   mp.UUID,
+			Name:   mp.Name,
+			Config: mp.Config,
+			InUse:  inUse,
+		},
+	}
+}
+
+// deleteProvider removes a provider - fails if any instance is using it
+func (s *Server) deleteProvider(uuid string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.providers[uuid]; !ok {
+		return fmt.Errorf("provider %q not found", uuid)
+	}
+
+	for _, inst := range s.instances {
+		if inst.ProviderUUID == uuid {
+			return fmt.Errorf("cannot delete provider %q: instance %q is using it", uuid, inst.ID)
+		}
+	}
+
+	mp := s.providers[uuid]
+	delete(s.providers, uuid)
+
+	if err := mp.Provider.Stop(); err != nil {
+		s.log.Warn("failed to stop provider during deletion", "uuid", uuid, "error", err)
+	}
+
+	s.log.Info("deleted provider", "uuid", uuid, "name", mp.Name)
+	return nil
+}
+
+// addProviderRoute adds a route to a provider
+func (s *Server) addProviderRoute(providerUUID string, route *pb.RouteInfo) error {
+	s.mu.RLock()
+	mp, ok := s.providers[providerUUID]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerUUID)
+	}
+
+	r := &providers.Route{
+		ID:         route.Id,
+		Address:    route.Address,
+		Port:       int(route.Port),
+		Socket:     route.Socket,
+		Transport:  route.Transport,
+		Encryption: route.Encryption,
+		Name:       route.Name,
+	}
+
+	return mp.Provider.AddRoute(r)
+}
+
+// deleteProviderRoute removes a route from a provider
+func (s *Server) deleteProviderRoute(providerUUID string, routeID string) error {
+	s.mu.RLock()
+	mp, ok := s.providers[providerUUID]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerUUID)
+	}
+
+	return mp.Provider.DeleteRoute(routeID)
+}
+
+// listProviderRoutes returns all routes from a provider
+func (s *Server) listProviderRoutes(providerUUID string) *pb.ListProviderRoutesResponse {
+	s.mu.RLock()
+	mp, ok := s.providers[providerUUID]
+	s.mu.RUnlock()
+	if !ok {
+		return &pb.ListProviderRoutesResponse{Error: fmt.Sprintf("provider %q not found", providerUUID)}
+	}
+
+	routes := mp.Provider.GetAllRoutes()
+	pbRoutes := make([]*pb.RouteInfo, 0, len(routes))
+	for _, r := range routes {
+		pbRoutes = append(pbRoutes, &pb.RouteInfo{
+			Id:         r.ID,
+			Address:    r.Address,
+			Port:       int32(r.Port),
+			Socket:     r.Socket,
+			Transport:  r.Transport,
+			Encryption: r.Encryption,
+			Name:       r.Name,
+		})
+	}
+
+	return &pb.ListProviderRoutesResponse{Routes: pbRoutes}
+}
+
+// addProviderUser adds a user to a provider
+func (s *Server) addProviderUser(providerUUID string, user *pb.UserInfo) error {
+	s.mu.RLock()
+	mp, ok := s.providers[providerUUID]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerUUID)
+	}
+
+	u := &providers.User{
+		UUID:          user.Uuid,
+		AllowedRoutes: user.AllowedRoutes,
+		Type:          user.Type,
+		ForceTurn:     user.Forceturn,
+		Peers:         int(user.Peers),
+	}
+
+	return mp.Provider.AddUser(u)
+}
+
+// deleteProviderUser removes a user from a provider
+func (s *Server) deleteProviderUser(providerUUID string, userUUID string) error {
+	s.mu.RLock()
+	mp, ok := s.providers[providerUUID]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerUUID)
+	}
+
+	return mp.Provider.DeleteUser(userUUID)
+}
+
+// listProviderUsers returns all users from a provider
+func (s *Server) listProviderUsers(providerUUID string) *pb.ListProviderUsersResponse {
+	s.mu.RLock()
+	mp, ok := s.providers[providerUUID]
+	s.mu.RUnlock()
+	if !ok {
+		return &pb.ListProviderUsersResponse{Error: fmt.Sprintf("provider %q not found", providerUUID)}
+	}
+
+	users := mp.Provider.GetAllUsers()
+	pbUsers := make([]*pb.UserInfo, 0, len(users))
+	for _, u := range users {
+		pbUsers = append(pbUsers, &pb.UserInfo{
+			Uuid:          u.UUID,
+			AllowedRoutes: u.AllowedRoutes,
+			Type:          u.Type,
+			Forceturn:     u.ForceTurn,
+			Peers:         int32(u.Peers),
+		})
+	}
+
+	return &pb.ListProviderUsersResponse{Users: pbUsers}
 }

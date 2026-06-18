@@ -11,8 +11,8 @@ import (
 
 	"github.com/theairblow/turnable/pkg/config"
 	"github.com/theairblow/turnable/pkg/config/providers"
-	"github.com/theairblow/turnable/pkg/internal/connection"
-	platformpkg "github.com/theairblow/turnable/pkg/internal/platform"
+	"github.com/theairblow/turnable/pkg/connection"
+	platformpkg "github.com/theairblow/turnable/pkg/platform"
 )
 
 const (

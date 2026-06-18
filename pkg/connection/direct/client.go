@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/theairblow/turnable/pkg/common"
-	"github.com/theairblow/turnable/pkg/internal/connection"
-	platformpkg "github.com/theairblow/turnable/pkg/internal/platform"
-	"github.com/theairblow/turnable/pkg/internal/protocol"
+	"github.com/theairblow/turnable/pkg/connection"
+	platformpkg "github.com/theairblow/turnable/pkg/platform"
+	"github.com/theairblow/turnable/pkg/protocol"
 )
 
 // connectSession establishes all peer connections and initializes the PeerConn

@@ -56,10 +56,10 @@ func clientMain(opts *clientOptions) error {
 
 	config.Options.Interactive = !opts.noInteractive
 
-	var cfg *config.ClientConfig
+	var cfg config.Config
 	if !common.IsNullOrWhiteSpace(opts.configURL) {
 		var err error
-		cfg, err = config.NewClientConfigFromURL(opts.configURL)
+		cfg, err = config.ParseClientConfig([]byte(opts.configURL))
 		if err != nil {
 			return fmt.Errorf("failed to parse config URL: %w", err)
 		}
@@ -69,7 +69,7 @@ func clientMain(opts *clientOptions) error {
 			return fmt.Errorf("failed to read config json file: %w", err)
 		}
 
-		cfg, err = config.NewClientConfigFromJSON(string(configData))
+		cfg, err = config.ParseClientConfig(configData)
 		if err != nil {
 			return err
 		}
@@ -81,13 +81,15 @@ func clientMain(opts *clientOptions) error {
 		return fmt.Errorf("failed to validate connection URL: %w", err)
 	}
 
-	slog.Info("starting turnable client", "connection_type", cfg.Type)
-	client := engine.NewTurnableClient(*cfg)
+	innerCfg := cfg.GetInner().(config.ClientConfig)
+
+	slog.Info("starting turnable client", "connection_type", innerCfg.Type)
+	client := engine.NewTurnableClient(cfg)
 	if err := client.Start(opts.listenAddrs); err != nil {
 		return fmt.Errorf("failed to start vpn client: %w", err)
 	}
 
-	slog.Info("turnable client started", "routes", len(cfg.Routes), "connection_type", cfg.Type, "listen", opts.listenAddrs)
+	slog.Info("turnable client started", "routes", len(innerCfg.Routes), "connection_type", innerCfg.Type, "listen", opts.listenAddrs)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

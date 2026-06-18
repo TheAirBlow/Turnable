@@ -8,15 +8,17 @@ import (
 	"sync/atomic"
 
 	"github.com/theairblow/turnable/pkg/config"
-	"github.com/theairblow/turnable/pkg/internal/connection"
+	"github.com/theairblow/turnable/pkg/config/providers"
+	"github.com/theairblow/turnable/pkg/connection"
 )
 
 // TurnableServer represents a Turnable server
 type TurnableServer struct {
-	Config config.ServerConfig
+	Config   config.Config
+	Provider providers.Provider
 
-	running  atomic.Bool
-	handlers []connection.Handler
+	running atomic.Bool
+	handler connection.Handler
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -32,18 +34,19 @@ func (s *TurnableServer) SetLogger(log *slog.Logger) {
 	s.log = log
 }
 
-// NewTurnableServer creates a new Turnable server from the provided ServerConfig
-func NewTurnableServer(cfg config.ServerConfig) *TurnableServer {
+// NewTurnableServer creates a new Turnable server from the specified Config and Provider
+func NewTurnableServer(cfg config.Config, provider providers.Provider) *TurnableServer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &TurnableServer{
-		Config: cfg,
-		ctx:    ctx,
-		cancel: cancel,
-		log:    slog.Default(),
+		Config:   cfg,
+		Provider: provider,
+		ctx:      ctx,
+		cancel:   cancel,
+		log:      slog.Default(),
 	}
 }
 
-// Start starts all enabled connection handlers
+// Start starts the Turnable server
 func (s *TurnableServer) Start() error {
 	if !s.running.CompareAndSwap(false, true) {
 		return errors.New("already running")
@@ -59,32 +62,25 @@ func (s *TurnableServer) Start() error {
 	socket := SocketHandler{}
 	socket.SetLogger(s.log)
 
-	if err := s.Config.UpdateProvider(); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+	if err := s.Config.Validate(); err != nil {
+		return fmt.Errorf("failed to validate server config: %w", err)
 	}
 
-	if s.Config.P2P.Enabled {
-		return errors.New("P2P mode is not supported")
+	innerCfg := s.Config.GetInner().(config.ServerConfig)
+
+	connHandler, err := connection.GetHandler(innerCfg.Type)
+	if err != nil {
+		return fmt.Errorf("get connection handler: %w", err)
 	}
 
-	if s.Config.Relay.Enabled {
-		connHandler, err := connection.GetHandler("relay")
-		if err != nil {
-			s.log.Error("failed to get relay handler", "error", err)
-			return err
-		}
+	connHandler.SetLogger(s.log)
 
-		connHandler.SetLogger(s.log)
-
-		if err := connHandler.Start(s.Config); err != nil {
-			s.log.Error("failed to start relay handler", "error", err)
-			return err
-		}
-
-		s.handlers = append(s.handlers, connHandler)
-
-		go s.acceptClients(connHandler, socket)
+	if err := connHandler.Start(s.Config, s.Provider); err != nil {
+		_ = connHandler.Stop()
+		return fmt.Errorf("start handler: %w", err)
 	}
+
+	s.handler = connHandler
 
 	success = true
 	return nil
@@ -95,7 +91,7 @@ func (s *TurnableServer) IsRunning() bool {
 	return s.running.Load()
 }
 
-// Stop stops the Turnable server and all active handlers
+// Stop stops the Turnable server
 func (s *TurnableServer) Stop() error {
 	if !s.running.CompareAndSwap(true, false) {
 		return errors.New("not running")
@@ -104,11 +100,15 @@ func (s *TurnableServer) Stop() error {
 	s.cancel()
 
 	var err error
-	for _, handler := range s.handlers {
-		err = errors.Join(err, handler.Stop())
+	if s.handler != nil {
+		err = s.handler.Stop()
 	}
 
-	return errors.Join(err, s.Config.StopProvider())
+	if s.Provider != nil {
+		err = errors.Join(err, s.Provider.Stop())
+	}
+
+	return err
 }
 
 // acceptClients accepts authenticated clients and handles them

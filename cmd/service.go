@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -556,18 +557,18 @@ func serviceClientMain(opts *serviceClientOptions) error {
 				continue
 			}
 
-			if len(parts) < 2 {
-				fmt.Println("usage: start-server <config_json|@file> [instance_id] [name]")
+			if len(parts) < 3 {
+				fmt.Println("usage: start-server <config_json|@file> <provider_uuid> [instance_id] [name]")
 				continue
 			}
 
 			var instanceID, name string
-			if len(parts) >= 3 {
-				instanceID = parts[2]
+			if len(parts) >= 4 {
+				instanceID = parts[3]
 			}
 
-			if len(parts) >= 4 {
-				name = parts[3]
+			if len(parts) >= 5 {
+				name = parts[4]
 			}
 
 			configStr, err := loadConfig(parts[1])
@@ -576,7 +577,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 				continue
 			}
 
-			id, err := c.StartServer(configStr, instanceID, name)
+			id, err := c.StartServer(configStr, instanceID, name, parts[2])
 			if err != nil {
 				fmt.Println("Failed to start server:", err)
 				continue
@@ -637,114 +638,6 @@ func serviceClientMain(opts *serviceClientOptions) error {
 
 			fmt.Println("Stopped instance:", parts[1])
 			refreshIDs()
-		case "update-provider":
-			c := getClient()
-			if c == nil {
-				fmt.Println("Not currently connected to a server")
-				continue
-			}
-
-			if len(parts) < 3 {
-				fmt.Println("usage: update-provider <id> <config|@file>")
-				continue
-			}
-
-			configStr, err := loadConfig(parts[2])
-			if err != nil {
-				fmt.Println("Failed to load config:", err)
-				continue
-			}
-
-			if err := c.UpdateProvider(parts[1], configStr); err != nil {
-				fmt.Println("Failed to update provider:", err)
-				continue
-			}
-
-			fmt.Println("Updated provider for instance:", parts[1])
-		case "add-route":
-			c := getClient()
-			if c == nil {
-				fmt.Println("Not currently connected to a server")
-				continue
-			}
-
-			if len(parts) < 3 {
-				fmt.Println("usage: add-route <instance_id> <route_json|@file>")
-				continue
-			}
-
-			routeStr, err := loadConfig(parts[2])
-			if err != nil {
-				fmt.Println("Failed to load route config:", err)
-				continue
-			}
-
-			if err := c.AddRoute(parts[1], routeStr); err != nil {
-				fmt.Println("Failed to add route:", err)
-				continue
-			}
-
-			fmt.Println("Added/updated route on instance:", parts[1])
-		case "delete-route":
-			c := getClient()
-			if c == nil {
-				fmt.Println("Not currently connected to a server")
-				continue
-			}
-
-			if len(parts) < 3 {
-				fmt.Println("usage: delete-route <instance_id> <route_id>")
-				continue
-			}
-
-			if err := c.DeleteRoute(parts[1], parts[2]); err != nil {
-				fmt.Println("Failed to delete route:", err)
-				continue
-			}
-
-			fmt.Println("Deleted route", parts[2], "from instance:", parts[1])
-		case "add-user":
-			c := getClient()
-			if c == nil {
-				fmt.Println("Not currently connected to a server")
-				continue
-			}
-
-			if len(parts) < 3 {
-				fmt.Println("usage: add-user <instance_id> <user_json|@file>")
-				continue
-			}
-
-			userStr, err := loadConfig(parts[2])
-			if err != nil {
-				fmt.Println("Failed to load user config:", err)
-				continue
-			}
-
-			if err := c.AddUser(parts[1], userStr); err != nil {
-				fmt.Println("Failed to add user:", err)
-				continue
-			}
-
-			fmt.Println("Added/updated user on instance:", parts[1])
-		case "delete-user":
-			c := getClient()
-			if c == nil {
-				fmt.Println("Not currently connected to a server")
-				continue
-			}
-
-			if len(parts) < 3 {
-				fmt.Println("usage: delete-user <instance_id> <user_uuid>")
-				continue
-			}
-
-			if err := c.DeleteUser(parts[1], parts[2]); err != nil {
-				fmt.Println("Failed to delete user:", err)
-				continue
-			}
-
-			fmt.Println("Deleted user", parts[2], "from instance:", parts[1])
 		case "validate-server":
 			c := getClient()
 			if c == nil {
@@ -828,6 +721,275 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			fmt.Println(result)
+		case "list-providers":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			providers, err := c.ListProviders()
+			if err != nil {
+				fmt.Println("Failed to list providers:", err)
+				continue
+			}
+
+			if len(providers) == 0 {
+				fmt.Println("No providers found")
+			} else {
+				fmt.Println("Available providers:")
+				for _, p := range providers {
+					fmt.Printf("  UUID: %s, Name: %s, In Use: %v\n", p.Uuid, p.Name, p.InUse)
+				}
+			}
+		case "add-provider":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 4 {
+				fmt.Println("usage: add-provider <uuid> <name> <config|@file>")
+				continue
+			}
+
+			configStr, err := loadConfig(parts[3])
+			if err != nil {
+				fmt.Println("Failed to load config:", err)
+				continue
+			}
+
+			if err := c.AddProvider(parts[1], parts[2], configStr); err != nil {
+				fmt.Println("Failed to add provider:", err)
+				continue
+			}
+
+			fmt.Println("Added provider:", parts[1])
+		case "get-provider":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 2 {
+				fmt.Println("usage: get-provider <uuid>")
+				continue
+			}
+
+			provider, err := c.GetProvider(parts[1])
+			if err != nil {
+				fmt.Println("Failed to get provider:", err)
+				continue
+			}
+
+			fmt.Printf("UUID: %s\nName: %s\nIn Use: %v\nConfig: %s\n", provider.Uuid, provider.Name, provider.InUse, provider.Config)
+		case "delete-provider":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 2 {
+				fmt.Println("usage: delete-provider <uuid>")
+				continue
+			}
+
+			if err := c.DeleteProvider(parts[1]); err != nil {
+				fmt.Println("Failed to delete provider:", err)
+				continue
+			}
+
+			fmt.Println("Deleted provider:", parts[1])
+		case "validate-provider":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 2 {
+				fmt.Println("usage: validate-provider <config|@file>")
+				continue
+			}
+
+			configStr, err := loadConfig(parts[1])
+			if err != nil {
+				fmt.Println("Failed to load config:", err)
+				continue
+			}
+
+			valid, err := c.ValidateProviderConfig(configStr)
+			if err != nil {
+				fmt.Println("Invalid provider config:", err)
+				continue
+			}
+
+			if valid {
+				fmt.Println("Provider config is valid.")
+			} else {
+				fmt.Println("Provider config is invalid.")
+			}
+		case "add-route":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 4 {
+				fmt.Println("usage: add-route <provider_uuid> <route_id> <address:port>")
+				continue
+			}
+
+			addr := parts[3]
+			parts_addr := strings.Split(addr, ":")
+			if len(parts_addr) != 2 {
+				fmt.Println("Invalid address format. Use <address:port>")
+				continue
+			}
+			port, err := strconv.Atoi(parts_addr[1])
+			if err != nil {
+				fmt.Println("Invalid port number:", parts_addr[1])
+				continue
+			}
+
+			route := &pb.RouteInfo{
+				Id:         parts[2],
+				Address:    parts_addr[0],
+				Port:       int32(port),
+				Socket:     "udp",
+				Transport:  "none",
+				Encryption: "handshake",
+				Name:       parts[2],
+			}
+
+			err = c.AddProviderRoute(parts[1], route)
+			if err != nil {
+				fmt.Println("Failed to add provider route:", err)
+				continue
+			}
+
+			fmt.Println("Added route", parts[2], "to provider:", parts[1])
+		case "delete-route":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Println("usage: delete-route <provider_uuid> <route_id>")
+				continue
+			}
+
+			err := c.DeleteProviderRoute(parts[1], parts[2])
+			if err != nil {
+				fmt.Println("Failed to delete provider route:", err)
+				continue
+			}
+
+			fmt.Println("Deleted route", parts[2], "from provider:", parts[1])
+		case "list-routes":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 2 {
+				fmt.Println("usage: list-routes <provider_uuid>")
+				continue
+			}
+
+			routes, err := c.ListProviderRoutes(parts[1])
+			if err != nil {
+				fmt.Println("Failed to list provider routes:", err)
+				continue
+			}
+
+			if len(routes) == 0 {
+				fmt.Println("No routes in provider:", parts[1])
+				continue
+			}
+
+			fmt.Printf("Routes in provider %s:\n", parts[1])
+			for _, route := range routes {
+				fmt.Printf("  %s: %s:%d (%s/%s)\n", route.Id, route.Address, route.Port, route.Socket, route.Transport)
+			}
+		case "add-user":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Println("usage: add-user <provider_uuid> <user_uuid>")
+				continue
+			}
+
+			user := &pb.UserInfo{
+				Uuid:  parts[2],
+				Type:  "client",
+				Peers: 1,
+			}
+
+			err := c.AddProviderUser(parts[1], user)
+			if err != nil {
+				fmt.Println("Failed to add provider user:", err)
+				continue
+			}
+
+			fmt.Println("Added user", parts[2], "to provider:", parts[1])
+		case "delete-user":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Println("usage: delete-user <provider_uuid> <user_uuid>")
+				continue
+			}
+
+			err := c.DeleteProviderUser(parts[1], parts[2])
+			if err != nil {
+				fmt.Println("Failed to delete provider user:", err)
+				continue
+			}
+
+			fmt.Println("Deleted user", parts[2], "from provider:", parts[1])
+		case "list-users":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 2 {
+				fmt.Println("usage: list-users <provider_uuid>")
+				continue
+			}
+
+			users, err := c.ListProviderUsers(parts[1])
+			if err != nil {
+				fmt.Println("Failed to list provider users:", err)
+				continue
+			}
+
+			if len(users) == 0 {
+				fmt.Println("No users in provider:", parts[1])
+				continue
+			}
+
+			fmt.Printf("Users in provider %s:\n", parts[1])
+			for _, user := range users {
+				fmt.Printf("  %s (type: %s, peers: %d)\n", user.Uuid, user.Type, user.Peers)
+			}
 		case "logs":
 			if len(parts) < 2 {
 				fmt.Println("usage: logs <true/false>")
@@ -845,24 +1007,32 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 		case "help":
 			fmt.Println("Available commands:")
-			fmt.Println("  connect <tcp/unix> <addr> [priv_key] [pub_key]   connect to service")
-			fmt.Println("  disconnect                                       close current connection")
+			fmt.Println("  connect <tcp/unix> <addr> [priv_key] [pub_key]    connect to service")
+			fmt.Println("  disconnect                                        close current connection")
 			fmt.Println()
 			fmt.Println("Instance Management:")
-			fmt.Println("  list                                                    list all managed instances")
-			fmt.Println("  get <id>                                                get full details + config for an instance")
-			fmt.Println("  start-server <config|@file> [id] [name]                 start a server instance")
-			fmt.Println("  start-client <config|@file> <listen_addr> [id] [name]   start a client instance")
-			fmt.Println("  stop <id>                                               stop an instance")
+			fmt.Println("  list                                                       list all managed instances")
+			fmt.Println("  get <id>                                                   get full details + config for an instance")
+			fmt.Println("  start-server <config|@file> <provider_uuid> [id] [name]    start a server instance")
+			fmt.Println("  start-client <config|@file> <listen_addr> [id] [name]      start a client instance")
+			fmt.Println("  stop <id>                                                  stop an instance")
 			fmt.Println()
-			fmt.Println("Provider & Routing:")
-			fmt.Println("  update-provider <id> <config|@file>   update provider config")
-			fmt.Println("  add-route <id> <route_json|@file>     add or update a route")
-			fmt.Println("  delete-route <id> <route_id>          remove a route")
+			fmt.Println("Provider Management:")
+			fmt.Println("  list-providers                                list all managed providers")
+			fmt.Println("  add-provider <uuid> <name> <config|@file>     add a new provider")
+			fmt.Println("  get-provider <uuid>                           get provider details")
+			fmt.Println("  delete-provider <uuid>                        delete a provider")
+			fmt.Println("  validate-provider <config|@file>              validate a provider config")
 			fmt.Println()
-			fmt.Println("User Management:")
-			fmt.Println("  add-user <id> <user_json|@file>   add or update a user")
-			fmt.Println("  delete-user <id> <user_uuid>      remove a user")
+			fmt.Println("Provider Routes:")
+			fmt.Println("  add-route <provider_uuid> <route_id> <address:port>    add a route to a provider")
+			fmt.Println("  delete-route <provider_uuid> <route_id>                remove a route from a provider")
+			fmt.Println("  list-routes <provider_uuid>                            list routes in a provider")
+			fmt.Println()
+			fmt.Println("Provider Users:")
+			fmt.Println("  add-user <provider_uuid> <user_uuid>       add a user to a provider")
+			fmt.Println("  delete-user <provider_uuid> <user_uuid>    remove a user from a provider")
+			fmt.Println("  list-users <provider_uuid>                 list users in a provider")
 			fmt.Println()
 			fmt.Println("Validation & Conversion:")
 			fmt.Println("  validate-server <config|@file>   validate a server config")

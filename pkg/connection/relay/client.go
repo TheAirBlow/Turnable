@@ -11,9 +11,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/theairblow/turnable/pkg/common"
-	"github.com/theairblow/turnable/pkg/internal/connection"
-	"github.com/theairblow/turnable/pkg/internal/platform"
-	"github.com/theairblow/turnable/pkg/internal/protocol"
+	"github.com/theairblow/turnable/pkg/connection"
+	"github.com/theairblow/turnable/pkg/platform"
+	"github.com/theairblow/turnable/pkg/protocol"
 )
 
 // connectClientSession establishes the platform, underlay, and tinymux session for the client.

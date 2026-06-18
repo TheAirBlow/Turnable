@@ -6,12 +6,10 @@ import (
 	"sync"
 )
 
-// pipeCopyChunkSize is the buffer size used when copying between two streams.
-// Kept at 32 KB so a single write produces fewer KCP segments (~22) and does not
-// saturate the per-flow send queue in one shot.
+// pipeCopyChunkSize is the buffer size used when copying between two streams
 const pipeCopyChunkSize = 32 * 1024
 
-// pipeStreams copies data bidirectionally, blocking until both directions finish.
+// pipeStreams copies data bidirectionally blocking until both directions finish
 func pipeStreams(a, b io.ReadWriteCloser) {
 	var hardCloseOnce sync.Once
 	hardClose := func() {
