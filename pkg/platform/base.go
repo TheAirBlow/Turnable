@@ -4,15 +4,14 @@ import (
 	"context"
 
 	"github.com/theairblow/turnable/pkg/common"
+	"github.com/theairblow/turnable/pkg/protocol"
 )
-
-// TODO: GetConfig is not respected in any way yet...
 
 // Handler represents a platform handler
 type Handler interface {
 	ID() string                                                        // Returns the unique ID of this handler
 	GetConfig() Config                                                 // Returns the platform configuration
-	GetTURNInfo() TURNInfo                                             // Returns the latest TURN server credentials
+	GetTURNInfo() []protocol.TURNInfo                                  // Returns the latest TURN server credentials
 	Authorize(callID string, username string) error                    // Authorizes with the platform's servers
 	Connect() error                                                    // Connects to the signaling server
 	Disconnect() error                                                 // Gracefully disconnects from the signaling server
@@ -26,18 +25,13 @@ type Handler interface {
 
 // Config represents platform configuration
 type Config struct {
-	CanReuseTURN   bool    // Whether the client can reuse the same TURN credentials to make multiple connections
-	CanMultiplex   bool    // Whether the client/server can request multiple anonymous identities from the same IP
-	BandwidthRelay float64 // Outbound rate limit per peer connection in bytes/sec for relay mode (0 = unlimited)
-	BandwidthP2P   float64 // Outbound rate limit per peer connection in bytes/sec for P2P mode (0 = unlimited)
-}
-
-// TURNInfo describes the TURN server credentials currently advertised by signaling.
-type TURNInfo struct {
-	Address   string
-	Addresses []string
-	Username  string
-	Password  string
+	HasInsecureAuth     bool    // Whether the platform allows requesting multiple anonymous identities and TURN credential pairs from the same IP (TODO: unused)
+	HasTURNPerIPLimits  bool    // Whether the platform's TURN server's limits are per IP address or per TURN credential pair (TODO: unused)
+	HasInsecureTURN     bool    // Whether the platform's TURN server is insecure and allows to make arbitrary connections to any IP
+	HasSharedTURNLimits bool    // Whether the platform's TURN servers all share the same per IP allocation limit
+	MaxTURNConnections  int     // Maximum amount of connections that can be opened from the same IP address to a TURN server (0 = unlimited)
+	BandwidthRelay      float64 // Outbound rate limit per peer connection in bytes/sec for relay mode (0 = unlimited)
+	BandwidthP2P        float64 // Outbound rate limit per peer connection in bytes/sec for P2P mode (0 = unlimited)
 }
 
 // PeerInfo represents a currently known participant/peer snapshot.
@@ -93,8 +87,8 @@ type EventType int
 const (
 	EventRemoteMediaUpdated  EventType = iota // Remote media description was updated
 	EventParticipantsChanged                  // Someone joined or left
-	EventTurnAuthUpdated                      // New TURN credentials available
 	EventCallEnded                            // The session is closed
+	// TODO: migrate to EventTurnAuthUpdated later
 )
 
 // Event represents a signaling event with arbitrary data

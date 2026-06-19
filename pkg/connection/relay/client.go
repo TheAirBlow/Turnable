@@ -49,6 +49,11 @@ func (D *Handler) connectClientSession() error {
 		return err
 	}
 
+	platCfg := platformHandler.GetConfig()
+	if !platCfg.HasInsecureTURN {
+		return fmt.Errorf("platform does not have an insecure TURN server")
+	}
+
 	if err := platformHandler.Authorize(cfg.CallID, common.GenerateUsername()); err != nil {
 		return err
 	}
@@ -61,14 +66,19 @@ func (D *Handler) connectClientSession() error {
 	sessionCtx, sessionCancel := context.WithCancel(D.reconnectCtx)
 	events := platformHandler.WatchEvents(sessionCtx)
 
-	if err := platformHandler.Connect(); err != nil {
-		sessionCancel()
+	defer func() {
+		if D.cancel == nil {
+			sessionCancel()
+		}
+	}()
+
+	// TODO: platform signaling connection not yet necessary, handle this later
+	/*if err := platformHandler.Connect(); err != nil {
 		_ = platformHandler.Close()
 		return err
-	}
+	}*/
 
 	if !protocol.HandlerExists(cfg.Proto) {
-		sessionCancel()
 		_ = platformHandler.Disconnect()
 		return fmt.Errorf("protocol handler %s not found", cfg.Proto)
 	}
@@ -76,16 +86,8 @@ func (D *Handler) connectClientSession() error {
 	turnInfo := platformHandler.GetTURNInfo()
 	dest, err := common.ResolveUDPAddr(cfg.Gateway)
 	if err != nil {
-		sessionCancel()
 		_ = platformHandler.Disconnect()
 		return fmt.Errorf("invalid relay gateway %q: %w", cfg.Gateway, err)
-	}
-
-	relayInfo := protocol.RelayInfo{
-		Address:   turnInfo.Address,
-		Addresses: append([]string(nil), turnInfo.Addresses...),
-		Username:  turnInfo.Username,
-		Password:  turnInfo.Password,
 	}
 
 	go relayWatchPlatform(sessionCtx, events, D.log)
@@ -94,6 +96,8 @@ func (D *Handler) connectClientSession() error {
 	if numPeers < 1 {
 		numPeers = 1
 	}
+
+	// TODO: enforce numPeers <= platCfg.MaxTURNConnections
 
 	fullReconnect := func(reason string) {
 		if !D.reconnecting.CompareAndSwap(false, true) {
@@ -134,43 +138,38 @@ func (D *Handler) connectClientSession() error {
 		}()
 	}
 
+	turnServerIdx := 0
+	turnConnCount := 0
+	var turnMu sync.Mutex
+
+	getTURNInfo := func() protocol.TURNInfo {
+		turnMu.Lock()
+		defer turnMu.Unlock()
+
+		if turnConnCount >= platCfg.MaxTURNConnections && platCfg.MaxTURNConnections > 0 && len(turnInfo) > 1 && platCfg.HasSharedTURNLimits {
+			turnServerIdx++
+			if turnServerIdx >= len(turnInfo) {
+				turnServerIdx = 0
+			}
+			turnConnCount = 0
+		}
+		turnConnCount++
+		return turnInfo[turnServerIdx]
+	}
+
 	type connPair struct {
 		raw, enc net.Conn
 		idx      int
 	}
 
-	connCh := make(chan connPair, numPeers)
-	peerRetryMu := sync.Mutex{}
-	peerRetryDelay := make(map[int]time.Duration)
-
-	getDelay := func(prev time.Duration, err error) time.Duration {
-		if errors.Is(err, protocol.ErrQuotaReached) {
-			if prev < connection.PeerQuotaBackoff {
-				return connection.PeerQuotaBackoff
-			}
-			return min(prev*2, peerHandshakeRetryMax)
-		}
-
-		if prev <= 0 {
-			return connection.PeerReconnectInit
-		}
-		return min(prev*2, peerHandshakeRetryMax)
-	}
-
-	resetPeerRetryDelay := func(idx int) {
-		peerRetryMu.Lock()
-		delete(peerRetryDelay, idx)
-		peerRetryMu.Unlock()
-	}
-
-	connectAndEncrypt := func(idx int, ctx context.Context) (raw, enc net.Conn, err error) {
+	connectAndEncrypt := func(ctx context.Context, idx int) (raw, enc net.Conn, err error) {
 		h, _ := protocol.GetHandler(cfg.Proto)
 		h.SetLogger(D.log.With("peer_idx", idx))
 
 		connCtx, connCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer connCancel()
 
-		raw, err = h.Connect(connCtx, dest, relayInfo, true)
+		raw, err = h.Connect(connCtx, dest, getTURNInfo(), true)
 		if err != nil {
 			return
 		}
@@ -189,64 +188,6 @@ func (D *Handler) connectClientSession() error {
 		return
 	}
 
-	spawnPeer := func(idx int, initialDelay time.Duration) {
-		go func() {
-			delay := connection.PeerReconnectInit
-			if initialDelay > 0 {
-				select {
-				case <-sessionCtx.Done():
-					return
-				case <-time.After(initialDelay):
-				}
-			}
-
-			for {
-				raw, enc, err := connectAndEncrypt(idx, sessionCtx)
-				if err != nil {
-					if sessionCtx.Err() != nil {
-						return
-					}
-					if errors.Is(err, protocol.ErrQuotaReached) {
-						D.log.Warn("peer quota reached, backing off", "peer_idx", idx, "delay", connection.PeerQuotaBackoff)
-						delay = connection.PeerQuotaBackoff
-					}
-
-					D.log.Warn("peer connect failed", "peer_idx", idx, "error", err, "delay", delay)
-					select {
-					case <-sessionCtx.Done():
-						return
-					case <-time.After(delay):
-					}
-
-					delay = min(delay*2, connection.PeerReconnectMax)
-					continue
-				}
-
-				select {
-				case connCh <- connPair{raw, enc, idx}:
-					return
-				case <-sessionCtx.Done():
-					_ = raw.Close()
-					return
-				}
-			}
-		}()
-	}
-
-	schedulePeerRetry := func(idx int, err error) {
-		peerRetryMu.Lock()
-		next := getDelay(peerRetryDelay[idx], err)
-		peerRetryDelay[idx] = next
-		peerRetryMu.Unlock()
-
-		D.log.Warn("scheduling peer retry", "peer_idx", idx, "delay", next, "error", err)
-		spawnPeer(idx, next)
-	}
-
-	for i := 0; i < numPeers; i++ {
-		spawnPeer(i, 0)
-	}
-
 	pickConn := func(p connPair) net.Conn {
 		if cfg.Encryption == "full" {
 			return p.enc
@@ -254,93 +195,135 @@ func (D *Handler) connectClientSession() error {
 		return p.raw
 	}
 
+	var primaryMu sync.Mutex
+	var rejected bool
+	var primaryReady bool
 	var assignedUUID [16]byte
-	makePeerReconnectFn := func(idx int) func(context.Context) (net.Conn, error) {
-		return func(ctx context.Context) (net.Conn, error) {
-			raw, enc, err := connectAndEncrypt(idx, ctx)
-			if err != nil {
-				return nil, err
-			}
+	var uuidReady = make(chan struct{})
 
-			_ = raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
-			err = doClientSecondaryHandshake(enc, assignedUUID, cfg.UserUUID)
-			_ = raw.SetDeadline(time.Time{})
-
-			if err != nil {
-				_ = raw.Close()
-				var ackErr *ErrAckRejected
-				if errors.As(err, &ackErr) {
-					fullReconnect(err.Error())
-					return nil, connection.ErrPeerDone
-				}
-				return nil, err
+	dialFn := func(dialCtx context.Context, idx int) (net.Conn, error) {
+		raw, enc, err := connectAndEncrypt(dialCtx, idx)
+		if err != nil {
+			if errors.Is(err, protocol.ErrQuotaReached) || errors.Is(err, protocol.ErrUnauthorized) {
+				fullReconnect(err.Error())
 			}
-			return pickConn(connPair{raw, enc, idx}), nil
+			return nil, err
 		}
+
+	primaryLoop:
+		for {
+			primaryMu.Lock()
+			isPrimary := !primaryReady
+			if isPrimary {
+				primaryReady = true
+			}
+			currentReady := uuidReady
+			primaryMu.Unlock()
+
+			if rejected {
+				return nil, connection.ErrPeerDone
+			}
+
+			if isPrimary {
+				_ = raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
+				cfgJson, err := cfg.ToJSON(false, true)
+				if err != nil {
+					_ = raw.Close()
+					primaryMu.Lock()
+					primaryReady = false
+					close(currentReady)
+					uuidReady = make(chan struct{})
+					primaryMu.Unlock()
+					return nil, err
+				}
+
+				uuidBytes, hErr := doClientPrimaryHandshake(enc, cfgJson)
+				_ = raw.SetDeadline(time.Time{})
+
+				if hErr != nil {
+					_ = raw.Close()
+					var ackErr *ErrAckRejected
+					if errors.As(hErr, &ackErr) {
+						fullReconnect(hErr.Error())
+						primaryMu.Lock()
+						primaryReady = false
+						rejected = true
+						close(currentReady)
+						uuidReady = make(chan struct{})
+						primaryMu.Unlock()
+						return nil, connection.ErrPeerDone
+					}
+
+					primaryMu.Lock()
+					primaryReady = false
+					close(currentReady)
+					uuidReady = make(chan struct{})
+					primaryMu.Unlock()
+					return nil, hErr
+				}
+
+				primaryMu.Lock()
+				assignedUUID = uuidBytes
+				close(currentReady)
+				primaryMu.Unlock()
+				return pickConn(connPair{raw, enc, idx}), nil
+			}
+
+			select {
+			case <-currentReady:
+				primaryMu.Lock()
+				ready := primaryReady
+				primaryMu.Unlock()
+				if ready {
+					break primaryLoop
+				}
+			case <-dialCtx.Done():
+				_ = raw.Close()
+				return nil, dialCtx.Err()
+			}
+
+			if rejected {
+				return nil, connection.ErrPeerDone
+			}
+		}
+
+		primaryMu.Lock()
+		localUUID := assignedUUID
+		primaryMu.Unlock()
+
+		_ = raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
+		sErr := doClientSecondaryHandshake(enc, localUUID, cfg.UserUUID)
+		_ = raw.SetDeadline(time.Time{})
+
+		if sErr != nil {
+			_ = raw.Close()
+			var ackErr *ErrAckRejected
+			if errors.As(sErr, &ackErr) {
+				fullReconnect(sErr.Error())
+				return nil, connection.ErrPeerDone
+			}
+			return nil, sErr
+		}
+
+		return pickConn(connPair{raw, enc, idx}), nil
 	}
 
-	var peerConn *connection.PeerConn
-	var muxClient *connection.TinyMuxClient
-primaryLoop:
-	for {
-		select {
-		case <-sessionCtx.Done():
-			sessionCancel()
-			_ = platformHandler.Disconnect()
-			return sessionCtx.Err()
-		case p := <-connCh:
+	peerConn := connection.NewPeerConn(sessionCtx)
+	peerConn.SetOnAllPeersGone(func() { fullReconnect("all peers disconnected") })
 
-			_ = p.raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
-			cfgJson, err := cfg.ToJSON(false, true)
-			if err != nil {
-				_ = p.raw.Close()
-				D.log.Warn("primary handshake failed", "peer_idx", p.idx, "error", err)
-				schedulePeerRetry(p.idx, err)
-				continue
-			}
+	for idx := 0; idx < numPeers; idx++ {
+		_ = peerConn.AddPeer(dialFn)
+	}
 
-			uuidBytes, hErr := doClientPrimaryHandshake(p.enc, cfgJson)
-			_ = p.raw.SetDeadline(time.Time{})
-			if hErr != nil {
-				_ = p.raw.Close()
-				var ackErr *ErrAckRejected
-				if errors.As(hErr, &ackErr) {
-					sessionCancel()
-					_ = platformHandler.Disconnect()
-					return hErr
-				}
-				D.log.Warn("primary handshake failed", "peer_idx", p.idx, "error", hErr)
-				schedulePeerRetry(p.idx, hErr)
-				continue
-			}
+	muxClient, err := connection.NewTinyMuxClient(sessionCtx, peerConn)
+	if err != nil {
+		_ = peerConn.Close()
+		return fmt.Errorf("tinymux setup: %w", err)
+	}
 
-			assignedUUID = uuidBytes
-			peerConn = connection.NewPeerConn(sessionCtx)
-			peerConn.SetOnAllPeersGone(func() { fullReconnect("all peers disconnected") })
-
-			if addErr := peerConn.AddPeer(pickConn(p), makePeerReconnectFn(p.idx)); addErr != nil {
-				_ = p.raw.Close()
-				_ = peerConn.Close()
-				schedulePeerRetry(p.idx, addErr)
-				continue
-			}
-			resetPeerRetryDelay(p.idx)
-
-			var mErr error
-			muxClient, mErr = connection.NewTinyMuxClient(sessionCtx, peerConn)
-			if mErr != nil {
-				_ = peerConn.Close()
-				schedulePeerRetry(p.idx, mErr)
-				continue
-			}
-
-			platCfg := platformHandler.GetConfig()
-			if platCfg.BandwidthRelay > 0 {
-				muxClient.SetRateLimit(platCfg.BandwidthRelay * float64(numPeers))
-			}
-
-			break primaryLoop
-		}
+	platCfg = platformHandler.GetConfig()
+	if platCfg.BandwidthRelay > 0 {
+		muxClient.SetRateLimit(platCfg.BandwidthRelay * float64(numPeers))
 	}
 
 	go func() {
@@ -362,51 +345,6 @@ primaryLoop:
 	D.sessionUUID = sessionUUIDStr
 
 	D.log.Info("relay client session connected", "session_uuid", sessionUUIDStr, "peers", numPeers)
-
-	go func() {
-		defer func() {
-			for {
-				select {
-				case p := <-connCh:
-					_ = p.raw.Close()
-				default:
-					return
-				}
-			}
-		}()
-		for i := 0; i < numPeers-1; i++ {
-			select {
-			case <-sessionCtx.Done():
-				return
-			case p := <-connCh:
-				go func(p connPair) {
-					_ = p.raw.SetDeadline(time.Now().Add(relayHandshakeTimeout))
-					sErr := doClientSecondaryHandshake(p.enc, assignedUUID, cfg.UserUUID)
-					_ = p.raw.SetDeadline(time.Time{})
-
-					if sErr != nil {
-						_ = p.raw.Close()
-						var ackErr *ErrAckRejected
-						if errors.As(sErr, &ackErr) {
-							fullReconnect(sErr.Error())
-							return
-						}
-						D.log.Warn("secondary handshake failed", "peer_idx", p.idx, "error", sErr)
-						schedulePeerRetry(p.idx, sErr)
-						return
-					}
-
-					if addErr := peerConn.AddPeer(pickConn(p), makePeerReconnectFn(p.idx)); addErr != nil {
-						D.log.Warn("peer add failed", "peer_idx", p.idx, "error", addErr)
-						_ = p.raw.Close()
-						schedulePeerRetry(p.idx, addErr)
-						return
-					}
-					resetPeerRetryDelay(p.idx)
-				}(p)
-			}
-		}
-	}()
 
 	return nil
 }

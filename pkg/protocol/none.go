@@ -41,7 +41,7 @@ func (N *NoneHandler) AcceptClients(_ context.Context) (<-chan ServerClient, err
 }
 
 // Connect connects to a remote server directly or via TURN
-func (N *NoneHandler) Connect(ctx context.Context, dest net.Addr, relay RelayInfo, forceTURN bool) (net.Conn, error) {
+func (N *NoneHandler) Connect(ctx context.Context, dest net.Addr, relay TURNInfo, forceTURN bool) (net.Conn, error) {
 	if N.log == nil {
 		N.log = slog.Default()
 	}
@@ -51,7 +51,7 @@ func (N *NoneHandler) Connect(ctx context.Context, dest net.Addr, relay RelayInf
 
 	if forceTURN {
 		N.log.Debug("none connect using forced turn relay")
-		underlay, remoteAddr, err := connectViaTURN(relay, dest, "none", N.log)
+		underlay, remoteAddr, err := openTURNUnderlay(relay, dest, "none", N.log)
 		if err != nil {
 			return nil, err
 		}

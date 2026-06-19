@@ -9,8 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/theairblow/turnable/pkg/protocol"
 )
 
 // ErrPeerDone is returned by a reconnectFn to signal that this peer slot should be removed
@@ -20,7 +18,6 @@ const (
 	peerMaxPacket       = muxMaxPacket + 2 // maximum packet size read from a peer connection; must hold a full mux frame
 	PeerReconnectInit   = 5 * time.Second  // initial back-off delay before the first peer reconnect attempt
 	PeerReconnectMax    = 30 * time.Second // maximum back-off delay between peer reconnect attempts
-	PeerQuotaBackoff    = 30 * time.Second // delay when TURN allocation quota is exhausted
 	peerIncomingBufSize = 1024             // channel buffer size for packets arriving from all peers
 	peerWriteSendBuf    = 256              // per-peer outbound write queue depth
 )
@@ -76,23 +73,23 @@ func (m *PeerConn) SetLogger(l *slog.Logger) {
 }
 
 // AddPeer adds a peer connection and starts its read and write loops
-func (m *PeerConn) AddPeer(conn net.Conn, reconnectFn func(context.Context) (net.Conn, error)) error {
+func (m *PeerConn) AddPeer(dialFn func(context.Context, int) (net.Conn, error)) error {
 	if m.closed.Load() {
 		return errors.New("peer: conn is closed")
 	}
 	m.allGone.Store(false)
+
 	entry := &peerEntry{
-		conn:   conn,
 		sendCh: make(chan []byte, peerWriteSendBuf),
 	}
-	entry.connected.Store(true)
+
 	m.mu.Lock()
 	idx := len(m.peers)
 	m.peers = append(m.peers, entry)
 	m.mu.Unlock()
-	m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
+
 	go m.peerWriteLoop(entry)
-	go m.peerReadLoop(idx, entry, reconnectFn)
+	go m.peerReadLoop(idx, entry, dialFn)
 	return nil
 }
 
@@ -120,10 +117,52 @@ func (m *PeerConn) peerWriteLoop(entry *peerEntry) {
 }
 
 // peerReadLoop reads packets from one peer and feeds them into the incoming channel
-func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(context.Context) (net.Conn, error)) {
+func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, dialFn func(context.Context, int) (net.Conn, error)) {
 	buf := make([]byte, peerMaxPacket)
-	delay := PeerReconnectInit
+	delay := time.Duration(0)
 
+	// Lifecycle loop: handles both initial connection and reconnections
+	for {
+		// Wait before attempting dial (0 on first attempt for immediate try)
+		if delay > 0 {
+			select {
+			case <-m.ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+		} else if m.ctx.Err() != nil {
+			return
+		}
+
+		// Attempt to establish connection
+		newConn, err := dialFn(m.ctx, idx)
+		if err == nil {
+			// Connection successful
+			entry.mu.Lock()
+			entry.conn = newConn
+			entry.mu.Unlock()
+			entry.connected.Store(true)
+			delay = PeerReconnectInit
+			m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
+			break // Exit dial loop, enter read loop
+		}
+
+		if errors.Is(err, ErrPeerDone) {
+			m.log.Info("peer done, removing slot", "peer_idx", idx)
+			m.removePeer(idx)
+			return
+		}
+
+		// Dial failed - update delay for next attempt
+		if delay == 0 {
+			delay = PeerReconnectInit
+		} else {
+			delay = min(delay*2, PeerReconnectMax)
+		}
+		m.log.Warn("peer dial failed", "peer_idx", idx, "delay", delay, "error", err)
+	}
+
+	// Read loop: reads from connected peer, goes back to lifecycle loop on error
 	for {
 		entry.mu.Lock()
 		conn := entry.conn
@@ -138,7 +177,6 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 			case <-m.ctx.Done():
 				return
 			}
-			delay = PeerReconnectInit
 			continue
 		}
 
@@ -152,6 +190,7 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 			continue
 		}
 
+		// Read error - disconnect and return to lifecycle loop
 		entry.connected.Store(false)
 		_ = conn.Close()
 		m.log.Info("peer offline", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "error", err)
@@ -160,45 +199,13 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, reconnectFn func(cont
 			return
 		}
 
-		if reconnectFn == nil {
+		if dialFn == nil {
 			m.removePeer(idx)
 			return
 		}
 
-		for {
-			select {
-			case <-m.ctx.Done():
-				return
-			case <-time.After(delay):
-			}
-			delay *= 2
-			if delay > PeerReconnectMax {
-				delay = PeerReconnectMax
-			}
-
-			newConn, err := reconnectFn(m.ctx)
-			if err != nil {
-				if errors.Is(err, ErrPeerDone) {
-					m.log.Info("peer done, removing slot", "peer_idx", idx)
-					m.removePeer(idx)
-					return
-				}
-				if errors.Is(err, protocol.ErrQuotaReached) {
-					m.log.Warn("peer quota reached, backing off", "peer_idx", idx, "delay", PeerQuotaBackoff)
-					delay = PeerQuotaBackoff
-				}
-				m.log.Warn("peer reconnect failed", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "delay", delay, "error", err)
-				continue
-			}
-
-			entry.mu.Lock()
-			entry.conn = newConn
-			entry.mu.Unlock()
-			entry.connected.Store(true)
-			delay = PeerReconnectInit
-			m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
-			break
-		}
+		// Return to lifecycle loop to reconnect with backoff
+		delay = PeerReconnectInit
 	}
 }
 

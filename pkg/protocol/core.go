@@ -39,7 +39,7 @@ func openDirectUnderlay(dest net.Addr, proto string, log *slog.Logger) (net.Pack
 }
 
 // openTURNUnderlay allocates a TURN relay socket
-func openTURNUnderlay(relay RelayInfo, dest net.Addr, proto string, log *slog.Logger) (net.PacketConn, net.Addr, error) {
+func openTURNUnderlay(relay TURNInfo, dest net.Addr, proto string, log *slog.Logger) (net.PacketConn, net.Addr, error) {
 	if relay.Address == "" {
 		return nil, nil, fmt.Errorf("%s turn requires turn address", proto)
 	}
@@ -85,13 +85,13 @@ func openTURNUnderlay(relay RelayInfo, dest net.Addr, proto string, log *slog.Lo
 	})
 	if err != nil {
 		_ = underlay.Close()
-		return nil, nil, fmt.Errorf("failed to create turn client: %w", err)
+		return nil, nil, handleTURNError(fmt.Errorf("failed to create turn client: %w", err))
 	}
 
 	if err := client.Listen(); err != nil {
 		client.Close()
 		_ = underlay.Close()
-		return nil, nil, fmt.Errorf("failed to start turn client listener: %w", err)
+		return nil, nil, handleTURNError(fmt.Errorf("failed to start turn client listener: %w", err))
 	}
 
 	log.Debug("turn client listener started", "proto", proto, "turn_server", relay.Address)
@@ -99,7 +99,7 @@ func openTURNUnderlay(relay RelayInfo, dest net.Addr, proto string, log *slog.Lo
 	if err != nil {
 		client.Close()
 		_ = underlay.Close()
-		return nil, nil, fmt.Errorf("failed to allocate turn relay: %w", err)
+		return nil, nil, handleTURNError(fmt.Errorf("failed to allocate turn relay: %w", err))
 	}
 
 	log.Debug("turn allocation created", "proto", proto, "turn_server", relay.Address)
@@ -107,7 +107,7 @@ func openTURNUnderlay(relay RelayInfo, dest net.Addr, proto string, log *slog.Lo
 		_ = allocation.Close()
 		client.Close()
 		_ = underlay.Close()
-		return nil, nil, fmt.Errorf("failed to create turn permission for %s: %w", dest.String(), err)
+		return nil, nil, handleTURNError(fmt.Errorf("failed to create turn permission for %s: %w", dest.String(), err))
 	}
 
 	log.Debug("turn permission created", "proto", proto, "peer", dest.String(), "turn_server", relay.Address)
@@ -116,39 +116,15 @@ func openTURNUnderlay(relay RelayInfo, dest net.Addr, proto string, log *slog.Lo
 	return conn, dest, nil
 }
 
-// connectViaTURN tries each TURN server in relay.Addresses and returns the first successful underlay
-func connectViaTURN(relay RelayInfo, dest net.Addr, proto string, log *slog.Logger) (net.PacketConn, net.Addr, error) {
-	servers := relay.Addresses
-	if len(servers) == 0 {
-		return nil, nil, fmt.Errorf("%s turn fallback requires turn address", proto)
+// handleTURNError handles TURN errors and replaces them if necessary
+func handleTURNError(err error) error {
+	if strings.Contains(err.Error(), "Allocation Quota Reached") {
+		return fmt.Errorf("%w", ErrQuotaReached)
 	}
-	log.Debug("trying turn servers", "proto", proto, "count", len(servers), "servers", strings.Join(servers, ","))
-
-	var lastErr error
-	for i, address := range servers {
-		candidate := relay
-		candidate.Address = address
-		log.Debug("trying turn candidate", "proto", proto, "index", i+1, "count", len(servers), "server", address, "dest", dest.String())
-
-		underlay, remoteAddr, err := openTURNUnderlay(candidate, dest, proto, log)
-		if err != nil {
-			lastErr = err
-			log.Warn("turn candidate failed", "proto", proto, "index", i+1, "count", len(servers), "server", address, "error", err)
-			continue
-		}
-
-		log.Debug("turn candidate selected", "proto", proto, "index", i+1, "count", len(servers), "server", address)
-		return underlay, remoteAddr, nil
+	if strings.Contains(err.Error(), "Unauthorized") {
+		return fmt.Errorf("%w", ErrUnauthorized)
 	}
-
-	if lastErr == nil {
-		lastErr = fmt.Errorf("failed to establish %s over turn", proto)
-	}
-	if strings.Contains(lastErr.Error(), "Allocation Quota Reached") {
-		return nil, nil, fmt.Errorf("%w: %w", ErrQuotaReached, lastErr)
-	}
-
-	return nil, nil, lastErr
+	return err
 }
 
 // turnPacketConn wraps a TURN allocation and closes the TURN client and raw underlay on Close
@@ -234,7 +210,7 @@ func (l *turnScopedLogger) Infof(f string, a ...interface{}) {
 // Warnf logs a formatted message at warn level
 func (l *turnScopedLogger) Warnf(f string, a ...interface{}) {
 	l.emit(slog.LevelWarn, fmt.Sprintf(f, a...))
-	if l.onFail != nil && strings.HasPrefix(f, "Failed to refresh") {
+	if l.onFail != nil && (strings.HasPrefix(f, "Failed to refresh") || strings.Contains(f, "Unauthorized")) {
 		l.onFail()
 	}
 }
@@ -242,7 +218,7 @@ func (l *turnScopedLogger) Warnf(f string, a ...interface{}) {
 // Errorf logs a formatted message at error level
 func (l *turnScopedLogger) Errorf(f string, a ...interface{}) {
 	l.emit(slog.LevelError, fmt.Sprintf(f, a...))
-	if l.onFail != nil && strings.HasPrefix(f, "Fail to refresh") {
+	if l.onFail != nil && (strings.HasPrefix(f, "Fail to refresh") || strings.Contains(f, "Unauthorized")) {
 		l.onFail()
 	}
 }

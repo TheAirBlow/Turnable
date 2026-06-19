@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/theairblow/turnable/pkg/platform"
+	"github.com/theairblow/turnable/pkg/protocol"
 	http "github.com/useflyent/fhttp"
 
 	"github.com/gorilla/websocket"
@@ -48,11 +49,7 @@ type Handler struct {
 	anonymToken         string
 	sessionKey          string
 	endpoint            string
-
-	turnUser  string
-	turnPass  string
-	turnAddr  string
-	turnAddrs []string
+	turnInfos           []protocol.TURNInfo
 
 	conn         *websocket.Conn
 	seq          int
@@ -83,24 +80,22 @@ func (V *Handler) ID() string {
 // GetConfig returns the platform configuration
 func (V *Handler) GetConfig() platform.Config {
 	return platform.Config{
-		CanReuseTURN:   true,
-		CanMultiplex:   true,
-		BandwidthRelay: 250 * 1024,
-		BandwidthP2P:   0,
+		HasInsecureAuth:     true,
+		HasTURNPerIPLimits:  true, // TODO: im not sure about this
+		HasInsecureTURN:     true,
+		HasSharedTURNLimits: false,
+		MaxTURNConnections:  10,
+		BandwidthRelay:      250 * 1024,
+		BandwidthP2P:        0,
 	}
 }
 
 // GetTURNInfo returns the latest TURN server credentials learned from VK signaling
-func (V *Handler) GetTURNInfo() platform.TURNInfo {
+func (V *Handler) GetTURNInfo() []protocol.TURNInfo {
 	V.ensureInit()
 	V.mu.RLock()
 	defer V.mu.RUnlock()
-	return platform.TURNInfo{
-		Address:   V.turnAddr,
-		Addresses: append([]string(nil), V.turnAddrs...),
-		Username:  V.turnUser,
-		Password:  V.turnPass,
-	}
+	return V.turnInfos
 }
 
 // GetPeers returns all currently known peers connected to the call
@@ -199,20 +194,7 @@ func (V *Handler) WatchEvents(ctx context.Context) <-chan platform.Event {
 	id := V.nextSubscriber
 	V.nextSubscriber++
 	V.subscribers[id] = sub
-	turnPayload := map[string]string{
-		"username": V.turnUser,
-		"password": V.turnPass,
-		"address":  V.turnAddr,
-	}
 	V.mu.Unlock()
-
-	V.connMu.Lock()
-	connected := V.conn != nil
-	V.connMu.Unlock()
-
-	if connected {
-		out <- platform.Event{Type: platform.EventTurnAuthUpdated, Payload: turnPayload}
-	}
 
 	go func() {
 		defer close(out)

@@ -46,9 +46,6 @@ func (V *Handler) Connect() error {
 	endpoint := V.endpoint
 	profile := V.profile
 	videoTrackSlots := V.videoTrackSlots
-	turnUser := V.turnUser
-	turnPass := V.turnPass
-	turnAddr := V.turnAddr
 	V.mu.RUnlock()
 
 	if common.IsNullOrWhiteSpace(endpoint) {
@@ -161,11 +158,6 @@ func (V *Handler) Connect() error {
 	}
 
 	go V.runSignalingLoop(readerCtx, conn)
-	V.broadcast(platform.Event{Type: platform.EventTurnAuthUpdated, Payload: map[string]string{
-		"username": turnUser,
-		"password": turnPass,
-		"address":  turnAddr,
-	}})
 	slog.Info("vk signaling connected", "endpoint_host", endpointHost)
 	return nil
 }
@@ -259,7 +251,7 @@ func (V *Handler) handleIncomingMessage(msg *vkMessage) []platform.Event {
 
 	switch msg.Notification {
 	case "connection":
-		if msg.Endpoint != "" {
+		/*if msg.Endpoint != "" {
 			V.endpoint = msg.Endpoint
 		}
 		if turnRaw, ok := msg.ConversationParams["turn"]; ok {
@@ -278,7 +270,7 @@ func (V *Handler) handleIncomingMessage(msg *vkMessage) []platform.Event {
 					}
 				}
 			}
-		}
+		}*/
 		return V.handleConnectionSnapshot(msg.Conversation)
 	case "producer-updated":
 		remoteMedia, err := parseRemoteMediaDescription(msg.Description)

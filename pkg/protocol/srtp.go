@@ -191,7 +191,7 @@ func (S *SRTPHandler) acceptSession(ctx context.Context, sess *srtpDemuxSession,
 }
 
 // Connect connects to a remote server directly or via TURN
-func (S *SRTPHandler) Connect(ctx context.Context, dest net.Addr, relay RelayInfo, forceTURN bool) (net.Conn, error) {
+func (S *SRTPHandler) Connect(ctx context.Context, dest net.Addr, relay TURNInfo, forceTURN bool) (net.Conn, error) {
 	if S.log == nil {
 		S.log = slog.Default()
 	}
@@ -201,7 +201,7 @@ func (S *SRTPHandler) Connect(ctx context.Context, dest net.Addr, relay RelayInf
 
 	if forceTURN {
 		S.log.Debug("srtp connect using forced turn relay")
-		underlay, remoteAddr, err := connectViaTURN(relay, dest, "srtp", S.log)
+		underlay, remoteAddr, err := openTURNUnderlay(relay, dest, "srtp", S.log)
 		if err != nil {
 			return nil, err
 		}
@@ -230,7 +230,7 @@ func (S *SRTPHandler) Connect(ctx context.Context, dest net.Addr, relay RelayInf
 	}
 
 	S.log.Info("srtp direct connect failed, falling back to turn", "error", err)
-	turnUnderlay, turnRemote, turnErr := connectViaTURN(relay, dest, "srtp", S.log)
+	turnUnderlay, turnRemote, turnErr := openTURNUnderlay(relay, dest, "srtp", S.log)
 	if turnErr != nil {
 		return nil, errors.Join(err, turnErr)
 	}

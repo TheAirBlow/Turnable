@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/theairblow/turnable/pkg/common"
+	"github.com/theairblow/turnable/pkg/protocol"
 )
 
 // vkAPIError stores VK API error metadata, including captcha details
@@ -54,10 +55,7 @@ type vkAuthSnapshot struct {
 	AnonymToken         string
 	SessionKey          string
 	Endpoint            string
-	TurnUser            string
-	TurnPass            string
-	TurnAddr            string
-	TurnAddrs           []string
+	TURNInfos           []protocol.TURNInfo
 	ExpiresAt           time.Time
 }
 
@@ -161,10 +159,7 @@ func (V *Handler) Authorize(callID string, username string) error {
 			V.anonymToken = cached.AnonymToken
 			V.sessionKey = cached.SessionKey
 			V.endpoint = cached.Endpoint
-			V.turnUser = cached.TurnUser
-			V.turnPass = cached.TurnPass
-			V.turnAddr = cached.TurnAddr
-			V.turnAddrs = append([]string(nil), cached.TurnAddrs...)
+			V.turnInfos = cached.TURNInfos
 			V.mu.Unlock()
 			slog.Debug("vk authorize reused cached auth state")
 			return nil
@@ -204,29 +199,27 @@ func (V *Handler) Authorize(callID string, username string) error {
 	}
 
 	turnAddrs := normalizeTurnAddresses(startedInfo.TurnServer.Urls)
-	turnAddr := ""
-	if len(turnAddrs) > 0 {
-		turnAddr = turnAddrs[0]
-	}
 
 	V.mu.Lock()
 	V.messagesAccessToken = messagesToken
 	V.anonymToken = anonymToken
 	V.sessionKey = sessionKey
 	V.endpoint = startedInfo.Endpoint
-	V.turnUser = startedInfo.TurnServer.Username
-	V.turnPass = startedInfo.TurnServer.Password
-	V.turnAddr = turnAddr
-	V.turnAddrs = append([]string(nil), turnAddrs...)
+	V.turnInfos = make([]protocol.TURNInfo, len(turnAddrs))
+	for i, addr := range turnAddrs {
+		V.turnInfos[i] = protocol.TURNInfo{
+			Address:  addr,
+			Username: startedInfo.TurnServer.Username,
+			Password: startedInfo.TurnServer.Password,
+		}
+	}
+
 	snapshot := vkAuthSnapshot{
 		MessagesAccessToken: V.messagesAccessToken,
 		AnonymToken:         V.anonymToken,
 		SessionKey:          V.sessionKey,
 		Endpoint:            V.endpoint,
-		TurnUser:            V.turnUser,
-		TurnPass:            V.turnPass,
-		TurnAddr:            V.turnAddr,
-		TurnAddrs:           append([]string(nil), V.turnAddrs...),
+		TURNInfos:           V.turnInfos,
 	}
 	V.mu.Unlock()
 	putCachedVKAuth(cacheKey, snapshot)

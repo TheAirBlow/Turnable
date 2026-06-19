@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/theairblow/turnable/pkg/common"
@@ -38,6 +39,11 @@ func (D *Handler) connectSession() error {
 		return err
 	}
 
+	platCfg := platformHandler.GetConfig()
+	if !platCfg.HasInsecureTURN {
+		return fmt.Errorf("platform does not have an insecure TURN server")
+	}
+
 	if err := platformHandler.Authorize(cfg.CallID, common.GenerateUsername()); err != nil {
 		return err
 	}
@@ -50,11 +56,12 @@ func (D *Handler) connectSession() error {
 	sessionCtx, sessionCancel := context.WithCancel(D.reconnectCtx)
 	events := platformHandler.WatchEvents(sessionCtx)
 
-	if err := platformHandler.Connect(); err != nil {
+	// TODO: platform signaling connection not yet necessary, handle this later
+	/*if err := platformHandler.Connect(); err != nil {
 		sessionCancel()
 		_ = platformHandler.Close()
 		return err
-	}
+	}*/
 
 	turnInfo := platformHandler.GetTURNInfo()
 	dest, err := common.ResolveUDPAddr(cfg.Gateway)
@@ -64,19 +71,14 @@ func (D *Handler) connectSession() error {
 		return fmt.Errorf("invalid relay gateway %q: %w", cfg.Gateway, err)
 	}
 
-	relayInfo := protocol.RelayInfo{
-		Address:   turnInfo.Address,
-		Addresses: append([]string(nil), turnInfo.Addresses...),
-		Username:  turnInfo.Username,
-		Password:  turnInfo.Password,
-	}
-
 	go directWatchPlatform(sessionCtx, events, D.log)
 
 	numPeers := cfg.Peers
 	if numPeers < 1 {
 		numPeers = 1
 	}
+
+	// TODO: enforce numPeers <= platCfg.MaxTURNConnections
 
 	fullReconnect := func(reason string) {
 		if !D.reconnecting.CompareAndSwap(false, true) {
@@ -111,48 +113,45 @@ func (D *Handler) connectSession() error {
 		}()
 	}
 
-	dial := func(idx int, dialCtx context.Context) (net.Conn, error) {
+	turnServerIdx := 0
+	turnConnCount := 0
+	var turnMu sync.Mutex
+
+	getTURNInfo := func() protocol.TURNInfo {
+		turnMu.Lock()
+		defer turnMu.Unlock()
+
+		if turnConnCount >= platCfg.MaxTURNConnections && platCfg.MaxTURNConnections > 0 && len(turnInfo) > 1 && platCfg.HasSharedTURNLimits {
+			turnServerIdx++
+			if turnServerIdx >= len(turnInfo) {
+				turnServerIdx = 0
+			}
+			turnConnCount = 0
+		}
+		turnConnCount++
+		return turnInfo[turnServerIdx]
+	}
+
+	dialFn := func(dialCtx context.Context, idx int) (net.Conn, error) {
 		h, _ := protocol.GetHandler("none")
 		h.SetLogger(D.log.With("peer_idx", idx))
 		connCtx, connCancel := context.WithTimeout(dialCtx, 5*time.Second)
 		defer connCancel()
-		return h.Connect(connCtx, dest, relayInfo, true)
+		conn, err := h.Connect(connCtx, dest, getTURNInfo(), true)
+		if err != nil {
+			if errors.Is(err, protocol.ErrQuotaReached) || errors.Is(err, protocol.ErrUnauthorized) {
+				D.log.Warn("peer connection failed with TURN error, triggering full reconnect", "peer_idx", idx, "error", err)
+				fullReconnect(err.Error())
+			}
+		}
+		return conn, err
 	}
 
 	peerConn := connection.NewPeerConn(sessionCtx)
 	peerConn.SetOnAllPeersGone(func() { fullReconnect("all peers disconnected") })
 
 	for idx := 0; idx < numPeers; idx++ {
-		go func() {
-			delay := connection.PeerReconnectInit
-			for {
-				raw, err := dial(idx, sessionCtx)
-				if err != nil {
-					if sessionCtx.Err() != nil {
-						return
-					}
-					if errors.Is(err, protocol.ErrQuotaReached) {
-						D.log.Warn("peer quota reached, backing off", "peer_idx", idx, "delay", connection.PeerQuotaBackoff)
-						delay = connection.PeerQuotaBackoff
-					}
-
-					D.log.Warn("peer connect failed", "peer_idx", idx, "error", err, "delay", delay)
-					select {
-					case <-sessionCtx.Done():
-						return
-					case <-time.After(delay):
-					}
-
-					delay = min(delay*2, connection.PeerReconnectMax)
-					continue
-				}
-
-				_ = peerConn.AddPeer(raw, func(peerCtx context.Context) (net.Conn, error) {
-					return dial(idx, peerCtx)
-				})
-				break
-			}
-		}()
+		_ = peerConn.AddPeer(dialFn)
 	}
 
 	D.cancel = sessionCancel
