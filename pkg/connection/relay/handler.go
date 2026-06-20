@@ -60,6 +60,7 @@ type Handler struct {
 	sessionUUID     string
 	reconnecting    atomic.Bool
 	reconnectMu     sync.Mutex
+	stateMu         sync.RWMutex
 	reconnectCtx    context.Context
 	reconnectCancel context.CancelFunc
 
@@ -178,10 +179,11 @@ func (D *Handler) Connect(rawConfig config.Config) error {
 	}
 
 	reconnectCtx, reconnectCancel := context.WithCancel(context.Background())
-
+	D.stateMu.Lock()
 	D.clientConfig = &cfg
 	D.reconnectCtx = reconnectCtx
 	D.reconnectCancel = reconnectCancel
+	D.stateMu.Unlock()
 
 	if err := D.connectClientSession(); err != nil {
 		reconnectCancel()
@@ -201,7 +203,10 @@ func (D *Handler) OpenChannel(routeIdx byte) (net.Conn, error) {
 		return nil, connection.ErrReconnecting
 	}
 
+	D.stateMu.RLock()
 	muxClient := D.muxClient
+	cfg := D.clientConfig
+	D.stateMu.RUnlock()
 
 	if muxClient == nil {
 		return nil, errors.New("relay: no active mux connection")
@@ -209,15 +214,16 @@ func (D *Handler) OpenChannel(routeIdx byte) (net.Conn, error) {
 
 	stream, err := muxClient.OpenChannel(routeIdx)
 	if err != nil {
+		D.stateMu.Lock()
 		if D.muxClient == muxClient {
 			D.muxClient = nil
 		}
+		D.stateMu.Unlock()
 
 		_ = muxClient.Close()
 		return nil, fmt.Errorf("relay: mux channel open failed: %w", err)
 	}
 
-	cfg := D.clientConfig
 	if cfg == nil {
 		_ = stream.Close()
 		return nil, errors.New("relay: no client config")
@@ -251,6 +257,7 @@ func (D *Handler) Disconnect() error {
 		return nil
 	}
 
+	D.stateMu.Lock()
 	cancel := D.cancel
 	platformHandler := D.platform
 	muxClient := D.muxClient
@@ -264,6 +271,7 @@ func (D *Handler) Disconnect() error {
 	D.reconnectCancel = nil
 	D.clientConfig = nil
 	D.sessionUUID = ""
+	D.stateMu.Unlock()
 
 	if cancel != nil {
 		cancel()
@@ -302,6 +310,7 @@ func (D *Handler) Close() error {
 		return errors.New("not running")
 	}
 
+	D.stateMu.Lock()
 	cancel := D.cancel
 	platformHandler := D.platform
 	muxClient := D.muxClient
@@ -315,6 +324,7 @@ func (D *Handler) Close() error {
 	D.reconnectCancel = nil
 	D.clientConfig = nil
 	D.sessionUUID = ""
+	D.stateMu.Unlock()
 
 	if cancel != nil {
 		cancel()

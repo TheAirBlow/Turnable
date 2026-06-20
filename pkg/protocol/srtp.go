@@ -332,11 +332,12 @@ func isRTPByte(b byte) bool { return b >= 128 && b <= 191 }
 
 // srtpDemux classifies incoming UDP packets as DTLS or SRTP and routes them to per session channels
 type srtpDemux struct {
-	raw      *net.UDPConn
-	mu       sync.RWMutex
-	sessions map[string]*srtpDemuxSession
-	newSess  chan *srtpDemuxSession
-	closed   chan struct{}
+	raw       *net.UDPConn
+	mu        sync.RWMutex
+	sessions  map[string]*srtpDemuxSession
+	newSess   chan *srtpDemuxSession
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 // srtpDemuxSession holds per-client channels for a server-side SRTP session
@@ -365,11 +366,7 @@ func newSRTPDemux(raw *net.UDPConn) *srtpDemux {
 
 // close signals the demux loop to stop
 func (d *srtpDemux) close() {
-	select {
-	case <-d.closed:
-	default:
-		close(d.closed)
-	}
+	d.closeOnce.Do(func() { close(d.closed) })
 }
 
 // run reads from the raw UDP socket and routes packets to per-session channels
@@ -429,20 +426,34 @@ func (d *srtpDemux) run() {
 
 // deadlineState manages a read deadline capable channel
 type deadlineState struct {
-	mu   sync.Mutex
+	mu     sync.Mutex
+	signal *deadlineSignal
+	stop   func()
+	exp    time.Time
+}
+
+// deadlineSignal manages the deadline signal
+type deadlineSignal struct {
 	ch   chan struct{}
-	stop func()
-	exp  time.Time
+	once sync.Once
+}
+
+// close closes the deadline channel
+func (s *deadlineSignal) close() {
+	if s == nil {
+		return
+	}
+	s.once.Do(func() { close(s.ch) })
 }
 
 // getCh returns the current deadline channel, creating one if needed
 func (d *deadlineState) getCh() <-chan struct{} {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.ch == nil {
-		d.ch = make(chan struct{})
+	if d.signal == nil {
+		d.signal = &deadlineSignal{ch: make(chan struct{})}
 	}
-	return d.ch
+	return d.signal.ch
 }
 
 // isExpired reports whether the deadline has actually passed
@@ -461,26 +472,37 @@ func (d *deadlineState) set(t time.Time) {
 		d.stop = nil
 	}
 
-	if d.ch != nil {
-		select {
-		case <-d.ch:
-		default:
-			close(d.ch)
-		}
+	if d.signal != nil {
+		d.signal.close()
 	}
 
-	d.ch = make(chan struct{})
+	d.signal = &deadlineSignal{ch: make(chan struct{})}
 	d.exp = t
 	if !t.IsZero() {
 		dur := time.Until(t)
 		if dur <= 0 {
-			close(d.ch)
+			d.signal.close()
 			return
 		}
-		ch := d.ch
-		timer := time.AfterFunc(dur, func() { close(ch) })
+		signal := d.signal
+		timer := time.AfterFunc(dur, signal.close)
 		d.stop = func() { timer.Stop() }
 	}
+}
+
+// close cancels any pending timer and closes the current deadline channel
+func (d *deadlineState) close() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stop != nil {
+		d.stop()
+		d.stop = nil
+	}
+	if d.signal != nil {
+		d.signal.close()
+		d.signal = nil
+	}
+	d.exp = time.Time{}
 }
 
 // demuxedConn adapts a channel of packets into a net.PacketConn
@@ -538,7 +560,10 @@ func (d *demuxedConn) SetWriteDeadline(t time.Time) error { return d.raw.SetWrit
 
 // Close signals the demuxedConn as closed without closing the underlay
 func (d *demuxedConn) Close() error {
-	d.closeOnce.Do(func() { close(d.closed) })
+	d.closeOnce.Do(func() {
+		d.dl.close()
+		close(d.closed)
+	})
 	return nil
 }
 
@@ -673,6 +698,7 @@ func (c *srtpConn) Write(b []byte) (int, error) {
 func (c *srtpConn) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
+		c.dl.close()
 		close(c.closed)
 		if c.onClose != nil {
 			c.onClose()

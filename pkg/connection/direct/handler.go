@@ -29,6 +29,7 @@ type Handler struct {
 	clientConfig    *ClientConfig
 	reconnecting    atomic.Bool
 	reconnectMu     sync.Mutex
+	stateMu         sync.RWMutex
 	reconnectCtx    context.Context
 	reconnectCancel context.CancelFunc
 
@@ -90,9 +91,11 @@ func (D *Handler) Connect(rawConfig config.Config) error {
 	D.log.Warn("using a direct connection is dangerous, please reconsider!")
 
 	reconnectCtx, reconnectCancel := context.WithCancel(context.Background())
+	D.stateMu.Lock()
 	D.clientConfig = &cfg
 	D.reconnectCtx = reconnectCtx
 	D.reconnectCancel = reconnectCancel
+	D.stateMu.Unlock()
 
 	if err := D.connectSession(); err != nil {
 		reconnectCancel()
@@ -111,10 +114,13 @@ func (D *Handler) OpenChannel(_ byte) (net.Conn, error) {
 	if D.reconnecting.Load() {
 		return nil, connection.ErrReconnecting
 	}
-	if D.peerConn == nil {
+	D.stateMu.RLock()
+	peerConn := D.peerConn
+	D.stateMu.RUnlock()
+	if peerConn == nil {
 		return nil, errors.New("direct: no active connection")
 	}
-	return D.peerConn, nil
+	return peerConn, nil
 }
 
 // Disconnect gracefully tears down all peer connections
@@ -122,6 +128,7 @@ func (D *Handler) Disconnect() error {
 	if !D.running.CompareAndSwap(true, false) {
 		return nil
 	}
+	D.stateMu.Lock()
 	cancel := D.cancel
 	peerConn := D.peerConn
 	reconnectCancel := D.reconnectCancel
@@ -130,6 +137,7 @@ func (D *Handler) Disconnect() error {
 	D.reconnectCtx = nil
 	D.reconnectCancel = nil
 	D.clientConfig = nil
+	D.stateMu.Unlock()
 
 	if cancel != nil {
 		cancel()

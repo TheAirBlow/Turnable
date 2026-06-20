@@ -20,24 +20,39 @@ func (D *Handler) connectSession() error {
 	D.reconnectMu.Lock()
 	defer D.reconnectMu.Unlock()
 
-	if D.cancel != nil {
-		D.cancel()
-		D.cancel = nil
-	}
-	if D.peerConn != nil {
-		_ = D.peerConn.Close()
-		D.peerConn = nil
-	}
-
+	D.stateMu.Lock()
+	oldCancel := D.cancel
+	oldPeerConn := D.peerConn
 	cfg := D.clientConfig
+	reconnectCtx := D.reconnectCtx
+	D.cancel = nil
+	D.peerConn = nil
+	D.stateMu.Unlock()
+
+	if oldCancel != nil {
+		oldCancel()
+	}
+	if oldPeerConn != nil {
+		_ = oldPeerConn.Close()
+	}
 	if cfg == nil {
 		return errors.New("direct: no client config")
+	}
+	if reconnectCtx == nil {
+		return errors.New("direct: reconnect context is not available")
 	}
 
 	platformHandler, err := platformpkg.GetHandler(cfg.PlatformID)
 	if err != nil {
 		return err
 	}
+
+	success := false
+	defer func() {
+		if !success {
+			_ = platformHandler.Close()
+		}
+	}()
 
 	platCfg := platformHandler.GetConfig()
 	if !platCfg.HasInsecureTURN {
@@ -53,8 +68,13 @@ func (D *Handler) connectSession() error {
 		os.Exit(0)
 	}
 
-	sessionCtx, sessionCancel := context.WithCancel(D.reconnectCtx)
+	sessionCtx, sessionCancel := context.WithCancel(reconnectCtx)
 	events := platformHandler.WatchEvents(sessionCtx)
+	defer func() {
+		if !success {
+			sessionCancel()
+		}
+	}()
 
 	// TODO: platform signaling connection not yet necessary, handle this later
 	/*if err := platformHandler.Connect(); err != nil {
@@ -78,7 +98,11 @@ func (D *Handler) connectSession() error {
 		numPeers = 1
 	}
 
-	// TODO: enforce numPeers <= platCfg.MaxTURNConnections
+	maxPeers := platCfg.MaxTURNConnections * len(turnInfo)
+	if numPeers > maxPeers {
+		D.log.Warn("number of peers requested forcibly limited to maximum", "requested_peers", numPeers, "max_peers", maxPeers)
+		numPeers = maxPeers
+	}
 
 	fullReconnect := func(reason string) {
 		if !D.reconnecting.CompareAndSwap(false, true) {
@@ -99,7 +123,9 @@ func (D *Handler) connectSession() error {
 				} else {
 					D.log.Warn("direct: full reconnect failed", "delay", delay, "error", err)
 				}
+				D.stateMu.RLock()
 				rCtx := D.reconnectCtx
+				D.stateMu.RUnlock()
 				if rCtx == nil {
 					return
 				}
@@ -154,8 +180,11 @@ func (D *Handler) connectSession() error {
 		_ = peerConn.AddPeer(dialFn)
 	}
 
+	D.stateMu.Lock()
 	D.cancel = sessionCancel
 	D.peerConn = peerConn
+	D.stateMu.Unlock()
+	success = true
 	D.log.Info("direct session connected", "gateway", cfg.Gateway, "peers", numPeers)
 	return nil
 }

@@ -431,6 +431,7 @@ type TinyMuxClient struct {
 	mux       *tinyMuxCore
 	control   net.Conn
 	controlMu sync.Mutex
+	openMu    sync.Mutex
 
 	lastPingSent    atomic.Int64
 	lastPong        atomic.Int64
@@ -564,6 +565,9 @@ func (c *TinyMuxClient) Done() <-chan struct{} { return c.pingCtx.Done() }
 
 // OpenChannel requests a new data flow from the server and returns it
 func (c *TinyMuxClient) OpenChannel(routeIdx byte) (net.Conn, error) {
+	c.openMu.Lock()
+	defer c.openMu.Unlock()
+
 	if err := c.writeControl(muxControlMessage{Type: muxControlTypeOpen, RouteIdx: routeIdx}); err != nil {
 		return nil, err
 	}

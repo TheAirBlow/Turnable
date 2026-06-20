@@ -311,7 +311,7 @@ func (D *Handler) GetClientConfig(user *providers.User, routes []*providers.Rout
 		PubKey:     serverCfg.PubKey,
 		Peers:      max(user.Peers, 1),
 		Encryption: encryption,
-		Gateway:    fmt.Sprintf("%s:%d", serverCfg.PublicIP, port),
+		Gateway:    fmt.Sprintf("%s:%s", serverCfg.PublicIP, port),
 		Proto:      serverCfg.Proto,
 		Cloak:      serverCfg.Cloak,
 	}

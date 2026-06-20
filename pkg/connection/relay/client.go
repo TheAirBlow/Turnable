@@ -21,33 +21,51 @@ func (D *Handler) connectClientSession() error {
 	D.reconnectMu.Lock()
 	defer D.reconnectMu.Unlock()
 
-	if D.cancel != nil {
-		D.cancel()
-		D.cancel = nil
+	D.stateMu.Lock()
+	oldCancel := D.cancel
+	oldMuxClient := D.muxClient
+	oldPeerConn := D.peerConn
+	oldPlatform := D.platform
+	cfg := D.clientConfig
+	reconnectCtx := D.reconnectCtx
+	D.cancel = nil
+	D.muxClient = nil
+	D.peerConn = nil
+	D.platform = nil
+	D.stateMu.Unlock()
+
+	if oldCancel != nil {
+		oldCancel()
 	}
-	if D.muxClient != nil {
-		_ = D.muxClient.Disconnect()
-		_ = D.muxClient.Close()
-		D.muxClient = nil
+	if oldMuxClient != nil {
+		_ = oldMuxClient.Disconnect()
+		_ = oldMuxClient.Close()
 	}
-	if D.peerConn != nil {
-		_ = D.peerConn.Close()
-		D.peerConn = nil
+	if oldPeerConn != nil {
+		_ = oldPeerConn.Close()
 	}
-	if D.platform != nil {
-		_ = D.platform.Close()
-		D.platform = nil
+	if oldPlatform != nil {
+		_ = oldPlatform.Close()
 	}
 
-	cfg := D.clientConfig
 	if cfg == nil {
 		return errors.New("relay reconnect requires client config")
+	}
+	if reconnectCtx == nil {
+		return errors.New("relay reconnect context is not available")
 	}
 
 	platformHandler, err := platform.GetHandler(cfg.PlatformID)
 	if err != nil {
 		return err
 	}
+
+	success := false
+	defer func() {
+		if !success {
+			_ = platformHandler.Close()
+		}
+	}()
 
 	platCfg := platformHandler.GetConfig()
 	if !platCfg.HasInsecureTURN {
@@ -63,11 +81,11 @@ func (D *Handler) connectClientSession() error {
 		os.Exit(0)
 	}
 
-	sessionCtx, sessionCancel := context.WithCancel(D.reconnectCtx)
+	sessionCtx, sessionCancel := context.WithCancel(reconnectCtx)
 	events := platformHandler.WatchEvents(sessionCtx)
 
 	defer func() {
-		if D.cancel == nil {
+		if !success {
 			sessionCancel()
 		}
 	}()
@@ -97,7 +115,11 @@ func (D *Handler) connectClientSession() error {
 		numPeers = 1
 	}
 
-	// TODO: enforce numPeers <= platCfg.MaxTURNConnections
+	maxPeers := platCfg.MaxTURNConnections * len(turnInfo)
+	if numPeers > maxPeers {
+		D.log.Warn("number of peers requested forcibly limited to maximum", "requested_peers", numPeers, "max_peers", maxPeers)
+		numPeers = maxPeers
+	}
 
 	fullReconnect := func(reason string) {
 		if !D.reconnecting.CompareAndSwap(false, true) {
@@ -122,7 +144,9 @@ func (D *Handler) connectClientSession() error {
 					D.log.Warn("full reconnect failed, retrying", "delay", delay, "error", err)
 				}
 
+				D.stateMu.RLock()
 				ctx := D.reconnectCtx
+				D.stateMu.RUnlock()
 				if ctx == nil {
 					return
 				}
@@ -338,11 +362,14 @@ func (D *Handler) connectClientSession() error {
 	sessionLog := D.log.With("session_uuid", sessionUUIDStr)
 	muxClient.SetLogger(sessionLog)
 	peerConn.SetLogger(sessionLog)
+	D.stateMu.Lock()
 	D.cancel = sessionCancel
 	D.platform = platformHandler
 	D.muxClient = muxClient
 	D.peerConn = peerConn
 	D.sessionUUID = sessionUUIDStr
+	D.stateMu.Unlock()
+	success = true
 
 	D.log.Info("relay client session connected", "session_uuid", sessionUUIDStr, "peers", numPeers)
 
