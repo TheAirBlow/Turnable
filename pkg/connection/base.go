@@ -19,7 +19,7 @@ type Handler interface {
 	ID() string                                                                             // Returns the unique ID of this handler
 	GetBlankServerConfig() config.Config                                                    // Returns a blank server config struct
 	GetBlankClientConfig() config.Config                                                    // Returns a blank client config struct
-	GetClientConfig(user *providers.User, routes []*providers.Route) (config.Config, error) // Returns a client config for the specified user and routes
+	GetClientConfig(serverCfg config.Config, user *providers.User, routes []*providers.Route) (config.Config, error) // Returns a client config for the specified user and routes
 	Start(rawConfig config.Config, provider providers.Provider) error                       // Starts the server listener
 	Stop() error                                                                            // Stops the server listener
 	AcceptClients(ctx context.Context) (<-chan ServerClient, error)                         // Accepts and emits new authenticated server clients

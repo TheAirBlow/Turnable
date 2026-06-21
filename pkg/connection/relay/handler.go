@@ -105,7 +105,7 @@ func (D *Handler) Start(rawConfig config.Config, provider providers.Provider) er
 		}
 	}()
 
-	cfg, ok := rawConfig.(ServerConfig)
+	cfg, ok := rawConfig.(*ServerConfig)
 	if !ok {
 		return errors.New("invalid config instance")
 	}
@@ -119,7 +119,7 @@ func (D *Handler) Start(rawConfig config.Config, provider providers.Provider) er
 		return err
 	}
 
-	D.serverConfig = &cfg
+	D.serverConfig = cfg
 	D.provider = provider
 	D.proto = handler
 	success = true
@@ -169,7 +169,7 @@ func (D *Handler) Connect(rawConfig config.Config) error {
 		}
 	}()
 
-	cfg, ok := rawConfig.(ClientConfig)
+	cfg, ok := rawConfig.(*ClientConfig)
 	if !ok {
 		return errors.New("invalid config instance")
 	}
@@ -180,7 +180,7 @@ func (D *Handler) Connect(rawConfig config.Config) error {
 
 	reconnectCtx, reconnectCancel := context.WithCancel(context.Background())
 	D.stateMu.Lock()
-	D.clientConfig = &cfg
+	D.clientConfig = cfg
 	D.reconnectCtx = reconnectCtx
 	D.reconnectCancel = reconnectCancel
 	D.stateMu.Unlock()

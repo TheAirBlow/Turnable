@@ -78,7 +78,7 @@ func (D *Handler) Connect(rawConfig config.Config) error {
 		}
 	}()
 
-	cfg, ok := rawConfig.(ClientConfig)
+	cfg, ok := rawConfig.(*ClientConfig)
 	if !ok {
 		return errors.New("invalid config instance")
 	}
@@ -92,7 +92,7 @@ func (D *Handler) Connect(rawConfig config.Config) error {
 
 	reconnectCtx, reconnectCancel := context.WithCancel(context.Background())
 	D.stateMu.Lock()
-	D.clientConfig = &cfg
+	D.clientConfig = cfg
 	D.reconnectCtx = reconnectCtx
 	D.reconnectCancel = reconnectCancel
 	D.stateMu.Unlock()

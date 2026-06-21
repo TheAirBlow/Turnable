@@ -93,6 +93,6 @@ func (D *Handler) GetBlankClientConfig() config.Config {
 }
 
 // GetClientConfig returns a client config for the specified user and routes
-func (D *Handler) GetClientConfig(_ *providers.User, _ []*providers.Route) (config.Config, error) {
+func (D *Handler) GetClientConfig(_ config.Config, _ *providers.User, _ []*providers.Route) (config.Config, error) {
 	return nil, errors.New("direct handler does not support server mode")
 }

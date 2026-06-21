@@ -28,11 +28,11 @@ cd Turnable
 ### 2.2. After installation
 The script creates the following files:
 
-| File | Purpose |
-|------|---------|
-| `turnable` | The main VPN client executable |
+| File            | Purpose                                       |
+|-----------------|-----------------------------------------------|
+| `turnable`      | The main VPN client executable                |
 | `run-client.sh` | Script to start the client with configuration |
-| `update.sh` | Script to update to the latest version |
+| `update.sh`     | Script to update to the latest version        |
 
 **Usage:**
 ```bash

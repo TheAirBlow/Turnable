@@ -41,6 +41,8 @@ type PeerConn struct {
 	closed   atomic.Bool
 	allGone  atomic.Bool
 
+	peerReady chan struct{}
+
 	log            *slog.Logger
 	onAllPeersGone func()
 }
@@ -49,10 +51,11 @@ type PeerConn struct {
 func NewPeerConn(ctx context.Context) *PeerConn {
 	ctx, cancel := context.WithCancel(ctx)
 	p := &PeerConn{
-		incoming: make(chan []byte, peerIncomingBufSize),
-		ctx:      ctx,
-		cancel:   cancel,
-		log:      slog.Default(),
+		incoming:  make(chan []byte, peerIncomingBufSize),
+		peerReady: make(chan struct{}),
+		ctx:       ctx,
+		cancel:    cancel,
+		log:       slog.Default(),
 	}
 	return p
 }
@@ -139,6 +142,13 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, dialFn func(context.C
 			entry.mu.Unlock()
 			entry.connected.Store(true)
 			delay = peerReconnectInit
+
+			select {
+			case <-m.peerReady:
+			default:
+				close(m.peerReady)
+			}
+
 			m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
 			break
 		}
@@ -275,7 +285,6 @@ func (m *PeerConn) Write(p []byte) (int, error) {
 	buf := make([]byte, len(p))
 	copy(buf, p)
 
-	// Fast path: non-blocking enqueue to the next live peer
 	for i := uint64(0); i < total; i++ {
 		entry := peers[(start+i)%total]
 		if entry == nil || !entry.connected.Load() {
@@ -288,7 +297,6 @@ func (m *PeerConn) Write(p []byte) (int, error) {
 		}
 	}
 
-	// Slow path: block on first live peer until a slot opens or context is done
 	for i := uint64(0); i < total; i++ {
 		entry := peers[(start+i)%total]
 		if entry == nil || !entry.connected.Load() {
@@ -302,7 +310,13 @@ func (m *PeerConn) Write(p []byte) (int, error) {
 		}
 	}
 
-	return 0, errors.New("peer: no live peers")
+	select {
+	case <-m.peerReady:
+	case <-m.ctx.Done():
+		return 0, io.EOF
+	}
+
+	return m.Write(p)
 }
 
 // RemoteAddr returns a dummy remote address

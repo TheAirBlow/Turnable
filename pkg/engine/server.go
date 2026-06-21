@@ -82,6 +82,8 @@ func (s *TurnableServer) Start() error {
 
 	s.handler = connHandler
 
+	go s.acceptClients(connHandler, socket)
+
 	success = true
 	return nil
 }

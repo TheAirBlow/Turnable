@@ -147,13 +147,14 @@ func (D *Handler) connectSession() error {
 		turnMu.Lock()
 		defer turnMu.Unlock()
 
-		if turnConnCount >= platCfg.MaxTURNConnections && platCfg.MaxTURNConnections > 0 && len(turnInfo) > 1 && platCfg.HasSharedTURNLimits {
+		if turnConnCount >= platCfg.MaxTURNConnections && platCfg.MaxTURNConnections > 0 && len(turnInfo) > 1 {
 			turnServerIdx++
 			if turnServerIdx >= len(turnInfo) {
 				turnServerIdx = 0
 			}
 			turnConnCount = 0
 		}
+
 		turnConnCount++
 		return turnInfo[turnServerIdx]
 	}
@@ -185,6 +186,6 @@ func (D *Handler) connectSession() error {
 	D.peerConn = peerConn
 	D.stateMu.Unlock()
 	success = true
-	D.log.Info("direct session connected", "gateway", cfg.Gateway, "peers", numPeers)
+	D.log.Info("direct session started", "gateway", cfg.Gateway, "peers", numPeers)
 	return nil
 }

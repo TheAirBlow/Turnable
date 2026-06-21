@@ -39,7 +39,6 @@ type configKeygenOptions struct {
 type configDirectOptions struct {
 	platformId string
 	callId     string
-	username   string
 	gateway    string
 	peers      int
 	json       bool
@@ -108,16 +107,15 @@ func newConfigDirectCommand() *cobra.Command {
 	opts := &configDirectOptions{}
 
 	cmd := &cobra.Command{
-		Use:   "direct <platform-id> <call-id> <username> <gateway-addr>",
+		Use:   "direct <platform-id> <call-id> <gateway-addr>",
 		Short: "Generates a direct relay connection client config",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 4 {
-				return errors.New("expected exactly 4 positional arguments")
+			if len(args) != 3 {
+				return errors.New("expected exactly 3 positional arguments: <platform-id> <call-id> <gateway-addr>")
 			}
 			opts.platformId = args[0]
 			opts.callId = args[1]
-			opts.username = args[2]
-			opts.gateway = args[3]
+			opts.gateway = args[2]
 			return directConfigMain(opts)
 		},
 	}
@@ -197,7 +195,7 @@ func configMain(opts *configGenerateOptions) error {
 		routes = append(routes, route)
 	}
 
-	clientCfg, err := connHandler.GetClientConfig(user, routes)
+	clientCfg, err := connHandler.GetClientConfig(serverCfg, user, routes)
 	if err != nil {
 		return fmt.Errorf("failed to generate client config: %w", err)
 	}
@@ -211,9 +209,13 @@ func configMain(opts *configGenerateOptions) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(out)
+		fmt.Println(string(out))
 	} else {
-		fmt.Println(clientCfg.ToURL())
+		out, err := clientCfg.ToURL()
+		if err != nil {
+			return err
+		}
+		fmt.Println(out)
 	}
 
 	return nil
@@ -272,9 +274,13 @@ func directConfigMain(opts *configDirectOptions) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(out)
+		fmt.Println(string(out))
 	} else {
-		fmt.Println(clientCfg.ToURL())
+		out, err := clientCfg.ToURL()
+		if err != nil {
+			return err
+		}
+		fmt.Println(out)
 	}
 
 	return nil

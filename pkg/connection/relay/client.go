@@ -170,7 +170,7 @@ func (D *Handler) connectClientSession() error {
 		turnMu.Lock()
 		defer turnMu.Unlock()
 
-		if turnConnCount >= platCfg.MaxTURNConnections && platCfg.MaxTURNConnections > 0 && len(turnInfo) > 1 && platCfg.HasSharedTURNLimits {
+		if turnConnCount >= platCfg.MaxTURNConnections && platCfg.MaxTURNConnections > 0 && len(turnInfo) > 1 {
 			turnServerIdx++
 			if turnServerIdx >= len(turnInfo) {
 				turnServerIdx = 0
@@ -288,6 +288,7 @@ func (D *Handler) connectClientSession() error {
 
 				primaryMu.Lock()
 				assignedUUID = uuidBytes
+				D.log.Info("relay session established", "peer_idx", idx, "session_uuid", uuid.UUID(assignedUUID).String())
 				close(currentReady)
 				primaryMu.Unlock()
 				return pickConn(connPair{raw, enc, idx}), nil
@@ -333,6 +334,7 @@ func (D *Handler) connectClientSession() error {
 	}
 
 	peerConn := connection.NewPeerConn(sessionCtx)
+	peerConn.SetLogger(D.log)
 	peerConn.SetOnAllPeersGone(func() { fullReconnect("all peers disconnected") })
 
 	for idx := 0; idx < numPeers; idx++ {
@@ -359,9 +361,6 @@ func (D *Handler) connectClientSession() error {
 	}()
 
 	sessionUUIDStr := uuid.UUID(assignedUUID).String()
-	sessionLog := D.log.With("session_uuid", sessionUUIDStr)
-	muxClient.SetLogger(sessionLog)
-	peerConn.SetLogger(sessionLog)
 	D.stateMu.Lock()
 	D.cancel = sessionCancel
 	D.platform = platformHandler
@@ -371,7 +370,6 @@ func (D *Handler) connectClientSession() error {
 	D.stateMu.Unlock()
 	success = true
 
-	D.log.Info("relay client session connected", "session_uuid", sessionUUIDStr, "peers", numPeers)
-
+	D.log.Info("relay client session started", "peers", numPeers)
 	return nil
 }

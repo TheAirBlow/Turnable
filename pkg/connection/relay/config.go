@@ -254,7 +254,7 @@ func (D *Handler) GetBlankClientConfig() config.Config {
 }
 
 // GetClientConfig returns a client config for the specified user and routes
-func (D *Handler) GetClientConfig(user *providers.User, routes []*providers.Route) (config.Config, error) {
+func (D *Handler) GetClientConfig(serverCfg config.Config, user *providers.User, routes []*providers.Route) (config.Config, error) {
 	if len(routes) == 0 {
 		return nil, errors.New("at least one route is required")
 	}
@@ -295,25 +295,29 @@ func (D *Handler) GetClientConfig(user *providers.User, routes []*providers.Rout
 	}
 
 	combinedName := strings.Join(names, ", ")
-	serverCfg := D.serverConfig
 
-	_, port, _ := net.SplitHostPort(serverCfg.ListenAddr)
+	relayServerCfg, ok := serverCfg.(*ServerConfig)
+	if !ok {
+		return nil, fmt.Errorf("invalid server config type")
+	}
+
+	_, port, _ := net.SplitHostPort(relayServerCfg.ListenAddr)
 
 	cfg := &ClientConfig{
 		ClientConfig: config.ClientConfig{
 			UserUUID:   user.UUID,
 			Routes:     clientRoutes,
-			PlatformID: serverCfg.PlatformID,
-			CallID:     serverCfg.CallID,
+			PlatformID: relayServerCfg.PlatformID,
+			CallID:     relayServerCfg.CallID,
 			Type:       user.Type,
 			Name:       combinedName,
 		},
-		PubKey:     serverCfg.PubKey,
+		PubKey:     relayServerCfg.PubKey,
 		Peers:      max(user.Peers, 1),
 		Encryption: encryption,
-		Gateway:    fmt.Sprintf("%s:%s", serverCfg.PublicIP, port),
-		Proto:      serverCfg.Proto,
-		Cloak:      serverCfg.Cloak,
+		Gateway:    fmt.Sprintf("%s:%s", relayServerCfg.PublicIP, port),
+		Proto:      relayServerCfg.Proto,
+		Cloak:      relayServerCfg.Cloak,
 	}
 
 	if err := cfg.Validate(); err != nil {

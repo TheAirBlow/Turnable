@@ -71,11 +71,11 @@ func ParseConfig(raw []byte, v any) error {
 	}
 
 	if bytes.HasPrefix(raw, []byte("{")) {
-		if err := json.Unmarshal(raw, &v); err != nil {
+		if err := json.Unmarshal(raw, v); err != nil {
 			return fmt.Errorf("failed to parse JSON: %w", err)
 		}
 	} else {
-		if err := common.UnmarshalURL(string(raw), urlSchema, &v); err != nil {
+		if err := common.UnmarshalURL(string(raw), urlSchema, v); err != nil {
 			return fmt.Errorf("failed to parse URL: %w", err)
 		}
 	}

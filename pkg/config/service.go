@@ -62,7 +62,7 @@ func (s *ServiceConfig) Validate() error {
 }
 
 // ToJSON serializes this ServiceConfig to a JSON file
-func (s *ServiceConfig) ToJSON(indented bool) (string, error) {
+func (s *ServiceConfig) ToJSON(indented bool) ([]byte, error) {
 	var b []byte
 	var err error
 
@@ -73,8 +73,8 @@ func (s *ServiceConfig) ToJSON(indented bool) (string, error) {
 	}
 
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return string(b), nil
+	return b, nil
 }

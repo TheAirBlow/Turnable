@@ -68,7 +68,7 @@ func (D *Handler) validateClientConfig(configJSON []byte) (ClientConfig, *provid
 
 // writePrimaryHello sends a primary handshake hello packet
 func writePrimaryHello(w io.Writer, challenge [8]byte, configJSON []byte) error {
-	configBytes := []byte(configJSON)
+	configBytes := configJSON
 	buf := make([]byte, 0, 1+8+1+4+len(configBytes))
 	buf = append(buf, relayHelloTypePrimary)
 	buf = append(buf, challenge[:]...)

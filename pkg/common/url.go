@@ -139,7 +139,7 @@ func parsePlacement(s string) (placement, error) {
 
 // fieldMeta holds the parsed url tag for one struct field
 type fieldMeta struct {
-	index     int
+	index     []int
 	name      string
 	pl        placement
 	weight    int
@@ -160,7 +160,97 @@ func parseStructMeta(t reflect.Type) ([]fieldMeta, error) {
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
 		raw, ok := sf.Tag.Lookup(tagKey)
+
+		if !ok && sf.Anonymous && sf.Type.Kind() == reflect.Struct {
+			embeddedType := sf.Type
+			for j := 0; j < embeddedType.NumField(); j++ {
+				embSf := embeddedType.Field(j)
+				embRaw, embOk := embSf.Tag.Lookup(tagKey)
+				if !embOk || embRaw == "-" {
+					continue
+				}
+
+				parentField, ok := t.FieldByName(embSf.Name)
+				if !ok {
+					continue
+				}
+
+				parts := strings.Split(embRaw, ",")
+				if len(parts) < 1 {
+					return nil, fmt.Errorf("url: field %s: tag %q must have at least a placement", embSf.Name, embRaw)
+				}
+
+				plStr := strings.TrimSpace(parts[0])
+				pl, err := parsePlacement(plStr)
+				if err != nil {
+					return nil, fmt.Errorf("url: field %s: %w", embSf.Name, err)
+				}
+
+				nameRequired := pl == placementQuery
+				var name string
+				var remainingParts []string
+
+				if len(parts) > 1 {
+					possibleName := strings.TrimSpace(parts[1])
+					isWeight := false
+					if possibleName != "" {
+						_, pErr := strconv.Atoi(possibleName)
+						isWeight = pErr == nil
+					}
+					isOmitEmpty := possibleName == "omitempty"
+
+					if !nameRequired && (isWeight || isOmitEmpty) {
+						name = embSf.Name
+						remainingParts = parts[1:]
+					} else {
+						name = possibleName
+						remainingParts = parts[2:]
+					}
+				} else {
+					if nameRequired {
+						return nil, fmt.Errorf("url: field %s: placement %q requires a target name", embSf.Name, plStr)
+					}
+					name = embSf.Name
+				}
+
+				weight := 0
+				omitempty := false
+
+				for _, opt := range remainingParts {
+					opt = strings.TrimSpace(opt)
+					if opt == "" {
+						continue
+					}
+
+					if opt == "omitempty" {
+						omitempty = true
+						continue
+					}
+
+					w, err := strconv.Atoi(opt)
+					if err != nil {
+						return nil, fmt.Errorf("url: field %s: unknown tag option or invalid weight %q: %v", embSf.Name, opt, err)
+					}
+					weight = w
+				}
+
+				fields = append(fields, fieldMeta{
+					index:     parentField.Index,
+					name:      name,
+					pl:        pl,
+					weight:    weight,
+					omitempty: omitempty,
+					fieldType: embSf.Type,
+				})
+			}
+			continue
+		}
+
 		if !ok || raw == "-" {
+			continue
+		}
+
+		if sf.Anonymous && sf.Type.Kind() == reflect.Struct {
 			continue
 		}
 
@@ -226,7 +316,7 @@ func parseStructMeta(t reflect.Type) ([]fieldMeta, error) {
 		}
 
 		fields = append(fields, fieldMeta{
-			index:     i,
+			index:     []int{i},
 			name:      name,
 			pl:        pl,
 			weight:    weight,
@@ -346,26 +436,18 @@ func encodePathSegment(elem reflect.Value) (string, error) {
 
 	tokens := make([]string, len(pathFields))
 	for i, sf := range pathFields {
-		fv := elem.Field(sf.index)
+		fv := elem.FieldByIndex(sf.index)
 
-		var s string
-		if isZero(fv) {
-			s = "none"
-		} else {
-			s, err = valueToString(fv)
-			if err != nil {
-				return "", fmt.Errorf("url: path sub-field %s: %w", t.Field(sf.index).Name, err)
-			}
-			if s == "" {
-				s = "none"
-			}
+		s, err := valueToString(fv)
+		if err != nil {
+			return "", fmt.Errorf("url: path sub-field %s: %w", sf.name, err)
 		}
 
 		if i > 0 && strings.ContainsRune(s, '-') {
 			return "", fmt.Errorf(
 				"url: path sub-field %s (position %d): value %q must not contain '-'; "+
 					"only the first positional field may contain dashes",
-				t.Field(sf.index).Name, i, s,
+				sf.name, i, s,
 			)
 		}
 
@@ -417,13 +499,9 @@ func decodePathSegment(seg string, elemType reflect.Type) (reflect.Value, error)
 	}
 
 	for i, sf := range pathFields {
-		fv := elem.Field(sf.index)
-		val := tokens[i]
-		if val == "none" {
-			continue
-		}
-		if err := stringToValue(val, fv); err != nil {
-			return elem, fmt.Errorf("url: path sub-field %s: %w", elemType.Field(sf.index).Name, err)
+		fv := elem.FieldByIndex(sf.index)
+		if err := stringToValue(tokens[i], fv); err != nil {
+			return elem, fmt.Errorf("url: path sub-field %s: %w", sf.name, err)
 		}
 	}
 
@@ -457,7 +535,8 @@ func MarshalURL(v any, scheme string) (string, error) {
 	)
 
 	for _, fm := range fields {
-		fv := rv.Field(fm.index)
+		fv := rv.FieldByIndex(fm.index)
+
 		if fm.omitempty && isZero(fv) {
 			continue
 		}
@@ -466,28 +545,28 @@ func MarshalURL(v any, scheme string) (string, error) {
 		case placementUser:
 			s, err := valueToString(fv)
 			if err != nil {
-				return "", fmt.Errorf("url: field %s: %w", rv.Type().Field(fm.index).Name, err)
+				return "", fmt.Errorf("url: field %s: %w", fm.name, err)
 			}
 			userVal = s
 
 		case placementPass:
 			s, err := valueToString(fv)
 			if err != nil {
-				return "", fmt.Errorf("url: field %s: %w", rv.Type().Field(fm.index).Name, err)
+				return "", fmt.Errorf("url: field %s: %w", fm.name, err)
 			}
 			passVal = s
 
 		case placementHost:
 			s, err := valueToString(fv)
 			if err != nil {
-				return "", fmt.Errorf("url: field %s: %w", rv.Type().Field(fm.index).Name, err)
+				return "", fmt.Errorf("url: field %s: %w", fm.name, err)
 			}
 			hostVal = s
 
 		case placementFragment:
 			s, err := valueToString(fv)
 			if err != nil {
-				return "", fmt.Errorf("url: field %s: %w", rv.Type().Field(fm.index).Name, err)
+				return "", fmt.Errorf("url: field %s: %w", fm.name, err)
 			}
 			fragmentVal = s
 
@@ -497,7 +576,7 @@ func MarshalURL(v any, scheme string) (string, error) {
 				for i := 0; i < fv.Len(); i++ {
 					seg, err := encodePathSegment(fv.Index(i))
 					if err != nil {
-						return "", fmt.Errorf("url: field %s[%d]: %w", rv.Type().Field(fm.index).Name, i, err)
+						return "", fmt.Errorf("url: field %s[%d]: %w", fm.name, i, err)
 					}
 					if seg != "" {
 						pathSegments = append(pathSegments, weightedString{fm.weight*1000 + i, seg})
@@ -506,7 +585,7 @@ func MarshalURL(v any, scheme string) (string, error) {
 			} else if ft.Kind() == reflect.Struct {
 				seg, err := encodePathSegment(fv)
 				if err != nil {
-					return "", fmt.Errorf("url: field %s (object): %w", rv.Type().Field(fm.index).Name, err)
+					return "", fmt.Errorf("url: field %s (object): %w", fm.name, err)
 				}
 				if seg != "" {
 					pathSegments = append(pathSegments, weightedString{fm.weight, seg})
@@ -514,7 +593,7 @@ func MarshalURL(v any, scheme string) (string, error) {
 			} else {
 				s, err := valueToString(fv)
 				if err != nil {
-					return "", fmt.Errorf("url: field %s: %w", rv.Type().Field(fm.index).Name, err)
+					return "", fmt.Errorf("url: field %s: %w", fm.name, err)
 				}
 				if s != "" {
 					pathSegments = append(pathSegments, weightedString{fm.weight, s})
@@ -527,7 +606,7 @@ func MarshalURL(v any, scheme string) (string, error) {
 				for i := 0; i < fv.Len(); i++ {
 					s, err := valueToString(fv.Index(i))
 					if err != nil {
-						return "", fmt.Errorf("url: field %s[%d]: %w", rv.Type().Field(fm.index).Name, i, err)
+						return "", fmt.Errorf("url: field %s[%d]: %w", fm.name, i, err)
 					}
 					key := fmt.Sprintf("%s[%d]", fm.name, i+1)
 					queryVals.Set(key, s)
@@ -535,7 +614,7 @@ func MarshalURL(v any, scheme string) (string, error) {
 			} else {
 				s, err := valueToString(fv)
 				if err != nil {
-					return "", fmt.Errorf("url: field %s: %w", rv.Type().Field(fm.index).Name, err)
+					return "", fmt.Errorf("url: field %s: %w", fm.name, err)
 				}
 				queryVals.Set(fm.name, s)
 			}
@@ -611,14 +690,14 @@ func UnmarshalURL(rawURL string, scheme string, v any) error {
 	pathIdx := 0
 
 	for _, fm := range fields {
-		fv := rv.Field(fm.index)
+		fv := rv.FieldByIndex(fm.index)
 		ft := fv.Type()
 
 		switch fm.pl {
 		case placementUser:
 			if u.User != nil {
 				if err := stringToValue(u.User.Username(), fv); err != nil {
-					return fmt.Errorf("url: field %s (user): %w", rv.Type().Field(fm.index).Name, err)
+					return fmt.Errorf("url: field %s (user): %w", fm.name, err)
 				}
 			}
 
@@ -626,42 +705,38 @@ func UnmarshalURL(rawURL string, scheme string, v any) error {
 			if u.User != nil {
 				pass, _ := u.User.Password()
 				if err := stringToValue(pass, fv); err != nil {
-					return fmt.Errorf("url: field %s (pass): %w", rv.Type().Field(fm.index).Name, err)
+					return fmt.Errorf("url: field %s (pass): %w", fm.name, err)
 				}
 			}
 
 		case placementHost:
 			if err := stringToValue(u.Host, fv); err != nil {
-				return fmt.Errorf("url: field %s (host): %w", rv.Type().Field(fm.index).Name, err)
+				return fmt.Errorf("url: field %s (host): %w", fm.name, err)
 			}
 
 		case placementFragment:
 			if err := stringToValue(u.Fragment, fv); err != nil {
-				return fmt.Errorf("url: field %s (fragment): %w", rv.Type().Field(fm.index).Name, err)
+				return fmt.Errorf("url: field %s (fragment): %w", fm.name, err)
 			}
 
 		case placementPath:
 			if ft.Kind() == reflect.Slice {
 				elemType := ft.Elem()
-				var slice reflect.Value
+				slice := reflect.MakeSlice(ft, 0, len(pathSegs)-pathIdx)
 				for pathIdx < len(pathSegs) {
 					elem, err := decodePathSegment(pathSegs[pathIdx], elemType)
 					if err != nil {
-						return fmt.Errorf("url: field %s[%d]: %w", rv.Type().Field(fm.index).Name, pathIdx, err)
+						return fmt.Errorf("url: field %s[%d]: %w", fm.name, pathIdx, err)
 					}
 					slice = reflect.Append(slice, elem)
 					pathIdx++
 				}
-				if slice.IsValid() {
-					fv.Set(slice)
-				} else {
-					fv.Set(reflect.MakeSlice(ft, 0, 0))
-				}
+				fv.Set(slice)
 			} else if ft.Kind() == reflect.Struct {
 				if pathIdx < len(pathSegs) {
 					decodedObj, err := decodePathSegment(pathSegs[pathIdx], ft)
 					if err != nil {
-						return fmt.Errorf("url: field %s (object): %w", rv.Type().Field(fm.index).Name, err)
+						return fmt.Errorf("url: field %s (object): %w", fm.name, err)
 					}
 					fv.Set(decodedObj)
 					pathIdx++
@@ -670,7 +745,7 @@ func UnmarshalURL(rawURL string, scheme string, v any) error {
 				if pathIdx < len(pathSegs) {
 					seg, _ := url.PathUnescape(pathSegs[pathIdx])
 					if err := stringToValue(seg, fv); err != nil {
-						return fmt.Errorf("url: field %s (path): %w", rv.Type().Field(fm.index).Name, err)
+						return fmt.Errorf("url: field %s (path): %w", fm.name, err)
 					}
 					pathIdx++
 				}
@@ -685,7 +760,7 @@ func UnmarshalURL(rawURL string, scheme string, v any) error {
 					for _, val := range vals {
 						elem := reflect.New(elemType).Elem()
 						if err := stringToValue(val, elem); err != nil {
-							return fmt.Errorf("url: field %s (query): %w", rv.Type().Field(fm.index).Name, err)
+							return fmt.Errorf("url: field %s (query): %w", fm.name, err)
 						}
 						slice = reflect.Append(slice, elem)
 					}
@@ -713,7 +788,7 @@ func UnmarshalURL(rawURL string, scheme string, v any) error {
 				vals, ok := queryVals[fm.name]
 				if ok && len(vals) > 0 {
 					if err := stringToValue(vals[0], fv); err != nil {
-						return fmt.Errorf("url: field %s (query %s): %w", rv.Type().Field(fm.index).Name, fm.name, err)
+						return fmt.Errorf("url: field %s (query %s): %w", fm.name, fm.name, err)
 					}
 				}
 			}
