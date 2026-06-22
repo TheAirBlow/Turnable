@@ -121,7 +121,7 @@ Check out the [ci.yml](https://github.com/TheAirBlow/Turnable/blob/main/.github/
 ---
 
 ## Setup
-**Quick start:** Follow the [client](docs/client/SETUP.md), [server](docs/server/SETUP.md) or [service](docs/service/SETUP.md) setup guide.
+**Quick start:** Follow the [client](docs/client/SETUP.md), [server](docs/server/SETUP.md) or [service](docs/service/SETUP.md) setup guide. \
 **Configuration:** Detailed reference for [client](docs/client/CONFIG.md) and [server](docs/server/CONFIG.md) config schemas.
 
 > [!NOTE]
