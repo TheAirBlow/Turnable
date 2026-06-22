@@ -29,6 +29,9 @@ func (D *Handler) connectSession() error {
 	D.peerConn = nil
 	D.stateMu.Unlock()
 
+	if oldPeerConn != nil {
+		oldPeerConn.SetOnAllPeersGone(nil)
+	}
 	if oldCancel != nil {
 		oldCancel()
 	}
@@ -84,6 +87,10 @@ func (D *Handler) connectSession() error {
 	}*/
 
 	turnInfo := platformHandler.GetTURNInfo()
+	if len(turnInfo) == 0 {
+		return fmt.Errorf("turn info is empty")
+	}
+
 	dest, err := common.ResolveUDPAddr(cfg.Gateway)
 	if err != nil {
 		sessionCancel()

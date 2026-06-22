@@ -34,6 +34,9 @@ func (D *Handler) connectClientSession() error {
 	D.platform = nil
 	D.stateMu.Unlock()
 
+	if oldPeerConn != nil {
+		oldPeerConn.SetOnAllPeersGone(nil)
+	}
 	if oldCancel != nil {
 		oldCancel()
 	}
@@ -102,6 +105,10 @@ func (D *Handler) connectClientSession() error {
 	}
 
 	turnInfo := platformHandler.GetTURNInfo()
+	if len(turnInfo) == 0 {
+		return fmt.Errorf("turn info is empty")
+	}
+
 	dest, err := common.ResolveUDPAddr(cfg.Gateway)
 	if err != nil {
 		_ = platformHandler.Disconnect()
@@ -244,7 +251,10 @@ func (D *Handler) connectClientSession() error {
 			currentReady := uuidReady
 			primaryMu.Unlock()
 
-			if rejected {
+			primaryMu.Lock()
+			rej := rejected
+			primaryMu.Unlock()
+			if rej {
 				return nil, connection.ErrPeerDone
 			}
 
@@ -307,7 +317,10 @@ func (D *Handler) connectClientSession() error {
 				return nil, dialCtx.Err()
 			}
 
-			if rejected {
+			primaryMu.Lock()
+			rej = rejected
+			primaryMu.Unlock()
+			if rej {
 				return nil, connection.ErrPeerDone
 			}
 		}
@@ -355,7 +368,12 @@ func (D *Handler) connectClientSession() error {
 	go func() {
 		select {
 		case <-muxClient.Done():
-			fullReconnect("tinymux session died")
+			select {
+			case <-sessionCtx.Done():
+				return
+			default:
+				fullReconnect("tinymux session died")
+			}
 		case <-sessionCtx.Done():
 		}
 	}()

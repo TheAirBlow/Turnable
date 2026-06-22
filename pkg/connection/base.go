@@ -16,18 +16,18 @@ var ErrReconnecting = errors.New("full reconnect is in progress")
 
 // Handler represents a connection handler
 type Handler interface {
-	ID() string                                                                             // Returns the unique ID of this handler
-	GetBlankServerConfig() config.Config                                                    // Returns a blank server config struct
-	GetBlankClientConfig() config.Config                                                    // Returns a blank client config struct
+	ID() string                                                                                                      // Returns the unique ID of this handler
+	GetBlankServerConfig() config.Config                                                                             // Returns a blank server config struct
+	GetBlankClientConfig() config.Config                                                                             // Returns a blank client config struct
 	GetClientConfig(serverCfg config.Config, user *providers.User, routes []*providers.Route) (config.Config, error) // Returns a client config for the specified user and routes
-	Start(rawConfig config.Config, provider providers.Provider) error                       // Starts the server listener
-	Stop() error                                                                            // Stops the server listener
-	AcceptClients(ctx context.Context) (<-chan ServerClient, error)                         // Accepts and emits new authenticated server clients
-	Connect(rawConfig config.Config) error                                                  // Connects to a remote server
-	OpenChannel(routeIdx byte) (net.Conn, error)                                            // Opens a new logical data channel for the given route index
-	Disconnect() error                                                                      // Gracefully disconnects from the current remote server
-	Close() error                                                                           // Forcibly closes the current remove server connection
-	SetLogger(log *slog.Logger)                                                             // Changes the slog logger instance
+	Start(rawConfig config.Config, provider providers.Provider) error                                                // Starts the server listener
+	Stop() error                                                                                                     // Stops the server listener
+	AcceptClients(ctx context.Context) (<-chan ServerClient, error)                                                  // Accepts and emits new authenticated server clients
+	Connect(rawConfig config.Config) error                                                                           // Connects to a remote server
+	OpenChannel(routeIdx byte) (net.Conn, error)                                                                     // Opens a new logical data channel for the given route index
+	Disconnect() error                                                                                               // Gracefully disconnects from the current remote server
+	Close() error                                                                                                    // Forcibly closes the current remove server connection
+	SetLogger(log *slog.Logger)                                                                                      // Changes the slog logger instance
 }
 
 // ServerClient represents a server client

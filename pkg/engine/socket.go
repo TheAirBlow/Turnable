@@ -139,7 +139,7 @@ func (S *SocketHandler) acceptUDP(ctx context.Context, listenAddr string) (<-cha
 
 	var mu sync.Mutex
 	peers := make(map[string]*udpPeerStream)
-	acceptCh := make(chan AcceptedClient)
+	acceptCh := make(chan AcceptedClient, 64)
 
 	go func() { <-ctx.Done(); _ = conn.Close() }()
 	go func() {

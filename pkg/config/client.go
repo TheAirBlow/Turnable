@@ -16,8 +16,8 @@ type ClientConfig struct {
 
 // ClientRoute represents one tunnel route inside a multi-route client config
 type ClientRoute struct {
-	RouteID   string `json:"route_id" url:"path,1"` // Route's unique ID
-	Socket    string `json:"socket" url:"path,2"`   // Socket protocol to use
+	RouteID   string `json:"route_id" url:"path,1"`            // Route's unique ID
+	Socket    string `json:"socket" url:"path,2"`              // Socket protocol to use
 	Transport string `json:"transport,omitempty" url:"path,3"` // Transport protocol to use
 }
 

@@ -269,6 +269,10 @@ func (s *Server) startServer(req *pb.StartServerRequest, providerUUID string) (s
 	}
 
 	s.mu.Lock()
+	if _, exists := s.instances[id]; exists {
+		s.mu.Unlock()
+		return "", fmt.Errorf("instance %q already exists", id)
+	}
 	s.instances[id] = inst
 	s.mu.Unlock()
 
@@ -331,6 +335,10 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 
 	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddrs: req.ListenAddrs, client: cli}
 	s.mu.Lock()
+	if _, exists := s.instances[id]; exists {
+		s.mu.Unlock()
+		return "", fmt.Errorf("instance %q already exists", id)
+	}
 	s.instances[id] = inst
 	s.mu.Unlock()
 
@@ -414,10 +422,14 @@ func (s *Server) persistInstance(inst *Instance) {
 		s.savePersisted(inst)
 	}
 
+	itype := pb.InstanceType_INSTANCE_TYPE_CLIENT
+	if inst.server != nil {
+		itype = pb.InstanceType_INSTANCE_TYPE_SERVER
+	}
 	s.broadcastEvent(&pb.InstanceEvent{
 		InstanceId:   inst.ID,
 		Name:         inst.Name,
-		InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
+		InstanceType: itype,
 		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_UPDATED,
 	})
 }
@@ -596,6 +608,7 @@ func (c *clientConn) serve() {
 
 	pubKeyB64 := base64.StdEncoding.EncodeToString(pubKey)
 	c.svc.log.Info("client connected", "remote", c.remote, "pubkey", pubKeyB64)
+	defer close(c.writeCh)
 	defer func() {
 		c.svc.relay.broadcast.unsubscribe(c)
 		c.svc.log.Info("client disconnected", "remote", c.remote, "pubkey", pubKeyB64)
@@ -608,7 +621,6 @@ func (c *clientConn) serve() {
 
 // readLoop reads and dispatches requests until the connection closes
 func (c *clientConn) readLoop() {
-	defer close(c.writeCh)
 	for {
 		var req pb.Request
 		if err := readFramed(c.nc, &req); err != nil {

@@ -251,7 +251,10 @@ func (m *PeerConn) notifyAllPeersGone() {
 	}
 	m.log.Debug("all peers disconnected, closing peer conn")
 	m.cancel()
-	if fn := m.onAllPeersGone; fn != nil {
+	m.mu.RLock()
+	fn := m.onAllPeersGone
+	m.mu.RUnlock()
+	if fn != nil {
 		fn()
 	}
 }
