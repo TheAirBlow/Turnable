@@ -5,6 +5,7 @@
 // @description  Captures VK Calls tokens for Turnable
 // @match        https://vk.com/call/join/*
 // @grant        unsafeWindow
+// @grant        GM_xmlhttpRequest
 // @run-at       document-start
 // ==/UserScript==
 
