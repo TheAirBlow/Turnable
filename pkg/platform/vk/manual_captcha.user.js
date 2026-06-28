@@ -24,7 +24,7 @@
             try {
                 if (decodeURIComponent(pair.slice(0, idx)) === key)
                     return decodeURIComponent(pair.slice(idx + 1));
-            } catch (e) {}
+            } catch (e) { }
         }
         return '';
     }
@@ -78,15 +78,21 @@
                     const data = JSON.parse(this.responseText);
                     if (data && data.response && data.response.token)
                         sendTokens(extractFormParam(sentBody, 'access_token'), data.response.token);
-                } catch (e) {}
+                } catch (e) { }
             });
         }
         return origXHRSend.apply(this, arguments);
     };
 
-    fetch(SERVER + '/ping', { signal: AbortSignal.timeout(2000) })
-        .then(r => { if (r.ok) { _serverAlive = true; setupAutoJoin(); } })
-        .catch(() => {});
+    GM_xmlhttpRequest({
+        method: "GET",
+        url: SERVER + '/ping',
+        signal: AbortSignal.timeout(2000),
+        onload: function (r) {
+            if (r.status == 200) { _serverAlive = true; setupAutoJoin() };
+        },
+        onerror: function (error) { }
+    });
 
     function setupAutoJoin() {
         const observer = new MutationObserver(tryAutoJoin);
