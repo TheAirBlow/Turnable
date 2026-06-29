@@ -41,7 +41,7 @@ var (
 	errCaptchaRateLimit = errors.New("captcha session rate limit reached") // Marks exhausted captcha sessions
 
 	captchaAPIVersion    = "5.131"    // last known version of the captcha API
-	captchaScriptVersion = "1.1.1357" // last known version of the captcha script
+	captchaScriptVersion = "1.1.1367" // last known version of the captcha script
 )
 
 // captchaInit represents window.init JSON object with captcha initialization data
@@ -163,10 +163,11 @@ func (V *Handler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, 
 
 	slog.Debug("vk captcha solving pow", "difficulty", page.PowDifficulty)
 
-	hash := solveCaptchaPoW(page.PowInput, page.PowDifficulty)
+	hash, nonce := solveCaptchaPoW(page.PowInput, page.PowDifficulty)
 	if hash == "" {
 		return "", errors.New("captcha pow failed")
 	}
+	hash = fmt.Sprintf("v2.%s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf(`{"hash":"%s","nonce":%d}`, hash, nonce))))
 	slog.Debug("vk captcha pow solved")
 
 	base := common.NewValues(
@@ -438,21 +439,21 @@ func (V *Handler) solveCheckboxCaptcha(
 }
 
 // solveCaptchaPoW brute-forces SHA-256 hash prefix target for PoW captcha
-func solveCaptchaPoW(input string, difficulty int) string {
+func solveCaptchaPoW(input string, difficulty int) (string, int) {
 	if input == "" || difficulty <= 0 {
-		return ""
+		return "", 0
 	}
 
 	target := strings.Repeat("0", difficulty)
-	for nonce := 1; nonce <= 10_000_000; nonce++ {
+	for nonce := 0; nonce <= 10_000_000; nonce++ {
 		sum := sha256.Sum256([]byte(input + strconv.Itoa(nonce)))
 		hash := hex.EncodeToString(sum[:])
 		if strings.HasPrefix(hash, target) {
-			return hash
+			return hash, nonce
 		}
 	}
 
-	return ""
+	return "", 0
 }
 
 // solveSliderCaptcha solves the slider variant using ranked candidates
