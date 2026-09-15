@@ -9,11 +9,8 @@ import (
 	"github.com/theairblow/turnable/pkg/common"
 )
 
-// ErrQuotaReached indicates a TURN allocation quota has been exhausted
-var ErrQuotaReached = errors.New("turn allocation quota reached")
-
-// ErrUnauthorized indicates a TURN authorization failure
-var ErrUnauthorized = errors.New("turn server authorization failed")
+// ErrTURNRejected indicates a TURN server rejected a request, so its credentials must be replaced
+var ErrTURNRejected = errors.New("turn server rejected request")
 
 // TURNInfo describes the TURN server used to establish the packet underlay
 type TURNInfo struct {

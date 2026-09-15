@@ -164,7 +164,7 @@ func (D *Handler) connectClientSession() error {
 		turn := getTURNInfo()
 		raw, err = h.Connect(connCtx, dest, turn, true)
 		if err != nil {
-			if errors.Is(err, protocol.ErrUnauthorized) {
+			if errors.Is(err, protocol.ErrTURNRejected) {
 				platformHandler.InvalidateTURNInfo(turn)
 			}
 			return
@@ -200,7 +200,8 @@ func (D *Handler) connectClientSession() error {
 	dialFn := func(dialCtx context.Context, idx int) (net.Conn, error) {
 		raw, enc, err := connectAndEncrypt(dialCtx, idx)
 		if err != nil {
-			if errors.Is(err, protocol.ErrQuotaReached) || errors.Is(err, protocol.ErrUnauthorized) {
+			if errors.Is(err, protocol.ErrTURNRejected) && dialCtx.Err() == nil {
+				D.log.Warn("peer connection failed with TURN error, triggering full reconnect", "peer_idx", idx, "error", err)
 				fullReconnect(err.Error())
 			}
 			return nil, err
@@ -220,6 +221,7 @@ func (D *Handler) connectClientSession() error {
 			rej := rejected
 			primaryMu.Unlock()
 			if rej {
+				_ = raw.Close()
 				return nil, connection.ErrPeerDone
 			}
 
@@ -286,6 +288,7 @@ func (D *Handler) connectClientSession() error {
 			rej = rejected
 			primaryMu.Unlock()
 			if rej {
+				_ = raw.Close()
 				return nil, connection.ErrPeerDone
 			}
 		}

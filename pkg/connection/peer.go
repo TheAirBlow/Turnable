@@ -139,6 +139,10 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, dialFn func(context.C
 			entry.mu.Lock()
 			entry.conn = newConn
 			entry.mu.Unlock()
+			if m.ctx.Err() != nil {
+				_ = newConn.Close()
+				return
+			}
 			entry.connected.Store(true)
 			delay = peerReconnectInit
 

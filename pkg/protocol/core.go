@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	pionlog "github.com/pion/logging"
+	"github.com/pion/stun/v3"
 	"github.com/pion/turn/v5"
 	"github.com/theairblow/turnable/pkg/common"
 )
@@ -116,13 +117,11 @@ func openTURNUnderlay(relay TURNInfo, dest net.Addr, proto string, log *slog.Log
 	return conn, dest, nil
 }
 
-// handleTURNError handles TURN errors and replaces them if necessary
+// handleTURNError marks TURN server error responses with ErrTURNRejected
 func handleTURNError(err error) error {
-	if strings.Contains(err.Error(), "Allocation Quota Reached") {
-		return fmt.Errorf("%w", ErrQuotaReached)
-	}
-	if strings.Contains(err.Error(), "Unauthorized") {
-		return fmt.Errorf("%w", ErrUnauthorized)
+	var turnErr *stun.TurnError
+	if errors.As(err, &turnErr) || strings.Contains(err.Error(), "Allocation Quota Reached") || strings.Contains(err.Error(), "Unauthorized") {
+		return fmt.Errorf("%w: %w", ErrTURNRejected, err)
 	}
 	return err
 }
