@@ -161,7 +161,13 @@ func (D *Handler) handlePrimaryPeer(
 	platCfg := platformHandler.GetConfig()
 	muxServer.SetRateLimit(platCfg.BandwidthRelay * float64(clientCfg.Peers))
 
-	peerConn.SetOnAllPeersGone(func() { _ = muxServer.Close() })
+	go func() {
+		select {
+		case <-peerConn.AllPeersGone():
+			_ = muxServer.Close()
+		case <-ctx.Done():
+		}
+	}()
 
 	D.log.Info("relay handshake completed", "addr", client.Address, "session_uuid", sessionUUIDStr, "user_uuid", clientCfg.UserUUID, "routes", len(routes))
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/theairblow/turnable/pkg/common"
+	"github.com/theairblow/turnable/pkg/platform"
 	"github.com/theairblow/turnable/pkg/protocol"
 )
 
@@ -27,6 +28,16 @@ type vkAPIError struct {
 	SessionToken   string
 	AdFP           string
 	RedirectURI    string
+}
+
+// checkVKCallsError inspects a VK calls-API JSON response for an error envelope
+func checkVKCallsError(resp map[string]any) error {
+	errMap, ok := resp["error"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	apiErr := parseVKAPIError(errMap)
+	return fmt.Errorf("%w: vk api error %d: %s", platform.ErrFatal, apiErr.Code, apiErr.Message)
 }
 
 // vkCallsSessionData stores the anonymous VK calls login payload
@@ -256,7 +267,7 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 
 			token, ok := common.NestedString(resp, "data", "access_token")
 			if !ok || token == "" {
-				return "", "", errors.New("field data.access_token is missing")
+				return "", "", fmt.Errorf("%w: field data.access_token is missing", platform.ErrFatal)
 			}
 
 			messagesToken = token
@@ -280,7 +291,7 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 		if errMap, ok := resp["error"].(map[string]any); ok {
 			apiErr := parseVKAPIError(errMap)
 			if apiErr.Code != 14 {
-				return "", "", fmt.Errorf("%s", apiErr.Message)
+				return "", "", fmt.Errorf("%w: vk api error %d: %s", platform.ErrFatal, apiErr.Code, apiErr.Message)
 			}
 			slog.Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
 
@@ -314,7 +325,7 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 
 		token, ok := common.NestedString(resp, "response", "token")
 		if !ok || token == "" {
-			return "", "", errors.New("field response.token is missing")
+			return "", "", fmt.Errorf("%w: field response.token is missing", platform.ErrFatal)
 		}
 
 		slog.Debug("vk authorize anonymous call token acquired")
@@ -351,10 +362,13 @@ func (V *Handler) callsLogin(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := checkVKCallsError(resp); err != nil {
+		return "", err
+	}
 
 	sessionKey, ok := resp["session_key"].(string)
 	if !ok || sessionKey == "" {
-		return "", fmt.Errorf("unexpected anonym login response: %v", resp)
+		return "", fmt.Errorf("%w: unexpected anonym login response: %v", platform.ErrFatal, resp)
 	}
 	slog.Debug("vk calls login completed")
 	return sessionKey, nil
@@ -377,6 +391,9 @@ func (V *Handler) joinConversation(ctx context.Context, callID, anonymToken, ses
 		"Referer": "https://vk.com/",
 	})
 	if err != nil {
+		return vkStartedConversationInfo{}, err
+	}
+	if err := checkVKCallsError(resp); err != nil {
 		return vkStartedConversationInfo{}, err
 	}
 

@@ -19,6 +19,7 @@ type TurnableClient struct {
 
 	running atomic.Bool
 	handler connection.Handler
+	events  <-chan connection.ConnectEvent
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -74,12 +75,14 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 
 	connHandler.SetLogger(c.log)
 
-	if err := connHandler.Connect(c.Config); err != nil {
+	events, err := connHandler.Connect(c.Config)
+	if err != nil {
 		_ = connHandler.Close()
 		return fmt.Errorf("connect: %w", err)
 	}
 
 	c.handler = connHandler
+	c.events = events
 
 	baseAddr := "127.0.0.1:0"
 	if len(listenAddrs) > 0 {
@@ -120,6 +123,11 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 // IsRunning returns whether the Turnable client is currently running
 func (c *TurnableClient) IsRunning() bool {
 	return c.running.Load()
+}
+
+// Events returns the connection handler's connectivity transition stream
+func (c *TurnableClient) Events() <-chan connection.ConnectEvent {
+	return c.events
 }
 
 // Stop stops the Turnable client

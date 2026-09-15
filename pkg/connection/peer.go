@@ -42,9 +42,9 @@ type PeerConn struct {
 	allGone  atomic.Bool
 
 	peerReady chan struct{}
+	allGoneCh chan struct{}
 
-	log            *slog.Logger
-	onAllPeersGone func()
+	log *slog.Logger
 }
 
 // NewPeerConn creates an empty PeerConn derived from the given context
@@ -53,6 +53,7 @@ func NewPeerConn(ctx context.Context) *PeerConn {
 	p := &PeerConn{
 		incoming:  make(chan []byte, peerIncomingBufSize),
 		peerReady: make(chan struct{}),
+		allGoneCh: make(chan struct{}),
 		ctx:       ctx,
 		cancel:    cancel,
 		log:       slog.Default(),
@@ -60,11 +61,9 @@ func NewPeerConn(ctx context.Context) *PeerConn {
 	return p
 }
 
-// SetOnAllPeersGone registers a callback invoked when the last peer slot is removed
-func (m *PeerConn) SetOnAllPeersGone(fn func()) {
-	m.mu.Lock()
-	m.onAllPeersGone = fn
-	m.mu.Unlock()
+// AllPeersGone returns a channel that is closed once every peer slot has been lost
+func (m *PeerConn) AllPeersGone() <-chan struct{} {
+	return m.allGoneCh
 }
 
 // SetLogger sets the logger
@@ -244,19 +243,14 @@ func (m *PeerConn) removePeer(idx int) {
 	}
 }
 
-// notifyAllPeersGone closes the peer context and fires the callback once
+// notifyAllPeersGone closes the peer context and the AllPeersGone channel, once
 func (m *PeerConn) notifyAllPeersGone() {
 	if !m.allGone.CompareAndSwap(false, true) {
 		return
 	}
 	m.log.Debug("all peers disconnected, closing peer conn")
 	m.cancel()
-	m.mu.RLock()
-	fn := m.onAllPeersGone
-	m.mu.RUnlock()
-	if fn != nil {
-		fn()
-	}
+	close(m.allGoneCh)
 }
 
 // Read blocks until a packet arrives from any peer

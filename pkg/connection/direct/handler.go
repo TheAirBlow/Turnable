@@ -7,17 +7,11 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/theairblow/turnable/pkg/config"
 	"github.com/theairblow/turnable/pkg/config/providers"
 	"github.com/theairblow/turnable/pkg/connection"
 	platformpkg "github.com/theairblow/turnable/pkg/platform"
-)
-
-const (
-	fullReconnectInit = 5 * time.Second
-	fullReconnectMax  = 30 * time.Second
 )
 
 // Handler establishes a direct raw UDP connection to a gateway
@@ -32,6 +26,7 @@ type Handler struct {
 	stateMu         sync.RWMutex
 	reconnectCtx    context.Context
 	reconnectCancel context.CancelFunc
+	events          *connection.EventStream
 
 	log *slog.Logger
 }
@@ -62,10 +57,10 @@ func (D *Handler) AcceptClients(_ context.Context) (<-chan connection.ServerClie
 	return nil, errors.New("direct handler does not support server mode")
 }
 
-// Connect connects to a remote server
-func (D *Handler) Connect(rawConfig config.Config) error {
+// Connect connects to a remote server, returning a channel of connectivity transitions
+func (D *Handler) Connect(rawConfig config.Config) (<-chan connection.ConnectEvent, error) {
 	if !D.running.CompareAndSwap(false, true) {
-		return errors.New("already running")
+		return nil, errors.New("already running")
 	}
 	if D.log == nil {
 		D.log = slog.Default()
@@ -80,30 +75,29 @@ func (D *Handler) Connect(rawConfig config.Config) error {
 
 	cfg, ok := rawConfig.(*ClientConfig)
 	if !ok {
-		return errors.New("invalid config instance")
+		return nil, errors.New("invalid config instance")
 	}
 
 	err := cfg.Validate()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	D.log.Warn("using a direct connection is dangerous, please reconsider!")
 
 	reconnectCtx, reconnectCancel := context.WithCancel(context.Background())
+	events := connection.NewEventStream()
 	D.stateMu.Lock()
 	D.clientConfig = cfg
 	D.reconnectCtx = reconnectCtx
 	D.reconnectCancel = reconnectCancel
+	D.events = events
 	D.stateMu.Unlock()
 
-	if err := D.connectSession(); err != nil {
-		reconnectCancel()
-		return err
-	}
+	connection.RunReconnectLoop(reconnectCtx, D.log, &D.reconnecting, events, "initial connect", D.connectSession)
 
 	success = true
-	return nil
+	return events.Chan(), nil
 }
 
 // OpenChannel opens a new logical data channel
@@ -132,11 +126,13 @@ func (D *Handler) Disconnect() error {
 	cancel := D.cancel
 	peerConn := D.peerConn
 	reconnectCancel := D.reconnectCancel
+	events := D.events
 	D.cancel = nil
 	D.peerConn = nil
 	D.reconnectCtx = nil
 	D.reconnectCancel = nil
 	D.clientConfig = nil
+	D.events = nil
 	D.stateMu.Unlock()
 
 	if cancel != nil {
@@ -144,6 +140,9 @@ func (D *Handler) Disconnect() error {
 	}
 	if reconnectCancel != nil {
 		reconnectCancel()
+	}
+	if events != nil {
+		events.Close()
 	}
 	if peerConn != nil {
 		return peerConn.Close()

@@ -28,11 +28,6 @@ const (
 	relayAckErr byte = 1
 
 	relayHandshakeTimeout = 10 * time.Second
-
-	fullReconnectInit = 5 * time.Second
-	fullReconnectMax  = 30 * time.Second
-
-	peerHandshakeRetryMax = 45 * time.Second
 )
 
 // ErrAckRejected is returned when the server sends an error ACK during handshake
@@ -63,6 +58,7 @@ type Handler struct {
 	stateMu         sync.RWMutex
 	reconnectCtx    context.Context
 	reconnectCancel context.CancelFunc
+	events          *connection.EventStream
 
 	log *slog.Logger
 }
@@ -153,10 +149,10 @@ func (D *Handler) Stop() error {
 	return protoHandler.Stop()
 }
 
-// Connect connects to a remote server
-func (D *Handler) Connect(rawConfig config.Config) error {
+// Connect connects to a remote server, returning a channel of connectivity transitions
+func (D *Handler) Connect(rawConfig config.Config) (<-chan connection.ConnectEvent, error) {
 	if !D.running.CompareAndSwap(false, true) {
-		return errors.New("already running")
+		return nil, errors.New("already running")
 	}
 	if D.log == nil {
 		D.log = slog.Default()
@@ -171,7 +167,7 @@ func (D *Handler) Connect(rawConfig config.Config) error {
 
 	cfg, ok := rawConfig.(*ClientConfig)
 	if !ok {
-		return errors.New("invalid config instance")
+		return nil, errors.New("invalid config instance")
 	}
 
 	if cfg.Proto == "none" {
@@ -179,19 +175,18 @@ func (D *Handler) Connect(rawConfig config.Config) error {
 	}
 
 	reconnectCtx, reconnectCancel := context.WithCancel(context.Background())
+	events := connection.NewEventStream()
 	D.stateMu.Lock()
 	D.clientConfig = cfg
 	D.reconnectCtx = reconnectCtx
 	D.reconnectCancel = reconnectCancel
+	D.events = events
 	D.stateMu.Unlock()
 
-	if err := D.connectClientSession(); err != nil {
-		reconnectCancel()
-		return err
-	}
+	connection.RunReconnectLoop(reconnectCtx, D.log, &D.reconnecting, events, "initial connect", D.connectClientSession)
 
 	success = true
-	return nil
+	return events.Chan(), nil
 }
 
 // OpenChannel opens a new logical data channel
@@ -263,6 +258,7 @@ func (D *Handler) Disconnect() error {
 	muxClient := D.muxClient
 	peerConn := D.peerConn
 	reconnectCancel := D.reconnectCancel
+	events := D.events
 	D.cancel = nil
 	D.platform = nil
 	D.muxClient = nil
@@ -271,6 +267,7 @@ func (D *Handler) Disconnect() error {
 	D.reconnectCancel = nil
 	D.clientConfig = nil
 	D.sessionUUID = ""
+	D.events = nil
 	D.stateMu.Unlock()
 
 	if cancel != nil {
@@ -279,6 +276,10 @@ func (D *Handler) Disconnect() error {
 
 	if reconnectCancel != nil {
 		reconnectCancel()
+	}
+
+	if events != nil {
+		events.Close()
 	}
 
 	return errors.Join(
@@ -316,6 +317,7 @@ func (D *Handler) Close() error {
 	muxClient := D.muxClient
 	peerConn := D.peerConn
 	reconnectCancel := D.reconnectCancel
+	events := D.events
 	D.cancel = nil
 	D.platform = nil
 	D.muxClient = nil
@@ -324,6 +326,7 @@ func (D *Handler) Close() error {
 	D.reconnectCancel = nil
 	D.clientConfig = nil
 	D.sessionUUID = ""
+	D.events = nil
 	D.stateMu.Unlock()
 
 	if cancel != nil {
@@ -332,6 +335,10 @@ func (D *Handler) Close() error {
 
 	if reconnectCancel != nil {
 		reconnectCancel()
+	}
+
+	if events != nil {
+		events.Close()
 	}
 
 	return errors.Join(

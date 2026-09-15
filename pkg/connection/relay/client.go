@@ -28,15 +28,13 @@ func (D *Handler) connectClientSession() error {
 	oldPlatform := D.platform
 	cfg := D.clientConfig
 	reconnectCtx := D.reconnectCtx
+	connEvents := D.events
 	D.cancel = nil
 	D.muxClient = nil
 	D.peerConn = nil
 	D.platform = nil
 	D.stateMu.Unlock()
 
-	if oldPeerConn != nil {
-		oldPeerConn.SetOnAllPeersGone(nil)
-	}
 	if oldCancel != nil {
 		oldCancel()
 	}
@@ -129,44 +127,7 @@ func (D *Handler) connectClientSession() error {
 	}
 
 	fullReconnect := func(reason string) {
-		if !D.reconnecting.CompareAndSwap(false, true) {
-			return
-		}
-
-		go func() {
-			defer D.reconnecting.Store(false)
-			delay := fullReconnectInit
-
-			D.log.Info("starting full reconnect", "reason", reason, "delay", delay)
-			select {
-			case <-sessionCtx.Done():
-				return
-			case <-time.After(delay):
-			}
-
-			for {
-				if err := D.connectClientSession(); err == nil {
-					return
-				} else {
-					D.log.Warn("full reconnect failed, retrying", "delay", delay, "error", err)
-				}
-
-				D.stateMu.RLock()
-				ctx := D.reconnectCtx
-				D.stateMu.RUnlock()
-				if ctx == nil {
-					return
-				}
-
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(delay):
-				}
-
-				delay = min(delay*2, fullReconnectMax)
-			}
-		}()
+		connection.RunReconnectLoop(reconnectCtx, D.log, &D.reconnecting, connEvents, reason, D.connectClientSession)
 	}
 
 	turnServerIdx := 0
@@ -348,7 +309,13 @@ func (D *Handler) connectClientSession() error {
 
 	peerConn := connection.NewPeerConn(sessionCtx)
 	peerConn.SetLogger(D.log)
-	peerConn.SetOnAllPeersGone(func() { fullReconnect("all peers disconnected") })
+	go func() {
+		select {
+		case <-peerConn.AllPeersGone():
+			fullReconnect("all peers disconnected")
+		case <-sessionCtx.Done():
+		}
+	}()
 
 	for idx := 0; idx < numPeers; idx++ {
 		_ = peerConn.AddPeer(dialFn)

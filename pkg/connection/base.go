@@ -14,6 +14,12 @@ import (
 // ErrReconnecting is returned when a full reconnect is in progress.
 var ErrReconnecting = errors.New("full reconnect is in progress")
 
+// ConnectEvent reports a connectivity transition emitted by a Handler's reconnect loop
+type ConnectEvent struct {
+	Connected bool  // true once a session is live
+	Err       error // reason for the transition when Connected is false
+}
+
 // Handler represents a connection handler
 type Handler interface {
 	ID() string                                                                                                      // Returns the unique ID of this handler
@@ -23,7 +29,7 @@ type Handler interface {
 	Start(rawConfig config.Config, provider providers.Provider) error                                                // Starts the server listener
 	Stop() error                                                                                                     // Stops the server listener
 	AcceptClients(ctx context.Context) (<-chan ServerClient, error)                                                  // Accepts and emits new authenticated server clients
-	Connect(rawConfig config.Config) error                                                                           // Connects to a remote server
+	Connect(rawConfig config.Config) (<-chan ConnectEvent, error)                                                    // Connects to a remote server, streaming connectivity transitions until the loop gives up for good
 	OpenChannel(routeIdx byte) (net.Conn, error)                                                                     // Opens a new logical data channel for the given route index
 	Disconnect() error                                                                                               // Gracefully disconnects from the current remote server
 	Close() error                                                                                                    // Forcibly closes the current remove server connection
