@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,14 +29,43 @@ type vkAPIError struct {
 	RedirectURI    string
 }
 
+// vkCallsError stores an error returned by the VK calls backend
+type vkCallsError struct {
+	Code    int
+	Message string
+}
+
+// Error formats the VK calls backend error
+func (e *vkCallsError) Error() string {
+	return fmt.Sprintf("vk calls error %d: %s", e.Code, e.Message)
+}
+
 // checkVKCallsError inspects a VK calls-API JSON response for an error envelope
 func checkVKCallsError(resp map[string]any) error {
-	errMap, ok := resp["error"].(map[string]any)
-	if !ok {
-		return nil
+	if errMap, ok := resp["error"].(map[string]any); ok {
+		apiErr := parseVKAPIError(errMap)
+		return fmt.Errorf("%w: %w", platform.ErrFatal, &vkCallsError{Code: apiErr.Code, Message: apiErr.Message})
 	}
-	apiErr := parseVKAPIError(errMap)
-	return fmt.Errorf("%w: vk api error %d: %s", platform.ErrFatal, apiErr.Code, apiErr.Message)
+	if code, ok := resp["error_code"].(float64); ok {
+		message, _ := resp["error_msg"].(string)
+		return fmt.Errorf("%w: %w", platform.ErrFatal, &vkCallsError{Code: int(code), Message: message})
+	}
+	return nil
+}
+
+// isVKCallTokenRejected reports whether err means VK no longer accepts the anonymous call token
+func isVKCallTokenRejected(err error) bool {
+	var callsErr *vkCallsError
+	if !errors.As(err, &callsErr) {
+		return false
+	}
+	return callsErr.Code == 457 || (callsErr.Code == 100 && strings.Contains(callsErr.Message, "anonym_token"))
+}
+
+// isVKSessionRejected reports whether err means VK no longer accepts the calls session key
+func isVKSessionRejected(err error) bool {
+	var callsErr *vkCallsError
+	return errors.As(err, &callsErr) && (callsErr.Code == 102 || callsErr.Code == 103)
 }
 
 // vkCallsSessionData stores the anonymous VK calls login payload
@@ -58,84 +86,7 @@ type vkStartedConversationInfo struct {
 	} `json:"turnServer"`
 }
 
-const vkAuthCacheTTL = 9 * time.Minute // Cache TTL for VK authorization snapshots
-
-// vkAuthSnapshot stores one cached VK authorization result
-type vkAuthSnapshot struct {
-	MessagesAccessToken string
-	AnonymToken         string
-	SessionKey          string
-	Endpoint            string
-	TURNInfos           []protocol.TURNInfo
-	ExpiresAt           time.Time
-}
-
-// vkAuthCacheState tracks cached and in-flight VK authorization requests
-var vkAuthCacheState = struct { // Shared VK auth cache and in-flight coordination state
-	mu       sync.Mutex
-	entries  map[string]vkAuthSnapshot
-	inflight map[string]chan struct{}
-}{
-	entries:  make(map[string]vkAuthSnapshot),
-	inflight: make(map[string]chan struct{}),
-}
-
-// getCachedVKAuth returns a cached VK auth snapshot when it is still valid
-func getCachedVKAuth(key string) (vkAuthSnapshot, bool) {
-	now := time.Now()
-
-	vkAuthCacheState.mu.Lock()
-	defer vkAuthCacheState.mu.Unlock()
-
-	snapshot, ok := vkAuthCacheState.entries[key]
-	if !ok {
-		return vkAuthSnapshot{}, false
-	}
-	if now.After(snapshot.ExpiresAt) {
-		delete(vkAuthCacheState.entries, key)
-		return vkAuthSnapshot{}, false
-	}
-	return snapshot, true
-}
-
-// putCachedVKAuth stores a VK auth snapshot with a fresh expiration time
-func putCachedVKAuth(key string, snapshot vkAuthSnapshot) {
-	snapshot.ExpiresAt = time.Now().Add(vkAuthCacheTTL)
-
-	vkAuthCacheState.mu.Lock()
-	defer vkAuthCacheState.mu.Unlock()
-	vkAuthCacheState.entries[key] = snapshot
-}
-
-// beginVKAuth registers one in-flight VK auth request and returns its coordination channel
-func beginVKAuth(key string) (leader bool, waitCh chan struct{}) {
-	vkAuthCacheState.mu.Lock()
-	defer vkAuthCacheState.mu.Unlock()
-
-	if ch, ok := vkAuthCacheState.inflight[key]; ok {
-		return false, ch
-	}
-
-	ch := make(chan struct{})
-	vkAuthCacheState.inflight[key] = ch
-	return true, ch
-}
-
-// endVKAuth releases the in-flight marker for a VK auth request
-func endVKAuth(key string) {
-	vkAuthCacheState.mu.Lock()
-	ch, ok := vkAuthCacheState.inflight[key]
-	if ok {
-		delete(vkAuthCacheState.inflight, key)
-	}
-	vkAuthCacheState.mu.Unlock()
-
-	if ok {
-		close(ch)
-	}
-}
-
-// Authorize authorizes with VK and fetches the signaling and TURN session state
+// Authorize authorizes with VK, reusing cached credentials for the call while VK still accepts them
 func (V *Handler) Authorize(callID string, username string) error {
 	if strings.TrimSpace(callID) == "" {
 		return errors.New("call ID is required")
@@ -153,43 +104,54 @@ func (V *Handler) Authorize(callID string, username string) error {
 	}
 
 	V.ensureInit()
-	joinURL := "https://vk.com/call/join/" + normalizedCallID
-	name := strings.TrimSpace(username)
 
 	V.mu.Lock()
 	V.callID = normalizedCallID
-	V.joinURL = joinURL
-	V.username = name
+	V.joinURL = "https://vk.com/call/join/" + normalizedCallID
+	V.username = strings.TrimSpace(username)
 	V.mu.Unlock()
 
-	cacheKey := normalizedCallID + "|" + name
-	for {
-		if cached, ok := getCachedVKAuth(cacheKey); ok {
-			V.mu.Lock()
-			V.messagesAccessToken = cached.MessagesAccessToken
-			V.anonymToken = cached.AnonymToken
-			V.sessionKey = cached.SessionKey
-			V.endpoint = cached.Endpoint
-			V.turnInfos = cached.TURNInfos
-			V.mu.Unlock()
-			slog.Debug("vk authorize reused cached auth state")
-			return nil
-		}
+	return V.authorize(false)
+}
 
-		leader, waitCh := beginVKAuth(cacheKey)
-		if leader {
-			defer endVKAuth(cacheKey)
-			break
-		}
+// authorize loads credentials for the current call, joining it when cached TURN credentials are unusable or an endpoint is required
+func (V *Handler) authorize(needEndpoint bool) error {
+	V.mu.RLock()
+	callID := V.callID
+	joinURL := V.joinURL
+	name := V.username
+	V.mu.RUnlock()
 
-		select {
-		case <-waitCh:
-			continue
-		}
-	}
+	lock := vkAuthLock(callID)
+	lock.Lock()
+	defer lock.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
+
+	if entry, ok := getCachedVKAuth(callID); ok && entry.AnonymToken != "" {
+		refreshed := V.refreshMessagesToken(ctx, &entry)
+		if !needEndpoint && entry.turnUsable() {
+			if refreshed {
+				putCachedVKAuth(callID, entry)
+			}
+			V.applyAuth(entry, "")
+			slog.Info("vk authorize reused cached turn credentials")
+			return nil
+		}
+
+		info, err := V.joinWithEntry(ctx, callID, &entry)
+		if err == nil {
+			turnAddrs := V.storeAuth(callID, entry, info)
+			slog.Info("vk authorize reused cached call token", "turn_servers", strings.Join(turnAddrs, ","))
+			return nil
+		}
+		if !isVKCallTokenRejected(err) {
+			slog.Warn("vk join conversation failed", "error", err)
+			return err
+		}
+		slog.Info("vk cached call token rejected, requesting a new one", "error", err)
+	}
 
 	messagesToken, anonymToken, err := V.authorizeAnonymous(ctx, joinURL, name)
 	if err != nil {
@@ -197,45 +159,85 @@ func (V *Handler) Authorize(callID string, username string) error {
 		return err
 	}
 
-	sessionKey, err := V.callsLogin(ctx)
-	if err != nil {
-		slog.Warn("vk calls login failed", "error", err)
-		return err
+	entry := vkAuthEntry{
+		Username:            name,
+		MessagesAccessToken: messagesToken,
+		AnonymToken:         anonymToken,
 	}
-
-	startedInfo, err := V.joinConversation(ctx, normalizedCallID, anonymToken, sessionKey)
+	info, err := V.joinWithEntry(ctx, callID, &entry)
 	if err != nil {
 		slog.Warn("vk join conversation failed", "error", err)
 		return err
 	}
 
-	turnAddrs := normalizeTurnAddresses(startedInfo.TurnServer.Urls)
+	turnAddrs := V.storeAuth(callID, entry, info)
+	slog.Info("vk authorize completed", "turn_servers", strings.Join(turnAddrs, ","))
+	return nil
+}
 
-	V.mu.Lock()
-	V.messagesAccessToken = messagesToken
-	V.anonymToken = anonymToken
-	V.sessionKey = sessionKey
-	V.endpoint = startedInfo.Endpoint
-	V.turnInfos = make([]protocol.TURNInfo, len(turnAddrs))
+// joinWithEntry joins the call with the entry's call token, logging in again when the session key is rejected
+func (V *Handler) joinWithEntry(ctx context.Context, callID string, entry *vkAuthEntry) (vkStartedConversationInfo, error) {
+	if entry.SessionKey != "" {
+		info, err := V.joinConversation(ctx, callID, entry.AnonymToken, entry.SessionKey)
+		if !isVKSessionRejected(err) {
+			return info, err
+		}
+		slog.Debug("vk cached session key rejected, logging in again", "error", err)
+	}
+
+	sessionKey, err := V.callsLogin(ctx)
+	if err != nil {
+		return vkStartedConversationInfo{}, err
+	}
+
+	entry.SessionKey = sessionKey
+	return V.joinConversation(ctx, callID, entry.AnonymToken, sessionKey)
+}
+
+// refreshMessagesToken replaces an expired messages token in the entry, reporting whether it changed
+func (V *Handler) refreshMessagesToken(ctx context.Context, entry *vkAuthEntry) bool {
+	if !messagesTokenExpired(entry.MessagesAccessToken) {
+		return false
+	}
+
+	token, err := V.fetchMessagesToken(ctx)
+	if err != nil {
+		slog.Warn("vk messages token refresh failed", "error", err)
+		return false
+	}
+
+	entry.MessagesAccessToken = token
+	return true
+}
+
+// storeAuth caches the entry with TURN credentials from the join response and applies it to the handler
+func (V *Handler) storeAuth(callID string, entry vkAuthEntry, info vkStartedConversationInfo) []string {
+	turnAddrs := normalizeTurnAddresses(info.TurnServer.Urls)
+	entry.TURNInfos = make([]protocol.TURNInfo, len(turnAddrs))
 	for i, addr := range turnAddrs {
-		V.turnInfos[i] = protocol.TURNInfo{
+		entry.TURNInfos[i] = protocol.TURNInfo{
 			Address:  addr,
-			Username: startedInfo.TurnServer.Username,
-			Password: startedInfo.TurnServer.Password,
+			Username: info.TurnServer.Username,
+			Password: info.TurnServer.Password,
 		}
 	}
 
-	snapshot := vkAuthSnapshot{
-		MessagesAccessToken: V.messagesAccessToken,
-		AnonymToken:         V.anonymToken,
-		SessionKey:          V.sessionKey,
-		Endpoint:            V.endpoint,
-		TURNInfos:           V.turnInfos,
-	}
-	V.mu.Unlock()
-	putCachedVKAuth(cacheKey, snapshot)
-	slog.Info("vk authorize completed", "turn_servers", strings.Join(turnAddrs, ","))
-	return nil
+	putCachedVKAuth(callID, entry)
+	V.applyAuth(entry, info.Endpoint)
+	return turnAddrs
+}
+
+// applyAuth loads cached credentials and the signaling endpoint into the handler
+func (V *Handler) applyAuth(entry vkAuthEntry, endpoint string) {
+	V.mu.Lock()
+	defer V.mu.Unlock()
+
+	V.username = entry.Username
+	V.messagesAccessToken = entry.MessagesAccessToken
+	V.anonymToken = entry.AnonymToken
+	V.sessionKey = entry.SessionKey
+	V.endpoint = endpoint
+	V.turnInfos = entry.TURNInfos
 }
 
 // authorizeAnonymous performs the full VK anonymous auth flow, returning the messages token and call token
@@ -254,25 +256,12 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 
 	for attempt := 0; attempt < vkCaptchaRetries; attempt++ {
 		if messagesToken == "" {
-			resp, err := V.postVKForm(ctx, vkLoginEndpoint+"/?act=get_anonym_token", common.NewValues(
-				"client_id", vkClientID,
-				"token_type", "messages",
-				"client_secret", vkClientSecret,
-				"version", "1",
-				"app_id", vkClientID,
-			), nil)
+			token, err := V.fetchMessagesToken(ctx)
 			if err != nil {
 				return "", "", err
 			}
 
-			token, ok := common.NestedString(resp, "data", "access_token")
-			if !ok || token == "" {
-				return "", "", fmt.Errorf("%w: field data.access_token is missing", platform.ErrFatal)
-			}
-
 			messagesToken = token
-
-			slog.Debug("vk authorize anonymous messages token acquired")
 			form = common.NewValues(
 				"vk_join_link", joinURL,
 				"name", username,
@@ -334,6 +323,28 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 
 	slog.Info("all auto captcha attempts exhausted, falling back to manual solve")
 	return V.solveManualCaptcha(ctx, joinURL)
+}
+
+// fetchMessagesToken requests a new anonymous messages token
+func (V *Handler) fetchMessagesToken(ctx context.Context) (string, error) {
+	resp, err := V.postVKForm(ctx, vkLoginEndpoint+"/?act=get_anonym_token", common.NewValues(
+		"client_id", vkClientID,
+		"token_type", "messages",
+		"client_secret", vkClientSecret,
+		"version", "1",
+		"app_id", vkClientID,
+	), nil)
+	if err != nil {
+		return "", err
+	}
+
+	token, ok := common.NestedString(resp, "data", "access_token")
+	if !ok || token == "" {
+		return "", fmt.Errorf("%w: field data.access_token is missing", platform.ErrFatal)
+	}
+
+	slog.Debug("vk anonymous messages token acquired")
+	return token, nil
 }
 
 // callsLogin creates an anonymous calls session in the VK calls backend

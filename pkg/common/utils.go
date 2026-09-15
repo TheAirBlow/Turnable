@@ -1,6 +1,8 @@
 package common
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -8,6 +10,21 @@ import (
 // IsNullOrWhiteSpace checks whether a string is empty with whitespaces removed
 func IsNullOrWhiteSpace(s string) bool {
 	return len(strings.TrimSpace(s)) == 0
+}
+
+// CachePaths returns the global and working directory paths for a cache file
+func CachePaths(localName, globalName string) (string, string) {
+	local := localName
+	if cwd, err := os.Getwd(); err == nil {
+		local = filepath.Join(cwd, localName)
+	}
+
+	configDir, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(configDir) == "" {
+		return "", local
+	}
+
+	return filepath.Join(configDir, "turnable", globalName), local
 }
 
 // NestedString walks nested maps and returns terminal scalar as string

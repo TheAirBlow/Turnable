@@ -25,6 +25,11 @@ var (
 // defaultTTL is used for every entry since the native resolver does not expose real TTLs
 const defaultTTL = 5 * time.Minute
 
+const (
+	dnsCacheLocalName  = ".dns_cache"     // DNS cache file name in the working directory
+	dnsCacheGlobalName = "dns_cache.json" // DNS cache file name in the global config directory
+)
+
 // warmupDomains contains a list of domains to resolve when warmup is requested
 var warmupDomains = []string{
 	"vk.com",
@@ -55,28 +60,12 @@ type dnsCacheFile struct {
 
 // init loads DNS cache state from disk
 func init() {
-	primary, fallback := cachePaths()
+	primary, fallback := CachePaths(dnsCacheLocalName, dnsCacheGlobalName)
 	if loadDNSCacheFrom(primary) {
 		return
 	}
 
 	loadDNSCacheFrom(fallback)
-}
-
-// cachePaths returns primary and fallback cache file paths
-func cachePaths() (string, string) {
-	fallback := ".dns_cache"
-	if cwd, err := os.Getwd(); err == nil {
-		fallback = filepath.Join(cwd, ".dns_cache")
-	}
-
-	configDir, err := os.UserConfigDir()
-	if err != nil || strings.TrimSpace(configDir) == "" {
-		return "", fallback
-	}
-
-	primary := filepath.Join(configDir, "turnable", "dns_cache.json")
-	return primary, fallback
 }
 
 // loadDNSCacheFrom loads cache entries from a single cache file path
@@ -119,7 +108,7 @@ func persistDNSCache() {
 		return
 	}
 
-	primary, fallback := cachePaths()
+	primary, fallback := CachePaths(dnsCacheLocalName, dnsCacheGlobalName)
 
 	if tryWriteCache(primary, data) == nil {
 		return

@@ -138,8 +138,12 @@ func (D *Handler) connectSession() error {
 		h.SetLogger(D.log.With("peer_idx", idx))
 		connCtx, connCancel := context.WithTimeout(dialCtx, 5*time.Second)
 		defer connCancel()
-		conn, err := h.Connect(connCtx, dest, getTURNInfo(), true)
+		turn := getTURNInfo()
+		conn, err := h.Connect(connCtx, dest, turn, true)
 		if err != nil {
+			if errors.Is(err, protocol.ErrUnauthorized) {
+				platformHandler.InvalidateTURNInfo(turn)
+			}
 			if errors.Is(err, protocol.ErrQuotaReached) || errors.Is(err, protocol.ErrUnauthorized) {
 				D.log.Warn("peer connection failed with TURN error, triggering full reconnect", "peer_idx", idx, "error", err)
 				fullReconnect(err.Error())

@@ -161,8 +161,12 @@ func (D *Handler) connectClientSession() error {
 		connCtx, connCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer connCancel()
 
-		raw, err = h.Connect(connCtx, dest, getTURNInfo(), true)
+		turn := getTURNInfo()
+		raw, err = h.Connect(connCtx, dest, turn, true)
 		if err != nil {
+			if errors.Is(err, protocol.ErrUnauthorized) {
+				platformHandler.InvalidateTURNInfo(turn)
+			}
 			return
 		}
 

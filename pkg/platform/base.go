@@ -16,6 +16,7 @@ type Handler interface {
 	ID() string                                                        // Returns the unique ID of this handler
 	GetConfig() Config                                                 // Returns the platform configuration
 	GetTURNInfo() []protocol.TURNInfo                                  // Returns the latest TURN server credentials
+	InvalidateTURNInfo(info protocol.TURNInfo)                         // Discards cached TURN credentials rejected by the TURN server
 	Authorize(callID string, username string) error                    // Authorizes with the platform's servers
 	Connect() error                                                    // Connects to the signaling server
 	Disconnect() error                                                 // Gracefully disconnects from the signaling server

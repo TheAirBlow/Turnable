@@ -43,14 +43,25 @@ func (V *Handler) Connect() error {
 	V.ensureInit()
 
 	V.mu.RLock()
+	callID := V.callID
 	endpoint := V.endpoint
 	profile := V.profile
 	videoTrackSlots := V.videoTrackSlots
 	V.mu.RUnlock()
 
-	if common.IsNullOrWhiteSpace(endpoint) {
+	if common.IsNullOrWhiteSpace(callID) {
 		slog.Warn("vk signaling connect rejected: not authorized")
 		return errors.New("authorize must be called before connect")
+	}
+
+	if common.IsNullOrWhiteSpace(endpoint) {
+		if err := V.authorize(true); err != nil {
+			return err
+		}
+
+		V.mu.RLock()
+		endpoint = V.endpoint
+		V.mu.RUnlock()
 	}
 
 	V.connMu.Lock()
