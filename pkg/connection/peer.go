@@ -124,93 +124,96 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, dialFn func(context.C
 	delay := time.Duration(0)
 
 	for {
-		if delay > 0 {
+		for {
+			if delay > 0 {
+				select {
+				case <-m.ctx.Done():
+					return
+				case <-time.After(delay):
+				}
+			} else if m.ctx.Err() != nil {
+				return
+			}
+
+			newConn, err := dialFn(m.ctx, idx)
+			if err == nil {
+				entry.mu.Lock()
+				entry.conn = newConn
+				entry.mu.Unlock()
+				if m.ctx.Err() != nil {
+					_ = newConn.Close()
+					return
+				}
+				entry.connected.Store(true)
+				delay = peerReconnectInit
+
+				select {
+				case <-m.peerReady:
+				default:
+					close(m.peerReady)
+				}
+
+				m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
+				break
+			}
+
+			if errors.Is(err, ErrPeerDone) {
+				m.log.Info("peer done, removing slot", "peer_idx", idx)
+				m.removePeer(idx)
+				return
+			}
+
+			if delay == 0 {
+				delay = peerReconnectInit
+			} else {
+				delay = min(delay*2, peerReconnectMax)
+			}
+			m.log.Warn("peer dial failed", "peer_idx", idx, "delay", delay, "error", err)
+		}
+
+		for {
+			entry.mu.Lock()
+			conn := entry.conn
+			entry.mu.Unlock()
+
+			n, err := conn.Read(buf)
+			if err == nil && n > 0 {
+				pkt := make([]byte, n)
+				copy(pkt, buf[:n])
+				select {
+				case m.incoming <- pkt:
+				case <-m.ctx.Done():
+					return
+				}
+				continue
+			}
+
 			select {
 			case <-m.ctx.Done():
 				return
-			case <-time.After(delay):
+			default:
 			}
-		} else if m.ctx.Err() != nil {
-			return
-		}
 
-		newConn, err := dialFn(m.ctx, idx)
-		if err == nil {
-			entry.mu.Lock()
-			entry.conn = newConn
-			entry.mu.Unlock()
-			if m.ctx.Err() != nil {
-				_ = newConn.Close()
+			if err == nil {
+				continue
+			}
+
+			entry.connected.Store(false)
+			_ = conn.Close()
+			m.log.Info("peer offline", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "error", err)
+			if m.countOnline() == 0 {
+				m.notifyAllPeersGone()
 				return
 			}
-			entry.connected.Store(true)
-			delay = peerReconnectInit
 
-			select {
-			case <-m.peerReady:
-			default:
-				close(m.peerReady)
+			if dialFn == nil {
+				m.removePeer(idx)
+				return
 			}
 
-			m.log.Info("peer online", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots())
+			delay = peerReconnectInit
 			break
 		}
-
-		if errors.Is(err, ErrPeerDone) {
-			m.log.Info("peer done, removing slot", "peer_idx", idx)
-			m.removePeer(idx)
-			return
-		}
-
-		if delay == 0 {
-			delay = peerReconnectInit
-		} else {
-			delay = min(delay*2, peerReconnectMax)
-		}
-		m.log.Warn("peer dial failed", "peer_idx", idx, "delay", delay, "error", err)
-	}
-
-	for {
-		entry.mu.Lock()
-		conn := entry.conn
-		entry.mu.Unlock()
-
-		n, err := conn.Read(buf)
-		if err == nil && n > 0 {
-			pkt := make([]byte, n)
-			copy(pkt, buf[:n])
-			select {
-			case m.incoming <- pkt:
-			case <-m.ctx.Done():
-				return
-			}
-			continue
-		}
-
-		select {
-		case <-m.ctx.Done():
-			return
-		default:
-		}
-
-		if err == nil {
-			continue
-		}
-
-		entry.connected.Store(false)
-		_ = conn.Close()
-		m.log.Info("peer offline", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "error", err)
-		if m.countOnline() == 0 {
-			m.notifyAllPeersGone()
-			return
-		}
-
-		if dialFn == nil {
-			m.removePeer(idx)
-			return
-		}
-
-		delay = peerReconnectInit
 	}
 }
 
@@ -366,3 +369,14 @@ func (peerDummyAddr) Network() string { return "peer" }
 
 // String returns the string form of this dummy address
 func (peerDummyAddr) String() string { return "peer" }
+
+// OneShotDial returns a dial function that hands out conn once, then reports ErrPeerDone since a dropped inbound conn cannot be redialed
+func OneShotDial(conn net.Conn) func(context.Context, int) (net.Conn, error) {
+	var used atomic.Bool
+	return func(context.Context, int) (net.Conn, error) {
+		if used.Swap(true) {
+			return nil, ErrPeerDone
+		}
+		return conn, nil
+	}
+}

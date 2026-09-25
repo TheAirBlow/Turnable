@@ -124,9 +124,7 @@ func (D *Handler) handlePrimaryPeer(
 		} else {
 			conn = client.Conn
 		}
-		_ = existSess.peerConn.AddPeer(func(_ context.Context, _ int) (net.Conn, error) {
-			return conn, nil
-		})
+		_ = existSess.peerConn.AddPeer(connection.OneShotDial(conn))
 		return nil
 	}
 
@@ -139,9 +137,7 @@ func (D *Handler) handlePrimaryPeer(
 		peer0 = client.Conn
 	}
 
-	_ = peerConn.AddPeer(func(_ context.Context, _ int) (net.Conn, error) {
-		return peer0, nil
-	})
+	_ = peerConn.AddPeer(connection.OneShotDial(peer0))
 
 	muxServer, err := connection.NewTinyMuxServer(peerConn)
 	if err != nil {
@@ -261,9 +257,7 @@ func (D *Handler) handleSecondaryPeer(
 		conn = client.Conn
 	}
 
-	_ = sess.peerConn.AddPeer(func(_ context.Context, _ int) (net.Conn, error) {
-		return conn, nil
-	})
+	_ = sess.peerConn.AddPeer(connection.OneShotDial(conn))
 
 	return nil
 }
