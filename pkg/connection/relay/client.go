@@ -331,6 +331,8 @@ func (D *Handler) connectClientSession() error {
 		return fmt.Errorf("tinymux setup: %w", err)
 	}
 
+	muxClient.SetStallHandler(func() { recoverStalledPeers(sessionCtx, muxClient, fullReconnect) })
+
 	platCfg = platformHandler.GetConfig()
 	if platCfg.BandwidthRelay > 0 {
 		muxClient.SetRateLimit(platCfg.BandwidthRelay * float64(numPeers))
@@ -361,4 +363,36 @@ func (D *Handler) connectClientSession() error {
 
 	D.log.Info("relay client session started", "peers", numPeers)
 	return nil
+}
+
+// stallSettleDelay is how long pongs get to return once connectivity is back before the session is rebuilt
+const stallSettleDelay = 3 * time.Second
+
+// recoverStalledPeers rides out a silent path: while the network is down it just waits, since the relay keeps our
+// allocation for minutes and KCP retransmits what was lost; once the network is back but the server still doesn't
+// answer, the allocation or NAT mapping is gone (e.g. the client IP changed), so the session is rebuilt from scratch
+func recoverStalledPeers(ctx context.Context, mux *connection.TinyMuxClient, fullReconnect func(string)) {
+	online := make(chan struct{})
+	go func() {
+		common.WaitForConnectivity()
+		close(online)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-online:
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(stallSettleDelay):
+	}
+
+	if mux.Responsive() {
+		return
+	}
+
+	fullReconnect("relay is silent after the network came back")
 }
