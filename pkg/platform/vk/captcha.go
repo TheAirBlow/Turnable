@@ -28,7 +28,7 @@ const (
 var (
 	deviceInfo = `{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1080,"innerWidth":1920,"innerHeight":951,"devicePixelRatio":1,"language":"en-US","languages":["en-US","en"],"webdriver":false,"hardwareConcurrency":8,"notificationsPermission":"denied"}`
 
-	reCaptchaPowArgs   = regexp.MustCompile(`}\("([^"]*)",\s*(\d+),\s*"[^"]*"\)\);\s*</script>`)                   // Extracts PoW input and difficulty from captcha HTML
+	reCaptchaPowArgs   = regexp.MustCompile(`}\('([^"]*)',\s*(\d+)`)                                               // Extracts PoW input and difficulty from captcha HTML
 	reCaptchaDebugInfo = regexp.MustCompile(`[A-Za-z_$][\w$]*:\s*"([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})"`) // Extracts the debug_info UUID out of window.vk
 
 	errCaptchaRateLimit = errors.New("captcha session rate limit reached") // Marks exhausted captcha sessions
