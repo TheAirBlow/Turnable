@@ -32,11 +32,11 @@ const (
 
 // warmupDomains contains a list of domains to resolve when warmup is requested
 var warmupDomains = []string{
-	"vk.com",
-	"api.vk.com",
-	"login.vk.com",
-	"id.vk.com",
-	"static.vk.com",
+	"vk.ru",
+	"api.vk.ru",
+	"login.vk.ru",
+	"id.vk.ru",
+	"static.vk.ru",
 	"calls.okcdn.ru",
 	"videowebrtc.okcdn.ru",
 }

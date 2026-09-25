@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	vkAPIEndpoint     = "https://api.vk.com/method"    // VK API endpoint
-	vkLoginEndpoint   = "https://login.vk.com"         // VK login endpoint
+	vkAPIEndpoint     = "https://api.vk.ru/method"     // VK API endpoint
+	vkLoginEndpoint   = "https://login.vk.ru"          // VK login endpoint
 	vkCallsEndpoint   = "https://calls.okcdn.ru/fb.do" // VK calls backend endpoint
 	vkClientID        = "6287487"                      // VK OAuth client ID
 	vkClientSecret    = "QbYic1K3lEV5kTGiqlq2"         // VK OAuth client secret
@@ -74,6 +74,7 @@ type vkParticipant struct {
 
 // ID returns the unique ID of this handler
 func (V *Handler) ID() string {
+	// note: kept at vk.com for backwards compatibility
 	return "vk.com"
 }
 

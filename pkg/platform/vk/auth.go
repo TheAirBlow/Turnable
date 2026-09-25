@@ -92,7 +92,7 @@ func (V *Handler) Authorize(callID string, username string) error {
 
 	V.mu.Lock()
 	V.callID = normalizedCallID
-	V.joinURL = "https://vk.com/call/join/" + normalizedCallID
+	V.joinURL = "https://vk.ru/call/join/" + normalizedCallID
 	V.username = strings.TrimSpace(username)
 	V.mu.Unlock()
 
@@ -180,8 +180,8 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 		}
 
 		resp, err := V.postVKForm(ctx, vkAPIEndpoint+"/calls.getAnonymousToken?v=5.274&client_id="+vkClientID, form, map[string]string{
-			"Origin":  "https://vk.com",
-			"Referer": "https://vk.com/",
+			"Origin":  "https://vk.ru",
+			"Referer": "https://vk.ru/",
 		})
 		if err != nil {
 			return "", "", err
@@ -277,8 +277,8 @@ func (V *Handler) callsLogin(ctx context.Context) (string, error) {
 		"application_key", vkCallsAppKey,
 		"session_data", string(sessionDataJSON),
 	), map[string]string{
-		"Origin":  "https://vk.com",
-		"Referer": "https://vk.com/",
+		"Origin":  "https://vk.ru",
+		"Referer": "https://vk.ru/",
 	})
 	if err != nil {
 		return "", err
@@ -308,8 +308,8 @@ func (V *Handler) joinConversation(ctx context.Context, callID, anonymToken, ses
 		"anonymToken", anonymToken,
 		"session_key", sessionKey,
 	), map[string]string{
-		"Origin":  "https://vk.com",
-		"Referer": "https://vk.com/",
+		"Origin":  "https://vk.ru",
+		"Referer": "https://vk.ru/",
 	})
 	if err != nil {
 		return vkStartedConversationInfo{}, err

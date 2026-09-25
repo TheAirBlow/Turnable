@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	captchaAPIVersion = "5.131"             // last known version of the captcha API
-	captchaPageOrigin = "https://id.vk.com" // origin serving the captcha page and its API
-	captchaDomain     = "vk.com"            // domain the captcha challenge was issued for
+	captchaAPIVersion = "5.131"            // last known version of the captcha API
+	captchaPageOrigin = "https://id.vk.ru" // origin serving the captcha page and its API
+	captchaDomain     = "vk.ru"            // domain the captcha challenge was issued for
 )
 
 var (

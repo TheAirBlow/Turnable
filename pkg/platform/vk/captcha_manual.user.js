@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         Turnable - VK Token Capture
 // @namespace    turnable
-// @version      1.0
+// @version      1.1
 // @description  Captures VK Calls tokens for Turnable
+// @match        https://vk.ru/call/join/*
 // @match        https://vk.com/call/join/*
 // @grant        unsafeWindow
 // @grant        GM_xmlhttpRequest
+// @connect      localhost
+// @connect      127.0.0.1
 // @run-at       document-start
 // ==/UserScript==
 

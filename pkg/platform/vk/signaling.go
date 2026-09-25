@@ -72,7 +72,7 @@ func (V *Handler) Connect() error {
 	V.connMu.Unlock()
 
 	header := http.Header{}
-	header.Set("Origin", "https://vk.com")
+	header.Set("Origin", "https://vk.ru")
 	header.Set("User-Agent", profile.UserAgent)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
