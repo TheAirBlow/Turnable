@@ -164,9 +164,6 @@ func (D *Handler) connectClientSession() error {
 		turn := getTURNInfo()
 		raw, err = h.Connect(connCtx, dest, turn, true)
 		if err != nil {
-			if errors.Is(err, protocol.ErrTURNRejected) {
-				platformHandler.InvalidateTURNInfo(turn)
-			}
 			return
 		}
 

@@ -55,7 +55,7 @@ func (V *Handler) Connect() error {
 	}
 
 	if common.IsNullOrWhiteSpace(endpoint) {
-		if err := V.authorize(true); err != nil {
+		if err := V.authorize(); err != nil {
 			return err
 		}
 
