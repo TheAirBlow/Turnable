@@ -14,6 +14,9 @@ import (
 // ErrReconnecting is returned when a full reconnect is in progress.
 var ErrReconnecting = errors.New("full reconnect is in progress")
 
+// ErrFatal marks a server authorization rejection that must not be retried
+var ErrFatal = errors.New("server rejected authorization")
+
 // ConnectEvent reports a connectivity transition emitted by a Handler's reconnect loop
 type ConnectEvent struct {
 	Connected bool  // true once a session is live

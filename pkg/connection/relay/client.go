@@ -194,6 +194,14 @@ func (D *Handler) connectClientSession() error {
 	var assignedUUID [16]byte
 	var uuidReady = make(chan struct{})
 
+	failAuth := func(dialCtx context.Context, err error) {
+		if dialCtx.Err() != nil {
+			return
+		}
+		D.log.Error("server rejected authorization, stopping", "error", err)
+		connEvents.Fail(fmt.Errorf("%w: %w", connection.ErrFatal, err))
+	}
+
 	dialFn := func(dialCtx context.Context, idx int) (net.Conn, error) {
 		raw, enc, err := connectAndEncrypt(dialCtx, idx)
 		if err != nil {
@@ -242,7 +250,7 @@ func (D *Handler) connectClientSession() error {
 					_ = raw.Close()
 					var ackErr *ErrAckRejected
 					if errors.As(hErr, &ackErr) {
-						fullReconnect(hErr.Error())
+						failAuth(dialCtx, hErr)
 						primaryMu.Lock()
 						primaryReady = false
 						rejected = true
@@ -302,7 +310,7 @@ func (D *Handler) connectClientSession() error {
 			_ = raw.Close()
 			var ackErr *ErrAckRejected
 			if errors.As(sErr, &ackErr) {
-				fullReconnect(sErr.Error())
+				failAuth(dialCtx, sErr)
 				return nil, connection.ErrPeerDone
 			}
 			return nil, sErr
@@ -365,12 +373,10 @@ func (D *Handler) connectClientSession() error {
 	return nil
 }
 
-// stallSettleDelay is how long pongs get to return once connectivity is back before the session is rebuilt
+// stallSettleDelay is how long pongs get to return before the session is rebuilt
 const stallSettleDelay = 3 * time.Second
 
-// recoverStalledPeers rides out a silent path: while the network is down it just waits, since the relay keeps our
-// allocation for minutes and KCP retransmits what was lost; once the network is back but the server still doesn't
-// answer, the allocation or NAT mapping is gone (e.g. the client IP changed), so the session is rebuilt from scratch
+// recoverStalledPeers waits out a silent path and triggers a full reconnect if the server stays silent once the network is back
 func recoverStalledPeers(ctx context.Context, mux *connection.TinyMuxClient, fullReconnect func(string)) {
 	online := make(chan struct{})
 	go func() {

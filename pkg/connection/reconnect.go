@@ -13,13 +13,13 @@ import (
 	"time"
 
 	"github.com/theairblow/turnable/pkg/common"
-	"github.com/theairblow/turnable/pkg/platform"
 )
 
 // EventStream is a single-slot, latest-wins ConnectEvent channel with idempotent close
 type EventStream struct {
-	ch   chan ConnectEvent
-	once sync.Once
+	ch     chan ConnectEvent
+	mu     sync.Mutex
+	closed bool
 }
 
 // NewEventStream creates an empty EventStream
@@ -34,6 +34,11 @@ func (s *EventStream) Chan() <-chan ConnectEvent {
 
 // Publish delivers ev, replacing any unread pending event instead of blocking
 func (s *EventStream) Publish(ev ConnectEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	select {
 	case s.ch <- ev:
 	default:
@@ -50,14 +55,32 @@ func (s *EventStream) Publish(ev ConnectEvent) {
 
 // Close closes the stream; safe to call more than once or concurrently
 func (s *EventStream) Close() {
-	s.once.Do(func() { close(s.ch) })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.closed {
+		s.closed = true
+		close(s.ch)
+	}
+}
+
+// Closed reports whether the stream has been closed
+func (s *EventStream) Closed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// Fail publishes a fatal err and closes the stream
+func (s *EventStream) Fail(err error) {
+	s.Publish(ConnectEvent{Connected: false, Err: err})
+	s.Close()
 }
 
 // ReconnectBackoffInit is the initial wait between platform-error reconnect attempts
 const ReconnectBackoffInit = 5 * time.Second
 
 // ReconnectBackoffMax is the maximum wait between platform-error reconnect attempts
-const ReconnectBackoffMax = 30 * time.Second
+const ReconnectBackoffMax = 5 * time.Minute
 
 // reconnectImmediateWait is the fixed (non-growing) wait used for transient network errors
 const reconnectImmediateWait = 1 * time.Second
@@ -73,7 +96,7 @@ const (
 
 // classifyReconnectError decides the retry strategy for a failed connection attempt
 func classifyReconnectError(err error) reconnectAction {
-	if errors.Is(err, platform.ErrFatal) {
+	if errors.Is(err, ErrFatal) {
 		return reconnectFatal
 	}
 	if isTransientNetworkError(err) {
@@ -117,7 +140,7 @@ func RunReconnectLoop(ctx context.Context, log *slog.Logger, reconnecting *atomi
 	if log == nil {
 		log = slog.Default()
 	}
-	if !reconnecting.CompareAndSwap(false, true) {
+	if events.Closed() || !reconnecting.CompareAndSwap(false, true) {
 		return
 	}
 

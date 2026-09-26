@@ -2,14 +2,10 @@ package platform
 
 import (
 	"context"
-	"errors"
 
 	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/protocol"
 )
-
-// ErrFatal marks a permanent, non-retryable authorization failure (e.g. invalid call/credentials)
-var ErrFatal = errors.New("fatal platform authorization error")
 
 // Handler represents a platform handler
 type Handler interface {

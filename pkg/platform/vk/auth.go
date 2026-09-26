@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/theairblow/turnable/pkg/common"
-	"github.com/theairblow/turnable/pkg/platform"
 	"github.com/theairblow/turnable/pkg/protocol"
 )
 
@@ -44,11 +43,11 @@ func (e *vkCallsError) Error() string {
 func checkVKCallsError(resp map[string]any) error {
 	if errMap, ok := resp["error"].(map[string]any); ok {
 		apiErr := parseVKAPIError(errMap)
-		return fmt.Errorf("%w: %w", platform.ErrFatal, &vkCallsError{Code: apiErr.Code, Message: apiErr.Message})
+		return &vkCallsError{Code: apiErr.Code, Message: apiErr.Message}
 	}
 	if code, ok := resp["error_code"].(float64); ok {
 		message, _ := resp["error_msg"].(string)
-		return fmt.Errorf("%w: %w", platform.ErrFatal, &vkCallsError{Code: int(code), Message: message})
+		return &vkCallsError{Code: int(code), Message: message}
 	}
 	return nil
 }
@@ -71,7 +70,7 @@ type vkStartedConversationInfo struct {
 	} `json:"turnServer"`
 }
 
-// Authorize authorizes with VK, always requesting fresh credentials
+// Authorize authorizes with VK
 func (V *Handler) Authorize(callID string, username string) error {
 	if strings.TrimSpace(callID) == "" {
 		return errors.New("call ID is required")
@@ -99,7 +98,7 @@ func (V *Handler) Authorize(callID string, username string) error {
 	return V.authorize()
 }
 
-// authorize runs the full anonymous auth flow and joins the call, loading fresh credentials and the signaling endpoint into the handler
+// authorize runs the anonymous auth flow and joins the call
 func (V *Handler) authorize() error {
 	V.mu.RLock()
 	callID := V.callID
@@ -190,7 +189,7 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 		if errMap, ok := resp["error"].(map[string]any); ok {
 			apiErr := parseVKAPIError(errMap)
 			if apiErr.Code != 14 {
-				return "", "", fmt.Errorf("%w: vk api error %d: %s", platform.ErrFatal, apiErr.Code, apiErr.Message)
+				return "", "", fmt.Errorf("vk api error %d: %s", apiErr.Code, apiErr.Message)
 			}
 			slog.Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
 
@@ -224,7 +223,7 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 
 		token, ok := common.NestedString(resp, "response", "token")
 		if !ok || token == "" {
-			return "", "", fmt.Errorf("%w: field response.token is missing", platform.ErrFatal)
+			return "", "", errors.New("field response.token is missing")
 		}
 
 		slog.Debug("vk authorize anonymous call token acquired")
@@ -250,7 +249,7 @@ func (V *Handler) fetchMessagesToken(ctx context.Context) (string, error) {
 
 	token, ok := common.NestedString(resp, "data", "access_token")
 	if !ok || token == "" {
-		return "", fmt.Errorf("%w: field data.access_token is missing", platform.ErrFatal)
+		return "", errors.New("field data.access_token is missing")
 	}
 
 	slog.Debug("vk anonymous messages token acquired")
@@ -289,7 +288,7 @@ func (V *Handler) callsLogin(ctx context.Context) (string, error) {
 
 	sessionKey, ok := resp["session_key"].(string)
 	if !ok || sessionKey == "" {
-		return "", fmt.Errorf("%w: unexpected anonym login response: %v", platform.ErrFatal, resp)
+		return "", fmt.Errorf("unexpected anonym login response: %v", resp)
 	}
 	slog.Debug("vk calls login completed")
 	return sessionKey, nil

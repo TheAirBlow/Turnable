@@ -16,15 +16,14 @@ var ErrPeerDone = errors.New("peer: done")
 
 const (
 	peerMaxPacket       = muxMaxPacket + 2 // maximum packet size read from a peer connection; must hold a full mux frame
-	peerReconnectInit   = 1 * time.Second  // initial back-off delay between failed peer dial attempts
-	peerReconnectMax    = 10 * time.Second // maximum back-off delay between failed peer dial attempts
-	peerStableAfter     = 10 * time.Second // how long a peer must stay online before its next drop is redialed immediately
+	peerReconnectInit   = 1 * time.Second  // initial peer redial delay
+	peerReconnectMax    = 10 * time.Second // maximum peer redial delay
+	peerStableAfter     = 10 * time.Second // online time after which a drop is redialed at once
 	peerIncomingBufSize = 1024             // channel buffer size for packets arriving from all peers
 	peerWriteSendBuf    = 256              // per-peer outbound write queue depth
 )
 
-// SessionGrace is how long a session waits out an outage before giving up and starting over with fresh credentials
-// It stays below the 5 minute TURN permission lifetime: past that point the relay has forgotten us anyway
+// SessionGrace is how long a session waits out an outage before giving up
 const SessionGrace = 3 * time.Minute
 
 // peerEntry holds one live connection inside PeerConn
@@ -46,7 +45,7 @@ type PeerConn struct {
 	closed   atomic.Bool
 	allGone  atomic.Bool
 
-	lastOnline atomic.Int64 // unix nanoseconds of the last moment any peer was online
+	lastOnline atomic.Int64 // unix nanoseconds when any peer was last online
 
 	peerReady chan struct{}
 	allGoneCh chan struct{}
@@ -127,8 +126,6 @@ func (m *PeerConn) peerWriteLoop(entry *peerEntry) {
 }
 
 // peerReadLoop reads packets from one peer and feeds them into the incoming channel
-// A peer that drops is redialed in place, reusing the dial function's TURN credentials: the relay keeps the
-// allocation alive server-side, so riding out an outage costs one new allocation rather than the whole session
 func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, dialFn func(context.Context, int) (net.Conn, error)) {
 	buf := make([]byte, peerMaxPacket)
 	delay := time.Duration(0)
@@ -171,7 +168,7 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, dialFn func(context.C
 			m.lastOnline.Store(time.Now().UnixNano())
 			m.log.Info("peer offline", "peer_idx", idx, "online", m.countOnline(), "total", m.totalSlots(), "error", err)
 
-			// a peer that flaps right after connecting keeps its growing back-off instead of redialing at once
+			// keep the growing back-off for peers that drop right after connecting
 			if time.Since(onlineAt) >= peerStableAfter {
 				delay = 0
 			}
@@ -180,7 +177,7 @@ func (m *PeerConn) peerReadLoop(idx int, entry *peerEntry, dialFn func(context.C
 	}
 }
 
-// dialPeer dials the peer slot until it is online, reporting when it came online, or false once the slot is finished
+// dialPeer dials the peer slot until it is online, or returns false once the slot is finished
 func (m *PeerConn) dialPeer(idx int, entry *peerEntry, dialFn func(context.Context, int) (net.Conn, error), delay *time.Duration) (time.Time, bool) {
 	for {
 		if *delay > 0 {
@@ -270,7 +267,7 @@ func (m *PeerConn) removePeer(idx int) {
 	}
 }
 
-// scheduleAllGone ends the conn once no peer has been online for SessionGrace, giving a dropped client time to rejoin
+// scheduleAllGone ends the conn once no peer has been online for SessionGrace
 func (m *PeerConn) scheduleAllGone(wait time.Duration) {
 	time.AfterFunc(wait, func() {
 		if m.ctx.Err() != nil || m.countOnline() > 0 {
@@ -350,7 +347,7 @@ func (m *PeerConn) Write(p []byte) (int, error) {
 
 	select {
 	case <-m.peerReady:
-		// every peer is down mid-outage: drop like a lossy link would and let the layers above retransmit
+		// every peer is down, drop the packet
 		return len(p), nil
 	case <-m.ctx.Done():
 		return 0, io.EOF
@@ -404,7 +401,7 @@ func (peerDummyAddr) Network() string { return "peer" }
 // String returns the string form of this dummy address
 func (peerDummyAddr) String() string { return "peer" }
 
-// OneShotDial returns a dial function that hands out conn once, then reports ErrPeerDone since a dropped inbound conn cannot be redialed
+// OneShotDial returns a dial function that hands out conn once, then reports ErrPeerDone
 func OneShotDial(conn net.Conn) func(context.Context, int) (net.Conn, error) {
 	var used atomic.Bool
 	return func(context.Context, int) (net.Conn, error) {

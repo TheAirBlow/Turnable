@@ -35,7 +35,7 @@ const (
 	muxBurstFloor = 2 * 1420
 
 	muxClientPingInterval = 1 * time.Second
-	muxPingStall          = 5 * time.Second // unanswered for this long the path is suspect, but the session is kept and waited on
+	muxPingStall          = 5 * time.Second // pong silence before the path counts as stalled
 )
 
 // muxControlMessage is a control protocol message
@@ -450,7 +450,7 @@ func (c *TinyMuxClient) SetRateLimit(bytesPerSec float64) {
 	c.mux.setRateLimit(bytesPerSec)
 }
 
-// SetStallHandler sets a callback run once each time pongs stop arriving for muxPingStall; the session itself is kept
+// SetStallHandler sets a callback run when pongs stop arriving
 func (c *TinyMuxClient) SetStallHandler(fn func()) {
 	c.stallHandler.Store(&fn)
 }
@@ -503,7 +503,7 @@ func NewTinyMuxClient(ctx context.Context, conn net.Conn) (*TinyMuxClient, error
 	return client, nil
 }
 
-// pingLoop sends periodic pings, reports a stalled path and closes tinymux only once the server has been silent for SessionGrace
+// pingLoop sends periodic pings and closes tinymux after SessionGrace of silence
 func (c *TinyMuxClient) pingLoop() {
 	ticker := time.NewTicker(muxClientPingInterval)
 	defer ticker.Stop()
@@ -748,7 +748,7 @@ func (s *TinyMuxServer) AcceptChannels(ctx context.Context) <-chan MuxChannel {
 	return out
 }
 
-// pingTimeoutLoop closes the mux if the client stays silent for SessionGrace, so a dropout can be waited out
+// pingTimeoutLoop closes the mux after the client is silent for SessionGrace
 func (s *TinyMuxServer) pingTimeoutLoop(ctx context.Context) {
 	ticker := time.NewTicker(muxClientPingInterval)
 	defer ticker.Stop()

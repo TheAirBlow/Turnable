@@ -20,18 +20,18 @@ import (
 )
 
 const (
-	captchaAPIVersion = "5.131"            // last known version of the captcha API
-	captchaPageOrigin = "https://id.vk.ru" // origin serving the captcha page and its API
-	captchaDomain     = "vk.ru"            // domain the captcha challenge was issued for
+	captchaAPIVersion = "5.131"            // captcha API version
+	captchaPageOrigin = "https://id.vk.ru" // captcha page and API origin
+	captchaDomain     = "vk.ru"            // captcha challenge domain
 )
 
 var (
 	deviceInfo = `{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1080,"innerWidth":1920,"innerHeight":951,"devicePixelRatio":1,"language":"en-US","languages":["en-US","en"],"webdriver":false,"hardwareConcurrency":8,"notificationsPermission":"denied"}`
 
-	reCaptchaPowArgs   = regexp.MustCompile(`}\('([^"]*)',\s*(\d+)`)                                               // Extracts PoW input and difficulty from captcha HTML
-	reCaptchaDebugInfo = regexp.MustCompile(`[A-Za-z_$][\w$]*:\s*"([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})"`) // Extracts the debug_info UUID out of window.vk
+	reCaptchaPowArgs   = regexp.MustCompile(`}\('([^"]*)',\s*(\d+)`)                                               // extracts PoW input and difficulty from captcha HTML
+	reCaptchaDebugInfo = regexp.MustCompile(`[A-Za-z_$][\w$]*:\s*"([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})"`) // extracts the debug_info UUID out of window.vk
 
-	errCaptchaRateLimit = errors.New("captcha session rate limit reached") // Marks exhausted captcha sessions
+	errCaptchaRateLimit = errors.New("captcha session rate limit reached") // marks exhausted captcha sessions
 )
 
 // captchaContentSetting represents an available captcha content reference

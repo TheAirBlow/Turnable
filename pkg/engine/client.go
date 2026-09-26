@@ -68,22 +68,6 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 
 	innerCfg := c.Config.GetInner().(config.ClientConfig)
 
-	connHandler, err := connection.GetHandler(innerCfg.Type)
-	if err != nil {
-		return fmt.Errorf("get connection handler: %w", err)
-	}
-
-	connHandler.SetLogger(c.log)
-
-	events, err := connHandler.Connect(c.Config)
-	if err != nil {
-		_ = connHandler.Close()
-		return fmt.Errorf("connect: %w", err)
-	}
-
-	c.handler = connHandler
-	c.events = events
-
 	baseAddr := "127.0.0.1:0"
 	if len(listenAddrs) > 0 {
 		baseAddr = listenAddrs[0]
@@ -98,6 +82,31 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid port in base listen address %q: %w", baseAddr, err)
 	}
+
+	connHandler, err := connection.GetHandler(innerCfg.Type)
+	if err != nil {
+		return fmt.Errorf("get connection handler: %w", err)
+	}
+
+	connHandler.SetLogger(c.log)
+
+	events, err := connHandler.Connect(c.Config)
+	if err != nil {
+		_ = connHandler.Close()
+		return fmt.Errorf("connect: %w", err)
+	}
+
+	out := connection.NewEventStream()
+	c.handler = connHandler
+	c.events = out.Chan()
+
+	go func() {
+		for ev := range events {
+			out.Publish(ev)
+		}
+		_ = c.Stop()
+		out.Close()
+	}()
 
 	for i, route := range innerCfg.Routes {
 		var addr string
@@ -171,9 +180,6 @@ func (c *TurnableClient) handleClient(local AcceptedClient, routeIdx byte) {
 
 	channel, err := c.handler.OpenChannel(routeIdx)
 	if err != nil {
-		if !errors.Is(err, connection.ErrReconnecting) {
-			c.log.Warn("failed to open channel for local client", "error", err)
-		}
 		_ = local.Stream.Close()
 		return
 	}
