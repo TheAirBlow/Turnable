@@ -37,7 +37,7 @@ The schema is as follows:
 - `pass`: Call ID
 - `host`: Platform ID
 - `path`: Route IDs (slash-separated, can be multiple routes)
-- `query`: Additional parameters (type, gateway, proto, encryption, peers, pub_key, cloak)
+- `query`: Additional parameters (type, gateway, proto, encryption, peers, pub_key, cloak, mux, mask)
 - `fragment`: Display name (optional)
 
 ## Configuration Fields
@@ -67,6 +67,12 @@ The schema is as follows:
 | `peers`      | integer | Yes      | Number of peer connections (minimum 1)                    |
 | `pub_key`    | string  | Yes      | Server's public key (base64 encoded, ML-KEM-768 format)   |
 | `cloak`      | string  | No       | Traffic obfuscation method (currently only `none`)        |
+| `mux`        | string  | No       | Session transport: `mpath` (default) or `legacy` (see [Session Transports](../REFERENCE.md)) |
+| `mask`       | string  | No       | With `mux=mpath`: `on` (default) replaces the outer DTLS/SRTP encryption with cheap masking; `off` keeps it |
+
+> With `mux=mpath` (the default) the route `transport` and the `encryption` mode are ignored: every
+> route runs over one end-to-end encrypted multipath session, TCP routes as reliable streams and UDP
+> routes as datagrams. They still must be valid, so configs keep working with `mux=legacy`.
 
 ### Direct Mode Fields
 | Field     | Type    | Required | Description                            |

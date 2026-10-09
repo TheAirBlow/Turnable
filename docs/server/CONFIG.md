@@ -104,6 +104,7 @@ Each route describes a destination that clients can tunnel to:
 
 > [!NOTE]
 > TCP routes must use a transport protocol, preferably `kcp`, and UDP should use `none`.
+> Transports only apply to clients using `mux=legacy`; the server serves `mpath` and `legacy` clients side by side without any extra settings.
 
 ## Users
 Each user object defines access control and connection settings:

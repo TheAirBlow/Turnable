@@ -38,7 +38,7 @@ turnable://user-uuid:call-id@vk.com/route-id?type=relay&gateway=203.0.113.45:560
 - `pass`: ID звонка
 - `host`: ID платформы
 - `path`: ID маршрутов (разделены слэшами, может быть несколько)
-- `query`: Доп. параметры (type, gateway, proto, encryption, peers, pub_key, cloak)
+- `query`: Доп. параметры (type, gateway, proto, encryption, peers, pub_key, cloak, mux, mask)
 - `fragment`: Отображаемое название (опционально)
 
 ## Поля конфигурации
@@ -68,6 +68,12 @@ turnable://user-uuid:call-id@vk.com/route-id?type=relay&gateway=203.0.113.45:560
 | `peers`      | integer | Да          | Количество peer соединений (минимум 1)                         |
 | `pub_key`    | string  | Да          | Публичный ключ сервера (base64, формат ML-KEM-768)             |
 | `cloak`      | string  | Нет         | Метод маскировки трафика (пока только `none`)                  |
+| `mux`        | string  | Нет         | Транспорт сессии: `mpath` (по умолчанию) или `legacy` (см. [Транспорты сессии](../REFERENCE_RU.md)) |
+| `mask`       | string  | Нет         | При `mux=mpath`: `on` (по умолчанию) заменяет внешнее шифрование DTLS/SRTP дешёвым маскированием; `off` оставляет его |
+
+> При `mux=mpath` (по умолчанию) поле `transport` маршрута и режим `encryption` не используются: все
+> маршруты идут через одну сквозную зашифрованную multipath-сессию, TCP как надёжные потоки, UDP как
+> датаграммы. Поля всё равно должны быть корректны, чтобы конфиг работал и с `mux=legacy`.
 
 ### Поля режима Direct
 | Поле      | Тип     | Обязательно | Описание                               |

@@ -167,7 +167,7 @@ func TestBenchLegacy(t *testing.T) {
 		t.Logf("  recovery to 70%%: %v", netem.RecoveryTime(res.Timeline, killAt, 0.7))
 		return res
 	})
-run("legacy udp 1MB/s", func(st *legacyStack, _ []*netem.Path) netem.Result {
+	run("legacy udp 1MB/s", func(st *legacyStack, _ []*netem.Path) netem.Result {
 		return netem.RunDatagrams("legacy udp 1MB/s", st, netem.DatagramOptions{Rate: 1024 * 1024, Size: 1200, Duration: dur, Warmup: warm})
 	})
 }

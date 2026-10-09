@@ -158,4 +158,3 @@ func (r *rocTracker) index(seq uint16) uint64 {
 	}
 	return uint64(v)<<16 | uint64(seq)
 }
-

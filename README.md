@@ -6,7 +6,7 @@ Turnable is a VPN core that tunnels TCP/UDP traffic through [TURN](https://en.wi
 ## Features
 1. Future-proof modular architecture
 2. Full support for both TCP and UDP sockets
-3. Tunneling through multiple peer connections to bypass ratelimits
+3. Tunneling through multiple peer connections to bypass ratelimits, with a multipath transport that paces each peer under its cap and survives peers dropping
 4. Multiplexing to allow establishing multiple route connections
 5. End-to-end encryption - forced for handshake, optional for data
 6. Convenient user and route management with proper authentication
