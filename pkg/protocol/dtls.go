@@ -24,8 +24,9 @@ const (
 type DTLSHandler struct {
 	running atomic.Bool
 
-	listener net.Listener
-	log      *slog.Logger
+	raw   *net.UDPConn
+	demux *srtpDemux
+	log   *slog.Logger
 }
 
 // ID returns the unique ID of this handler
@@ -68,21 +69,15 @@ func (D *DTLSHandler) Start(listenAddr string) error {
 		return fmt.Errorf("invalid listen IP: %q", host)
 	}
 
-	certificate, err := selfsign.GenerateSelfSigned()
+	raw, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to generate dtls certificate: %w", err)
+		return fmt.Errorf("dtls udp listen failed: %w", err)
 	}
 
-	listener, err := dtls.ListenWithOptions("udp", addr,
-		dtls.WithCertificates(certificate),
-		dtls.WithExtendedMasterSecret(dtls.RequireExtendedMasterSecret),
-		dtls.WithMTU(dtlsMTU),
-	)
-	if err != nil {
-		return fmt.Errorf("dtls listen failed: %w", err)
-	}
-
-	D.listener = listener
+	// a per-address demux, shared with SRTP, so masked records can bypass the DTLS stack
+	D.raw = raw
+	D.demux = newSRTPDemux(raw)
+	go D.demux.run()
 
 	D.log.Info("dtls listener started", "listen_addr", addr.String())
 	success = true
@@ -98,13 +93,16 @@ func (D *DTLSHandler) Stop() error {
 		D.log = slog.Default()
 	}
 
-	listener := D.listener
-	D.listener = nil
-
-	if listener == nil {
+	if D.demux != nil {
+		D.demux.close()
+		D.demux = nil
+	}
+	raw := D.raw
+	D.raw = nil
+	if raw == nil {
 		return nil
 	}
-	err := listener.Close()
+	err := raw.Close()
 	if err != nil {
 		D.log.Warn("dtls listener stop failed", "error", err)
 		return err
@@ -123,48 +121,90 @@ func (D *DTLSHandler) AcceptClients(ctx context.Context) (<-chan ServerClient, e
 	}
 
 	out := make(chan ServerClient)
-	listener := D.listener
+	demux := D.demux
 
 	go func() {
+		var inflight sync.WaitGroup
 		defer close(out)
-
-		if listener == nil {
+		defer inflight.Wait() // no handshake may send on out after it closes
+		if demux == nil {
 			return
 		}
-
 		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				select {
-				case <-ctx.Done():
+			select {
+			case sess, ok := <-demux.newSess:
+				if !ok {
 					return
-				default:
-					D.log.Warn("dtls accept failed", "error", err)
-					continue
 				}
+				inflight.Add(1)
+				go func() {
+					defer inflight.Done()
+					D.acceptSession(ctx, demux, sess, out)
+				}()
+			case <-ctx.Done():
+				return
+			case <-demux.closed:
+				return
 			}
-
-			go func(conn net.Conn) {
-				if dtlsConn, ok := conn.(*dtls.Conn); ok {
-					D.log.Debug("dtls server handshake started", "addr", conn.RemoteAddr())
-					if err := dtlsConn.HandshakeContext(ctx); err != nil {
-						D.log.Warn("dtls handshake failed", "addr", conn.RemoteAddr(), "error", err)
-						_ = conn.Close()
-						return
-					}
-					D.log.Debug("dtls server handshake completed", "addr", conn.RemoteAddr())
-				}
-
-				select {
-				case out <- ServerClient{Address: conn.RemoteAddr(), Conn: conn}:
-				case <-ctx.Done():
-					_ = conn.Close()
-				}
-			}(conn)
 		}
 	}()
 
 	return out, nil
+}
+
+// acceptSession runs the DTLS handshake for one client address
+func (D *DTLSHandler) acceptSession(ctx context.Context, demux *srtpDemux, sess *srtpDemuxSession, out chan<- ServerClient) {
+	certificate, err := selfsign.GenerateSelfSigned()
+	if err != nil {
+		D.log.Warn("dtls server cert generation failed", "error", err)
+		return
+	}
+	dConn := &demuxedConn{raw: demux.raw, ch: sess.dtlsCh, addr: sess.addr, closed: make(chan struct{})}
+	conn, err := dtls.ServerWithOptions(dConn, sess.addr,
+		dtls.WithCertificates(certificate),
+		dtls.WithExtendedMasterSecret(dtls.RequireExtendedMasterSecret),
+		dtls.WithMTU(dtlsMTU),
+	)
+	if err != nil {
+		D.log.Warn("dtls server init failed", "addr", sess.addr, "error", err)
+		_ = dConn.Close()
+		demux.remove(sess.addr.String())
+		return
+	}
+	D.log.Debug("dtls server handshake started", "addr", sess.addr)
+	hsCtx, cancel := context.WithTimeout(ctx, 2*dtlsHandshakeTimeout)
+	err = conn.HandshakeContext(hsCtx)
+	cancel()
+	if err != nil {
+		D.log.Warn("dtls handshake failed", "addr", sess.addr, "error", err)
+		_ = conn.Close()
+		_ = dConn.Close()
+		demux.remove(sess.addr.String())
+		return
+	}
+	D.log.Debug("dtls server handshake completed", "addr", sess.addr)
+
+	dc, err := newDTLSConn(conn, demux.raw, sess.addr, false)
+	if err != nil {
+		D.log.Warn("dtls session setup failed", "addr", sess.addr, "error", err)
+		_ = conn.Close()
+		_ = dConn.Close()
+		demux.remove(sess.addr.String())
+		return
+	}
+	dc.onClose = func() {
+		_ = dConn.Close()
+		demux.remove(sess.addr.String())
+	}
+	sess.hook.Store(dc.hook())
+
+	select {
+	case out <- ServerClient{Address: sess.addr, Conn: dc}:
+	case <-ctx.Done():
+		_ = dc.Close()
+	case <-demux.closed:
+		_ = dc.Close()
+	}
 }
 
 // Connect connects to a remote server directly or via TURN
@@ -245,7 +285,8 @@ func (D *DTLSHandler) connectPacketConn(ctx context.Context, underlay net.Packet
 		return nil, fmt.Errorf("failed to generate dtls certificate: %w", err)
 	}
 
-	conn, err := dtls.ClientWithOptions(underlay, remoteAddr,
+	icpt := &interceptPacketConn{PacketConn: underlay}
+	conn, err := dtls.ClientWithOptions(icpt, remoteAddr,
 		dtls.WithCertificates(certificate),
 		dtls.WithExtendedMasterSecret(dtls.RequireExtendedMasterSecret),
 		dtls.WithInsecureSkipVerify(true),
@@ -269,24 +310,17 @@ func (D *DTLSHandler) connectPacketConn(ctx context.Context, underlay net.Packet
 
 	D.log.Debug("dtls client handshake completed", "underlay_local", underlay.LocalAddr().String(), "remote", remoteAddr.String())
 
-	return &dtlsClientConn{
-		Conn:     conn,
-		underlay: underlay,
-	}, nil
-}
+	dc, err := newDTLSConn(conn, underlay, remoteAddr, true)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("dtls session setup failed: %w", err)
+	}
+	dc.underlay = underlay
+	icpt.hook.Store(dc.hook())
 
-// dtlsClientConn wraps a DTLS connection and closes the underlay on Close
-type dtlsClientConn struct {
-	*dtls.Conn
-	underlay  net.PacketConn
-	closeOnce sync.Once
-}
-
-// Close closes both the DTLS connection and the underlay
-func (c *dtlsClientConn) Close() error {
-	var err error
-	c.closeOnce.Do(func() {
-		err = errors.Join(c.Conn.Close(), c.underlay.Close())
-	})
-	return err
+	if maskingRequested(ctx) {
+		dc.negotiateMask(ctx)
+		D.log.Debug("dtls masking negotiation finished", "masked", dc.Masked())
+	}
+	return dc, nil
 }

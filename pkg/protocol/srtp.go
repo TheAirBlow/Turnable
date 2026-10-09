@@ -124,7 +124,9 @@ func (S *SRTPHandler) AcceptClients(ctx context.Context) (<-chan ServerClient, e
 	demux := S.demux
 
 	go func() {
+		var inflight sync.WaitGroup
 		defer close(out)
+		defer inflight.Wait() // no handshake may send on out after it closes
 		if demux == nil {
 			return
 		}
@@ -134,8 +136,14 @@ func (S *SRTPHandler) AcceptClients(ctx context.Context) (<-chan ServerClient, e
 				if !ok {
 					return
 				}
-				go S.acceptSession(ctx, sess, out)
+				inflight.Add(1)
+				go func() {
+					defer inflight.Done()
+					S.acceptSession(ctx, demux, sess, out)
+				}()
 			case <-ctx.Done():
+				return
+			case <-demux.closed:
 				return
 			}
 		}
@@ -145,14 +153,14 @@ func (S *SRTPHandler) AcceptClients(ctx context.Context) (<-chan ServerClient, e
 }
 
 // acceptSession performs the DTLS-SRTP handshake for one incoming client
-func (S *SRTPHandler) acceptSession(ctx context.Context, sess *srtpDemuxSession, out chan<- ServerClient) {
+func (S *SRTPHandler) acceptSession(ctx context.Context, demux *srtpDemux, sess *srtpDemuxSession, out chan<- ServerClient) {
 	certificate, err := selfsign.GenerateSelfSigned()
 	if err != nil {
 		slog.Warn("srtp server cert generation failed", "error", err)
 		return
 	}
 
-	dConn := &demuxedConn{raw: S.raw, ch: sess.dtlsCh, addr: sess.addr, closed: make(chan struct{})}
+	dConn := &demuxedConn{raw: demux.raw, ch: sess.dtlsCh, addr: sess.addr, closed: make(chan struct{})}
 	dtlsConn, err := dtls.ServerWithOptions(dConn, sess.addr,
 		dtls.WithCertificates(certificate),
 		dtls.WithExtendedMasterSecret(dtls.RequireExtendedMasterSecret),
@@ -174,18 +182,20 @@ func (S *SRTPHandler) acceptSession(ctx context.Context, sess *srtpDemuxSession,
 	}
 	slog.Debug("srtp server handshake completed", "addr", sess.addr)
 
-	conn, err := newSRTPConn(S.raw, sess.addr, dtlsConn, sess.srtpCh, false)
+	conn, err := newSRTPConn(demux.raw, sess.addr, dtlsConn, sess.srtpCh, false)
 	if err != nil {
 		slog.Warn("srtp context setup failed", "addr", sess.addr, "error", err)
 		_ = dtlsConn.Close()
 		_ = dConn.Close()
 		return
 	}
-	conn.onClose = func() { S.demux.remove(sess.addr.String()) }
+	conn.onClose = func() { demux.remove(sess.addr.String()) }
 
 	select {
 	case out <- ServerClient{Address: sess.addr, Conn: conn}:
 	case <-ctx.Done():
+		_ = conn.Close()
+	case <-demux.closed:
 		_ = conn.Close()
 	}
 }
@@ -321,6 +331,11 @@ func (S *SRTPHandler) connectPacketConn(ctx context.Context, underlay net.Packet
 	}
 	conn.underlay = underlay
 
+	if maskingRequested(ctx) {
+		conn.negotiateMask(ctx)
+		S.log.Debug("srtp masking negotiation finished", "masked", conn.Masked())
+	}
+
 	return conn, nil
 }
 
@@ -345,6 +360,7 @@ type srtpDemuxSession struct {
 	dtlsCh chan []byte
 	srtpCh chan []byte
 	addr   net.Addr
+	hook   atomic.Pointer[hookFn] // takes masked DTLS records before the DTLS stack
 }
 
 // remove deletes a session from the demux map by address key
@@ -410,6 +426,9 @@ func (d *srtpDemux) run() {
 
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
+		if h := sess.hook.Load(); h != nil && (*h)(pkt) {
+			continue
+		}
 		if isDTLSByte(buf[0]) {
 			select {
 			case sess.dtlsCh <- pkt:
@@ -596,6 +615,11 @@ func newSRTPConn(raw net.PacketConn, remote net.Addr, dtlsConn *dtls.Conn, incom
 		return nil, fmt.Errorf("failed to generate ssrc: %w", err)
 	}
 
+	mask, err := newMasker(&state, isClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive mask keys: %w", err)
+	}
+
 	return &srtpConn{
 		raw:      raw,
 		remote:   remote,
@@ -605,8 +629,44 @@ func newSRTPConn(raw net.PacketConn, remote net.Addr, dtlsConn *dtls.Conn, incom
 		incoming: incoming,
 		ssrc:     binary.BigEndian.Uint32(ssrcBuf[:]),
 		closed:   make(chan struct{}),
+		mask:     mask,
+		isClient: isClient,
+		wbuf:     make([]byte, 0, srtpMTU+64),
+		ebuf:     make([]byte, 0, srtpMTU+64),
+		rbuf:     make([]byte, 0, srtpMTU+64),
 	}, nil
 }
+
+// srtpHeaderLen is the fixed RTP header we emit: no CSRCs, no extensions
+const srtpHeaderLen = 12
+
+// srtpTagLen is the AES128_CM_HMAC_SHA1_80 auth tag length, imitated by masked packets
+const srtpTagLen = 10
+
+var zeroTag [16]byte
+
+// negotiateMask offers masking to the server and switches on its ack; old servers never ack
+func (c *srtpConn) negotiateMask(ctx context.Context) {
+	buf := make([]byte, srtpMTU)
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
+		if _, err := c.Write(maskHello[:]); err != nil {
+			return
+		}
+		_ = c.SetReadDeadline(time.Now().Add(700 * time.Millisecond))
+		for !c.recvMasked.Load() {
+			if _, err := c.Read(buf); err != nil {
+				break
+			}
+		}
+		if c.recvMasked.Load() {
+			return
+		}
+	}
+}
+
+// Masked reports whether masking replaced SRTP encryption on this conn
+func (c *srtpConn) Masked() bool { return c.sendMasked.Load() }
 
 // srtpConn wraps a raw PacketConn with RTP framing and SRTP encryption
 type srtpConn struct {
@@ -627,10 +687,22 @@ type srtpConn struct {
 	underlay  net.PacketConn
 
 	dl deadlineState
+
+	mask       *masker
+	isClient   bool
+	sendMasked atomic.Bool
+	recvMasked atomic.Bool
+	roc        uint32 // send rollover counter, guarded by mu
+	wbuf, ebuf []byte // write buffers, guarded by mu
+	readMu     sync.Mutex
+	rbuf       []byte // read buffer, guarded by readMu
+	recvROC    rocTracker
 }
 
-// Read decrypts an incoming SRTP packet and returns its payload
+// Read decrypts (or unmasks) an incoming packet and returns its payload
 func (c *srtpConn) Read(b []byte) (int, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	for {
 		dl := c.dl.getCh()
 		select {
@@ -638,7 +710,17 @@ func (c *srtpConn) Read(b []byte) (int, error) {
 			if !ok {
 				return 0, net.ErrClosed
 			}
-			decrypted, err := c.decCtx.DecryptRTP(nil, pkt, nil)
+			if c.recvMasked.Load() {
+				if len(pkt) < srtpHeaderLen+srtpTagLen || pkt[0]&0x3f != 0 {
+					continue
+				}
+				seq := binary.BigEndian.Uint16(pkt[2:])
+				ssrc := binary.BigEndian.Uint32(pkt[8:])
+				payload := pkt[srtpHeaderLen : len(pkt)-srtpTagLen]
+				c.mask.unmaskInPlace(ssrc, c.recvROC.index(seq), payload)
+				return copy(b, payload), nil
+			}
+			decrypted, err := c.decCtx.DecryptRTP(c.rbuf[:0], pkt, nil)
 			if err != nil {
 				continue
 			}
@@ -647,7 +729,14 @@ func (c *srtpConn) Read(b []byte) (int, error) {
 			if err != nil {
 				continue
 			}
-			return copy(b, decrypted[hdrLen:]), nil
+			payload := decrypted[hdrLen:]
+			if c.handleMaskControl(payload, hdr.SequenceNumber) {
+				if c.isClient {
+					return 0, nil // lets negotiateMask return without waiting out its deadline
+				}
+				continue
+			}
+			return copy(b, payload), nil
 		case <-c.closed:
 			return 0, net.ErrClosed
 		case <-dl:
@@ -658,37 +747,67 @@ func (c *srtpConn) Read(b []byte) (int, error) {
 	}
 }
 
-// Write wraps b in an RTP packet, encrypts it as SRTP, and sends it to the remote
+// handleMaskControl consumes masking negotiation messages, returning true if payload was one
+func (c *srtpConn) handleMaskControl(payload []byte, seq uint16) bool {
+	if len(payload) != maskHelloLen || c.mask == nil {
+		return false
+	}
+	switch {
+	case !c.isClient && [maskHelloLen]byte(payload) == maskHello:
+		// ack in the clear-protected form, then mask everything after it
+		if _, err := c.Write(maskAck[:]); err == nil {
+			c.recvROC = rocTracker{}
+			c.recvMasked.Store(true)
+			c.sendMasked.Store(true)
+		}
+		return true
+	case c.isClient && [maskHelloLen]byte(payload) == maskAck:
+		c.recvROC = rocTracker{}
+		c.recvMasked.Store(true)
+		c.sendMasked.Store(true)
+		return true
+	}
+	_ = seq
+	return false
+}
+
+// Write wraps b in an RTP packet, encrypts (or masks) it, and sends it to the remote
 func (c *srtpConn) Write(b []byte) (int, error) {
 	c.mu.Lock()
-	seq := c.seq
-	ts := c.ts
+	defer c.mu.Unlock()
+	seq, ts := c.seq, c.ts
+	index := uint64(c.roc)<<16 | uint64(seq)
 	c.seq++
+	if c.seq == 0 {
+		c.roc++
+	}
 	c.ts += uint32(len(b))
-	c.mu.Unlock()
 
-	pkt := rtp.Packet{
-		Header: rtp.Header{
-			Version:        2,
-			PayloadType:    srtpPayloadType,
-			SequenceNumber: seq,
-			Timestamp:      ts,
-			SSRC:           c.ssrc,
-		},
-		Payload: b,
+	buf := c.wbuf[:srtpHeaderLen]
+	buf[0] = 0x80
+	buf[1] = srtpPayloadType
+	binary.BigEndian.PutUint16(buf[2:], seq)
+	binary.BigEndian.PutUint32(buf[4:], ts)
+	binary.BigEndian.PutUint32(buf[8:], c.ssrc)
+	buf = append(buf, b...)
+
+	var out []byte
+	if c.sendMasked.Load() {
+		c.mask.maskInPlace(c.ssrc, index, buf[srtpHeaderLen:])
+		buf = append(buf, zeroTag[:srtpTagLen]...)
+		c.mask.fillTag(buf[len(buf)-srtpTagLen:])
+		out = buf
+	} else {
+		enc, err := c.encCtx.EncryptRTP(c.ebuf[:0], buf, nil)
+		if err != nil {
+			return 0, fmt.Errorf("srtp encrypt failed: %w", err)
+		}
+		c.ebuf = enc[:0]
+		out = enc
 	}
+	c.wbuf = buf[:0]
 
-	raw, err := pkt.Marshal()
-	if err != nil {
-		return 0, fmt.Errorf("rtp marshal failed: %w", err)
-	}
-
-	encrypted, err := c.encCtx.EncryptRTP(nil, raw, nil)
-	if err != nil {
-		return 0, fmt.Errorf("srtp encrypt failed: %w", err)
-	}
-
-	if _, err := c.raw.WriteTo(encrypted, c.remote); err != nil {
+	if _, err := c.raw.WriteTo(out, c.remote); err != nil {
 		return 0, err
 	}
 	return len(b), nil

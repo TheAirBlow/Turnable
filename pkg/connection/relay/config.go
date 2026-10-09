@@ -24,6 +24,12 @@ type ClientConfig struct {
 	Encryption string `json:"encryption,omitempty" url:"query,encryption,6"`     // Encryption mode
 	PubKey     string `json:"pub_key,omitempty" url:"query,pub_key,7,omitempty"` // Public key of the server
 	Mux        string `json:"mux,omitempty" url:"query,mux,8,omitempty"`         // Session transport: "mpath" (default) or "legacy"
+	Mask       string `json:"mask,omitempty" url:"query,mask,9,omitempty"`       // Outer record masking with mux=mpath: "on" (default) or "off"
+}
+
+// MaskEnabled reports whether the outer DTLS/SRTP encryption is replaced by masking
+func (c ClientConfig) MaskEnabled() bool {
+	return c.MuxMode() == MuxMpath && c.Mask != "off"
 }
 
 const (
@@ -105,6 +111,12 @@ func (c ClientConfig) Validate() error {
 	case MuxMpath, MuxLegacy:
 	default:
 		return fmt.Errorf("invalid mux: %s (must be mpath or legacy)", c.Mux)
+	}
+
+	switch c.Mask {
+	case "", "on", "off":
+	default:
+		return fmt.Errorf("invalid mask: %s (must be on or off)", c.Mask)
 	}
 
 	pubBytes, err := base64.StdEncoding.DecodeString(c.PubKey)

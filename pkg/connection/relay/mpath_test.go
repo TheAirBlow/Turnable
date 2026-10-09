@@ -103,10 +103,17 @@ func (f *relayFixture) clientConfig() *ClientConfig {
 }
 
 func (f *relayFixture) dial(t *testing.T) net.Conn {
+	return f.dialMask(t, false)
+}
+
+func (f *relayFixture) dialMask(t *testing.T, mask bool) net.Conn {
 	t.Helper()
 	h, _ := protocol.GetHandler("dtls")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if mask {
+		ctx = protocol.WithMasking(ctx)
+	}
 	c, err := h.Connect(ctx, f.addr, protocol.TURNInfo{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +131,11 @@ func TestRelayMpathEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	for i := 0; i < 4; i++ {
-		if err := cli.AddPath(ctx, f.dial(t)); err != nil {
+		c := f.dialMask(t, true)
+		if ms, ok := c.(protocol.MaskState); !ok || !ms.Masked() {
+			t.Fatal("dtls masking was not negotiated")
+		}
+		if err := cli.AddPath(ctx, c); err != nil {
 			t.Fatalf("add path %d: %v", i, err)
 		}
 	}

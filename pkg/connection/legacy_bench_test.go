@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,7 +126,11 @@ func TestBenchLegacy(t *testing.T) {
 	dur := 15 * time.Second
 	warm := 3 * time.Second
 
+	only := os.Getenv("NETEM_ONLY")
 	run := func(name string, fn func(st *legacyStack, paths []*netem.Path) netem.Result) {
+		if only != "" && !strings.Contains(name, only) {
+			return
+		}
 		paths := netem.NewPaths(netem.DefaultMulti(), 1)
 		st, err := newLegacyStack(paths)
 		if err != nil {
@@ -142,9 +147,6 @@ func TestBenchLegacy(t *testing.T) {
 		}
 	}
 
-	if os.Getenv("NETEM_ONLY") == "udp" {
-		goto udp
-	}
 	run("legacy tcp x1", func(st *legacyStack, _ []*netem.Path) netem.Result {
 		return netem.RunStreams("legacy tcp x1", st, netem.StreamOptions{Streams: 1, Duration: dur, Warmup: warm})
 	})
@@ -165,8 +167,7 @@ func TestBenchLegacy(t *testing.T) {
 		t.Logf("  recovery to 70%%: %v", netem.RecoveryTime(res.Timeline, killAt, 0.7))
 		return res
 	})
-udp:
-	run("legacy udp 1MB/s", func(st *legacyStack, _ []*netem.Path) netem.Result {
+run("legacy udp 1MB/s", func(st *legacyStack, _ []*netem.Path) netem.Result {
 		return netem.RunDatagrams("legacy udp 1MB/s", st, netem.DatagramOptions{Rate: 1024 * 1024, Size: 1200, Duration: dur, Warmup: warm})
 	})
 }

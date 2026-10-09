@@ -13,8 +13,8 @@ import (
 	"github.com/theairblow/turnable/pkg/config"
 	"github.com/theairblow/turnable/pkg/config/providers"
 	"github.com/theairblow/turnable/pkg/connection"
-	"github.com/theairblow/turnable/pkg/platform"
 	"github.com/theairblow/turnable/pkg/mpath"
+	"github.com/theairblow/turnable/pkg/platform"
 	"github.com/theairblow/turnable/pkg/protocol"
 	"github.com/theairblow/turnable/pkg/transport"
 )

@@ -192,6 +192,10 @@ func (D *Handler) connectClientSession() error {
 			h.SetLogger(D.log.With("peer_idx", idx))
 			connCtx, connCancel := context.WithTimeout(ctx, 5*time.Second)
 			defer connCancel()
+			if cfg.MaskEnabled() {
+				// mpath already encrypts and authenticates everything, so skip the outer encryption
+				connCtx = protocol.WithMasking(connCtx)
+			}
 			return h.Connect(connCtx, dest, getTURNInfo(), true)
 		}
 		if err := D.startMpathClient(sessionCtx, cfg, numPeers, dialRaw, fullReconnect, connEvents); err != nil {
