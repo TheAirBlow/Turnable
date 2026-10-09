@@ -52,7 +52,11 @@ func (D *Handler) startMpathClient(
 	fullReconnect func(string),
 	connEvents *connection.EventStream,
 ) error {
-	cli, err := mpath.NewClient(cfg.PubKey, mpathConfig(D.log))
+	mcfg := mpathConfig(D.log)
+	// a dead path keeps probing briefly (it may just be a stall), then its conn is closed so the
+	// slot redials a fresh TURN allocation
+	mcfg.PathExpiry = mpathClientPathExpiry
+	cli, err := mpath.NewClient(cfg.PubKey, mcfg)
 	if err != nil {
 		return fmt.Errorf("%w: %w", connection.ErrFatal, err)
 	}
@@ -81,7 +85,6 @@ func (D *Handler) startMpathClient(
 		}
 		return sessionCtx.Err()
 	}
-	sess.SetPathHandlers(func(c net.Conn) { _ = c.Close() }, nil)
 
 	mux, err := mpath.NewClientMux(sess)
 	if err != nil {
@@ -191,9 +194,10 @@ func (D *Handler) runMpathSlot(
 }
 
 const (
-	peerReconnectInit = 1 * time.Second  // initial peer redial delay
-	peerReconnectMax  = 10 * time.Second // maximum peer redial delay
-	peerStableAfter   = 10 * time.Second // online time after which a drop is redialed at once
+	peerReconnectInit     = 500 * time.Millisecond // initial peer redial delay
+	peerReconnectMax      = 3 * time.Second        // maximum peer redial delay, short so outages end quickly
+	peerStableAfter       = 10 * time.Second       // online time after which a drop is redialed at once
+	mpathClientPathExpiry = 3 * time.Second        // how long a dead path probes before it is redialed
 )
 
 func nextPeerDelay(d time.Duration) time.Duration {
@@ -384,7 +388,10 @@ func (D *Handler) serveMpathSession(ctx context.Context, sess *mpath.Session, ou
 	_ = auth.Close()
 
 	sid := sessionUUID.String()
-	addr := sessionAddr("mpath/" + sid)
+	var addr net.Addr = sessionAddr("mpath/" + sid)
+	if ra := sess.RemoteAddr(); ra != nil {
+		addr = ra
+	}
 	D.log.Info("relay mpath session started", "session_uuid", sid, "user_uuid", clientCfg.UserUUID, "routes", len(routes))
 	defer D.log.Info("relay mpath session ended", "session_uuid", sid, "reason", sess.Err())
 

@@ -39,6 +39,7 @@ type Config struct {
 	RecvWindow    int           // receive window in segments
 	SendBuffer    int           // bytes buffered by Write before it blocks
 	DatagramQueue int           // queued outgoing datagram packets before the oldest is dropped
+	ReorderWait   time.Duration // if > 0, hold a datagram up to this long for an earlier missing one (adds latency)
 	Logger        *slog.Logger
 }
 
@@ -105,6 +106,29 @@ const (
 	maxFrags   = 15
 )
 
+// bufPool recycles packet-sized buffers; every buffer it hands out has cap bufCap
+var bufPool = sync.Pool{New: func() any { b := make([]byte, 0, bufCap); return &b }}
+
+const bufCap = 2048
+
+// getBuf returns a pooled buffer of length n
+func getBuf(n int) []byte {
+	if n > bufCap {
+		return make([]byte, n)
+	}
+	b := *bufPool.Get().(*[]byte)
+	return b[:n]
+}
+
+// putBuf recycles a buffer from getBuf; foreign buffers are left to the GC
+func putBuf(b []byte) {
+	if cap(b) != bufCap {
+		return
+	}
+	b = b[:0]
+	bufPool.Put(&b)
+}
+
 // ErrClosed is returned after the session has been closed
 var ErrClosed = errors.New("mpath: session closed")
 
@@ -170,15 +194,19 @@ type Session struct {
 	// reliable receive side
 	recvCum       uint32
 	ooo           map[uint32][]byte
-	readQ         [][]byte
+	readQ         [][]byte // pooled buffers, consumed from readOff
+	readOff       int
 	advertised    uint32
 	windowPending bool
 
 	// datagrams
-	dgOut    [][]byte
-	dgIn     chan []byte
-	dgNextID uint16
-	frags    map[uint16]*fragBuf
+	dgOut       [][]byte
+	dgIn        chan []byte
+	dgNextID    uint16
+	dgOrderInit bool
+	dgNext      uint16 // next datagram id expected in order
+	dgHeld      map[uint16]heldDatagram
+	frags       map[uint16]*fragBuf
 
 	stats SessionStats
 
@@ -192,6 +220,14 @@ type Session struct {
 	onPathRemoved func(net.Conn)
 
 	handshakeReply func([]byte) []byte // server: answers handshake retransmissions on bound paths
+	remote         net.Addr            // remote address of the first path
+}
+
+// RemoteAddr returns the remote address of the session's first path
+func (s *Session) RemoteAddr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.remote
 }
 
 func newSession(cfg *Config, k *keys, id []byte, isClient bool) *Session {
@@ -203,6 +239,7 @@ func newSession(cfg *Config, k *keys, id []byte, isClient bool) *Session {
 		peerLimit: uint32(cfg.RecvWindow),
 		dgIn:      make(chan []byte, 1024),
 		frags:     make(map[uint16]*fragBuf),
+		dgHeld:    make(map[uint16]heldDatagram),
 		notifyCh:  make(chan struct{}, 1),
 		closed:    make(chan struct{}),
 		lastAlive: time.Now(),
@@ -245,6 +282,9 @@ func (s *Session) attach(conn net.Conn) *path {
 	p := newPath(s.nextPathID, conn, s.cfg, time.Now())
 	s.nextPathID++
 	s.paths = append(s.paths, p)
+	if s.remote == nil {
+		s.remote = conn.RemoteAddr()
+	}
 	alive := s.aliveCount()
 	s.mu.Unlock()
 	s.log.Debug("mpath path attached", "path", p.id, "alive", alive)
@@ -354,13 +394,15 @@ func (s *Session) Read(b []byte) (int, error) {
 	}
 	n := 0
 	for n < len(b) && len(s.readQ) > 0 {
-		c := copy(b[n:], s.readQ[0])
+		head := s.readQ[0]
+		c := copy(b[n:], head[s.readOff:])
 		n += c
-		if c == len(s.readQ[0]) {
+		s.readOff += c
+		if s.readOff == len(head) {
+			putBuf(head)
 			s.readQ[0] = nil
 			s.readQ = s.readQ[1:]
-		} else {
-			s.readQ[0] = s.readQ[0][c:]
+			s.readOff = 0
 		}
 	}
 	// open the window once a quarter of it has been consumed
@@ -477,7 +519,8 @@ func (s *Session) Stats() SessionStats {
 
 // writePath seals and writes one packet
 func (s *Session) writePath(p *path, plain []byte) {
-	pkt := s.keys.send.seal(make([]byte, 0, len(plain)+sealOverhead), plain)
+	pkt := s.keys.send.seal(getBuf(0), plain)
+	defer putBuf(pkt)
 	p.writeMu.Lock()
 	_, err := p.conn.Write(pkt)
 	p.writeMu.Unlock()
@@ -529,6 +572,7 @@ func (s *Session) readLoop(p *path) {
 		}
 		if ack := s.handlePacket(p, plain); ack != nil {
 			s.writePath(p, ack)
+			putBuf(ack)
 		}
 	}
 }
@@ -583,7 +627,7 @@ func (s *Session) handlePacket(p *path, b []byte) []byte {
 		return nil
 	}
 
-	inOrder := p.recvLargest < 0 || int64(seq) == p.recvLargest+1
+	inOrder := !p.recvAny || seq == p.recvLargest+1
 	if p.onRecv(seq) {
 		// path-level duplicate: still ACK so the sender stops resending
 		return s.ackLocked(p, now)
@@ -646,10 +690,10 @@ func (s *Session) onDataLocked(seq uint32, data []byte) {
 			s.stats.DupSegments++
 			return
 		}
-		s.ooo[seq] = append([]byte(nil), data...)
+		s.ooo[seq] = append(getBuf(0), data...)
 		return
 	}
-	s.readQ = append(s.readQ, append([]byte(nil), data...))
+	s.readQ = append(s.readQ, append(getBuf(0), data...))
 	s.recvCum++
 	for {
 		d, ok := s.ooo[s.recvCum]
@@ -693,24 +737,88 @@ func (s *Session) onDatagramLocked(b []byte, now time.Time) {
 		}
 	}
 	s.stats.DatagramsRecvd++
+	s.orderDatagramLocked(id, whole, now)
+}
+
+// orderDatagramLocked delivers datagrams in send order, holding one back for at most
+// Config.ReorderWait while an earlier one is still missing. Late or lost datagrams never block
+// delivery for longer than that.
+func (s *Session) orderDatagramLocked(id uint16, d []byte, now time.Time) {
+	if s.cfg.ReorderWait <= 0 {
+		s.deliverDatagramLocked(d)
+		return
+	}
+	if !s.dgOrderInit {
+		s.dgOrderInit, s.dgNext = true, id
+	}
+	switch diff := int16(id - s.dgNext); {
+	case diff < 0:
+		s.deliverDatagramLocked(d) // arrived after we gave up waiting for it: deliver anyway
+		return
+	case diff == 0:
+		s.deliverDatagramLocked(d)
+		s.dgNext++
+	default:
+		if len(s.dgHeld) >= maxHeldDatagrams {
+			s.flushHeldLocked(now, true)
+		}
+		s.dgHeld[id] = heldDatagram{data: d, at: now}
+	}
+	s.flushHeldLocked(now, false)
+}
+
+// flushHeldLocked releases held datagrams that are now in order, and skips gaps that waited too long
+func (s *Session) flushHeldLocked(now time.Time, force bool) {
+	for len(s.dgHeld) > 0 {
+		if h, ok := s.dgHeld[s.dgNext]; ok {
+			delete(s.dgHeld, s.dgNext)
+			s.deliverDatagramLocked(h.data)
+			s.dgNext++
+			continue
+		}
+		// the next datagram is missing: skip it once the oldest held one has waited long enough
+		oldest := uint16(0)
+		var oldestAt time.Time
+		first := true
+		for id, h := range s.dgHeld {
+			if first || int16(id-oldest) < 0 {
+				oldest, oldestAt, first = id, h.at, false
+			}
+		}
+		if !force && now.Sub(oldestAt) < s.cfg.ReorderWait {
+			return
+		}
+		s.dgNext = oldest
+		force = false
+	}
+}
+
+func (s *Session) deliverDatagramLocked(d []byte) {
 	select {
-	case s.dgIn <- whole:
+	case s.dgIn <- d:
 	default:
 		s.stats.DatagramsInDrop++
 	}
 }
 
+type heldDatagram struct {
+	data []byte
+	at   time.Time
+}
+
+const maxHeldDatagrams = 256
+
 // ackLocked builds an ACK-only packet for path p
 func (s *Session) ackLocked(p *path, now time.Time) []byte {
-	if p.recvLargest < 0 {
+	if !p.recvAny {
 		return nil
 	}
-	plain := make([]byte, hdrLen+ackLen)
+	plain := getBuf(hdrLen + ackLen)
 	plain[0] = fAck
 	limit := s.limitLocked()
 	s.advertised = limit
 	binary.BigEndian.PutUint32(plain[1:], limit)
-	binary.BigEndian.PutUint32(plain[hdrLen:], uint32(p.recvLargest))
+	binary.BigEndian.PutUint32(plain[hdrLen:], p.recvLargest)
 	delay := uint16(min(now.Sub(p.ackFirstTime)/(100*time.Microsecond), 65535))
 	if p.ackPending == 0 {
 		delay = 0
@@ -732,7 +840,7 @@ func (s *Session) elicitingLocked(p *path, now time.Time, flags byte, seg *segme
 	case dgram != nil:
 		size += len(dgram)
 	}
-	plain := make([]byte, size)
+	plain := getBuf(size)
 	plain[0] = flags
 	limit := s.limitLocked()
 	s.advertised = limit
@@ -774,6 +882,7 @@ func (s *Session) sendLoop() {
 
 		for i := range out {
 			s.writePath(out[i].p, out[i].plain)
+			putBuf(out[i].plain)
 			out[i] = outPkt{}
 		}
 		if len(out) > 0 && wait == 0 {
@@ -856,6 +965,8 @@ func (s *Session) housekeepingLocked(now time.Time, out []outPkt) []outPkt {
 		go func(c net.Conn) { _ = c.Close() }(p.conn)
 	}
 
+	s.flushHeldLocked(now, false)
+
 	// expire stale datagram fragments
 	for id, fb := range s.frags {
 		if now.Sub(fb.at) > 2*time.Second {
@@ -882,6 +993,21 @@ func (s *Session) bestPathLocked(now time.Time, forData bool) *path {
 		}
 		at := p.arrival(now)
 		if best == nil || at.Before(bestAt) {
+			best, bestAt = p, at
+		}
+	}
+	return best
+}
+
+// bestNonProbingLocked is bestPathLocked restricted to paths not currently probing for bandwidth
+func (s *Session) bestNonProbingLocked(now time.Time) *path {
+	var best *path
+	var bestAt time.Time
+	for _, p := range s.paths {
+		if p.dead || p.removed || p.probing() || !p.usable(now) || p.backlog(now) > s.cfg.QueueHorizon {
+			continue
+		}
+		if at := p.arrival(now); best == nil || at.Before(bestAt) {
 			best, bestAt = p, at
 		}
 	}
@@ -921,6 +1047,12 @@ func (s *Session) scheduleLocked(now time.Time, out []outPkt) ([]outPkt, time.Du
 		if p == nil {
 			break // every path is booked or window-limited; ACKs and pacing will wake us
 		}
+		if dgram != nil && p.probing() {
+			// datagrams cannot be retransmitted, so keep them off paths probing past their cap
+			if q := s.bestNonProbingLocked(now); q != nil {
+				p = q
+			}
+		}
 		appLimited := len(s.queue) <= 1 && len(s.retrans) == 0
 		switch {
 		case dgram != nil:
@@ -942,6 +1074,12 @@ func (s *Session) scheduleLocked(now time.Time, out []outPkt) ([]outPkt, time.Du
 			s.stats.SegmentsSent++
 			s.elicitingLocked(p, now, fData, seg, nil, appLimited)
 		}
+	}
+
+	// paths may probe for more bandwidth only while data is left waiting for them
+	_, _, backlogged := s.nextPayloadLocked()
+	for _, p := range s.paths {
+		p.demand = backlogged
 	}
 
 	var wait time.Duration

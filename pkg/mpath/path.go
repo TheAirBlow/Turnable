@@ -1,6 +1,7 @@
 package mpath
 
 import (
+	mrand "math/rand/v2"
 	"net"
 	"sync"
 	"time"
@@ -68,7 +69,7 @@ func (f *bwFilter) reset(now time.Time, v float64) {
 
 // pacing gain cycle: a gentle probe up, a drain, then cruise. Probing over a policer costs
 // loss, so it is short and rare; VK peers sit at a fixed cap.
-var gainCycle = [...]float64{1.1, 0.85, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95}
+var gainCycle = [...]float64{1.05, 0.9, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97}
 
 // path is one peer connection carrying a share of the session
 type path struct {
@@ -98,6 +99,8 @@ type path struct {
 
 	bw            bwFilter
 	ceiling       float64 // loss-derived rate cap, 0 for none
+	capFound      bool    // a policer has been hit at least once
+	demand        bool    // the session has more to send than the paths take; probing only then
 	delivered     uint64
 	deliveredTime time.Time
 	firstSent     time.Time
@@ -110,7 +113,8 @@ type path struct {
 	epochAcked    int // bytes acked
 
 	// receiver state
-	recvLargest  int64 // -1 until the first packet
+	recvLargest  uint32
+	recvAny      bool // false until the first packet
 	recvBitmap   uint64
 	ackPending   int
 	ackFirstTime time.Time
@@ -133,7 +137,7 @@ type PathStats struct {
 func newPath(id int, conn net.Conn, cfg *Config, now time.Time) *path {
 	return &path{
 		id: id, conn: conn, cfg: cfg,
-		recvLargest:   -1,
+		nextSeq:       initialPathSeq(),
 		lastAckTime:   now,
 		deliveredTime: now,
 		gainStart:     now,
@@ -141,6 +145,9 @@ func newPath(id int, conn net.Conn, cfg *Config, now time.Time) *path {
 		nextSendTime:  now,
 	}
 }
+
+// initialPathSeq picks a random starting sequence; serial arithmetic handles the wrap
+func initialPathSeq() uint32 { return mrand.Uint32() }
 
 // rtt returns the smoothed RTT or a conservative default
 func (p *path) rtt() time.Duration {
@@ -155,7 +162,13 @@ func (p *path) rate(now time.Time) float64 {
 	// app-limited paths see tiny samples, so never trust the estimate below the initial rate;
 	// only measured loss (the ceiling) may push a path lower
 	bw := max(p.bw.max(now), p.cfg.InitialRate)
-	r := bw * gainCycle[p.gainIdx]
+	gain := gainCycle[p.gainIdx]
+	if !p.demand {
+		gain = 1 // nothing is waiting: no probing (it only risks loss) and no cruise margin needed
+	} else if p.gainIdx == 0 && p.ceiling == 0 && !p.capFound {
+		gain = 1.25 // no cap seen yet: probe hard so unthrottled headroom is found quickly
+	}
+	r := bw * gain
 	if p.ceiling > 0 && r > p.ceiling {
 		r = p.ceiling
 	}
@@ -167,6 +180,9 @@ func (p *path) rate(now time.Time) float64 {
 	}
 	return r
 }
+
+// probing reports whether the pacer is in its probe-up phase, where a policer may drop packets
+func (p *path) probing() bool { return p.demand && gainCycle[p.gainIdx] > 1 }
 
 // cwnd caps bytes in flight so a stalled path cannot swallow unbounded data
 func (p *path) cwnd(now time.Time) int {
@@ -185,7 +201,15 @@ func (p *path) arrival(now time.Time) time.Time {
 	if t.Before(now) {
 		t = now
 	}
-	return t.Add(p.rtt() / 2)
+	return t.Add(p.owd())
+}
+
+// owd estimates the one-way delay from the minimum RTT, which excludes queueing noise
+func (p *path) owd() time.Duration {
+	if p.minRTT > 0 {
+		return p.minRTT / 2
+	}
+	return p.rtt() / 2
 }
 
 // onSend records an ack-eliciting packet, advances the pacer and returns its sequence and send time
@@ -232,10 +256,10 @@ func (p *path) onAck(now time.Time, largest uint32, delay time.Duration, bitmap 
 		if seq == largest {
 			return true
 		}
-		if seq > largest {
+		d := int32(largest - seq) // serial arithmetic: path sequences may wrap
+		if d < 0 {
 			return false
 		}
-		d := largest - seq
 		return d <= 64 && bitmap&(1<<(d-1)) != 0
 	}
 
@@ -280,7 +304,7 @@ func (p *path) onAck(now time.Time, largest uint32, delay time.Duration, bitmap 
 					bestSample, sampleValid = s, true
 				}
 			}
-		case sp.seq < largest && (largest-sp.seq >= 3 || now.Sub(sp.sendTime) > p.rtt()*9/8+p.cfg.MaxAckDelay):
+		case int32(largest-sp.seq) > 0 && (int32(largest-sp.seq) >= 3 || now.Sub(sp.sendTime) > p.rtt()*9/8+p.cfg.MaxAckDelay):
 			lost = append(lost, sp)
 			p.inflight -= sp.size
 		default:
@@ -355,6 +379,7 @@ func (p *path) advanceCycle(now time.Time) {
 	case lossRate > p.cfg.LossThreshold && sentRate > 0.5*p.rate(now):
 		// a policer is dropping us while we were actually pushing: cap just under what got through
 		p.ceiling = max(min(deliveryRate, sentRate*(1-lossRate))*0.95, p.cfg.MinRate)
+		p.capFound = true
 		p.bw.reset(now, p.ceiling)
 	case p.ceiling > 0 && lossRate < p.cfg.LossThreshold/2:
 		p.ceiling *= 1.05 // creep back up so a lifted throttle is rediscovered
@@ -411,22 +436,23 @@ func (p *path) takeAll() []*sentPkt {
 
 // onRecv updates the receive bitmap and reports whether the packet is a path-level duplicate
 func (p *path) onRecv(seq uint32) (dup bool) {
-	s := int64(seq)
+	if !p.recvAny {
+		p.recvAny, p.recvLargest, p.recvBitmap = true, seq, 0
+		return false
+	}
+	d := int64(int32(seq - p.recvLargest)) // serial arithmetic
 	switch {
-	case p.recvLargest < 0:
-		p.recvLargest, p.recvBitmap = s, 0
-	case s > p.recvLargest:
-		shift := s - p.recvLargest
-		if shift > 64 {
+	case d > 0:
+		if d > 64 {
 			p.recvBitmap = 0
 		} else {
-			p.recvBitmap = p.recvBitmap<<shift | 1<<(shift-1)
+			p.recvBitmap = p.recvBitmap<<d | 1<<(d-1)
 		}
-		p.recvLargest = s
-	case s == p.recvLargest:
+		p.recvLargest = seq
+	case d == 0:
 		return true
 	default:
-		d := p.recvLargest - s
+		d = -d
 		if d > 64 {
 			return true
 		}
