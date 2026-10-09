@@ -18,6 +18,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/useflyent/fhttp v0.0.0-20211004035111-333f430cfbbf
 	github.com/xtaci/kcp-go/v5 v5.6.72
+	github.com/xtaci/smux v1.5.34
 	golang.org/x/time v0.15.0
 	google.golang.org/protobuf v1.36.11
 )

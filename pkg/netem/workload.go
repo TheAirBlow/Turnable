@@ -27,19 +27,21 @@ type Result struct {
 	Throughput float64       // bytes/sec
 	LatP50     time.Duration // one-way latency of stamped blocks or datagrams
 	LatP99     time.Duration
-	Sent       uint64  // datagrams sent (datagram workloads only)
-	Received   uint64  // datagrams received (datagram workloads only)
-	Reordered  uint64  // datagrams that arrived after a higher sequence number
-	Errors     int     // stream errors seen during the run
-	Extra      string  // stack-specific counters such as retransmissions
-	Timeline   []int64 // received bytes per 250 ms bucket
+	Sent       uint64        // datagrams sent (datagram workloads only)
+	Received   uint64        // datagrams received (datagram workloads only)
+	Reordered  uint64        // datagrams that arrived after a higher sequence number
+	DepthP99   uint64        // p99 reorder depth in packets (max seen seq - seq) over reordered datagrams
+	LateP99    time.Duration // p99 of how long reordered datagrams trailed the newest one
+	Errors     int           // stream errors seen during the run
+	Extra      string        // stack-specific counters such as retransmissions
+	Timeline   []int64       // received bytes per 250 ms bucket
 }
 
 func (r Result) String() string {
 	s := fmt.Sprintf("%-22s %7.0f KB/s  p50 %6s  p99 %6s  errors %d", r.Name, r.Throughput/1024, r.LatP50.Round(time.Millisecond), r.LatP99.Round(time.Millisecond), r.Errors)
 	if r.Sent > 0 {
 		loss := 100 * (1 - float64(r.Received)/float64(r.Sent))
-		s += fmt.Sprintf("  loss %.1f%%  reordered %.2f%%", loss, 100*float64(r.Reordered)/float64(max(r.Received, 1)))
+		s += fmt.Sprintf("  loss %.1f%%  reordered %.2f%% (depth p99 %d, late p99 %s)", loss, 100*float64(r.Reordered)/float64(max(r.Received, 1)), r.DepthP99, r.LateP99.Round(time.Millisecond))
 	}
 	if r.Extra != "" {
 		s += "  " + r.Extra
@@ -206,6 +208,9 @@ func RunDatagrams(name string, st Stack, opt DatagramOptions) Result {
 		return res
 	}
 	var recvd, reordered atomic.Uint64
+	var depthMu sync.Mutex
+	var depths []uint64
+	var lates []time.Duration
 	go func() {
 		srv, ok := <-st.Accept()
 		if !ok {
@@ -213,6 +218,7 @@ func RunDatagrams(name string, st Stack, opt DatagramOptions) Result {
 		}
 		buf := make([]byte, 65536)
 		var maxSeq uint64
+		var maxAt time.Time
 		for {
 			n, err := srv.Read(buf)
 			if err != nil {
@@ -224,8 +230,12 @@ func RunDatagrams(name string, st Stack, opt DatagramOptions) Result {
 			seq := binary.BigEndian.Uint64(buf[8:])
 			if seq < maxSeq {
 				reordered.Add(1)
+				depthMu.Lock()
+				depths = append(depths, maxSeq-seq)
+				lates = append(lates, time.Since(maxAt))
+				depthMu.Unlock()
 			} else {
-				maxSeq = seq
+				maxSeq, maxAt = seq, time.Now()
 			}
 			recvd.Add(1)
 			rec.add(n, time.Duration(time.Now().UnixNano()-int64(binary.BigEndian.Uint64(buf))))
@@ -261,6 +271,14 @@ func RunDatagrams(name string, st Stack, opt DatagramOptions) Result {
 	res.Sent = atomic.LoadUint64(&sent)
 	res.Received = recvd.Load()
 	res.Reordered = reordered.Load()
+	depthMu.Lock()
+	slices.Sort(depths)
+	slices.Sort(lates)
+	if len(depths) > 0 {
+		res.DepthP99 = depths[len(depths)*99/100]
+		res.LateP99 = lates[len(lates)*99/100]
+	}
+	depthMu.Unlock()
 	rec.fill(&res, opt.Warmup)
 	return res
 }
