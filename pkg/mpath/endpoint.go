@@ -14,6 +14,7 @@ const (
 	handshakeRetry   = 500 * time.Millisecond // handshake retransmission period
 	handshakeTimeout = 15 * time.Second       // server wait for the first packet of a new conn
 	attachMaxSkew    = 2 * time.Minute        // accepted clock skew for attach timestamps
+	rejectLinger     = 2 * time.Second        // how long a rejected conn stays open so the reject arrives
 )
 
 // Client builds one session over paths added as peer connections come up
@@ -226,6 +227,11 @@ func (s *Server) HandleConn(ctx context.Context, conn net.Conn) error {
 			continue
 		}
 		if err != nil {
+			if errors.Is(err, ErrVersion) || errors.Is(err, ErrUnknownSession) {
+				// let the reject reach the client before tearing the conn down
+				time.AfterFunc(rejectLinger, func() { _ = conn.Close() })
+				return err
+			}
 			_ = conn.Close()
 			return err
 		}

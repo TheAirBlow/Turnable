@@ -22,6 +22,8 @@ func init() {
 // mpathStack is the new stack under the netem harness
 type mpathStack struct {
 	client, server *Mux
+	srv            *Server
+	cli            *Client
 	accept         chan net.Conn
 	cancel         context.CancelFunc
 }
@@ -70,7 +72,7 @@ func newMpathStack(t testing.TB, paths []*netem.Path, cfg Config) *mpathStack {
 		t.Fatal(err)
 	}
 	actx, acancel := context.WithCancel(context.Background())
-	st := &mpathStack{client: cm, server: sm, accept: make(chan net.Conn, 64), cancel: acancel}
+	st := &mpathStack{client: cm, server: sm, srv: srv, cli: cli, accept: make(chan net.Conn, 64), cancel: acancel}
 	go func() {
 		for {
 			s, err := sm.AcceptStream(actx)
@@ -187,4 +189,140 @@ func TestBenchMpath(t *testing.T) {
 	run("udp", func(st *mpathStack, _ []*netem.Path) netem.Result {
 		return netem.RunDatagrams("", st, netem.DatagramOptions{Rate: 1024 * 1024, Size: 1200, Duration: dur, Warmup: warm})
 	})
+}
+
+// redialNet emulates the peer layer: a removed path is redialed with backoff on the same slot,
+// and redials fail while the whole network is down
+type redialNet struct {
+	mu    sync.Mutex
+	down  bool
+	cfg   netem.MultiConfig
+	seed  uint64
+	slots map[net.Conn]int
+	live  map[int]*netem.Path
+	srv   *Server
+	cli   *Client
+	dials int
+}
+
+func (n *redialNet) setDown(down bool) {
+	n.mu.Lock()
+	n.down = down
+	for _, p := range n.live {
+		p.SetDown(down)
+	}
+	n.mu.Unlock()
+}
+
+func (n *redialNet) slotPath(slot int) *netem.Path {
+	n.seed++
+	d := n.cfg.MinDelay + (n.cfg.MaxDelay-n.cfg.MinDelay)*time.Duration(slot)/time.Duration(max(n.cfg.Paths-1, 1))
+	return netem.NewPath(netem.PathConfig{Rate: n.cfg.Rate, Delay: d, Jitter: n.cfg.Jitter}, n.seed*1000)
+}
+
+func (n *redialNet) removed(c net.Conn) {
+	n.mu.Lock()
+	slot, ok := n.slots[c]
+	delete(n.slots, c)
+	if ok {
+		if old := n.live[slot]; old != nil {
+			old.Close()
+			delete(n.live, slot)
+		}
+	}
+	n.mu.Unlock()
+	if ok {
+		go n.redial(slot)
+	}
+}
+
+func (n *redialNet) redial(slot int) {
+	delay := time.Second
+	for {
+		if n.cli.Session().isClosed() {
+			return
+		}
+		n.mu.Lock()
+		down := n.down
+		var p *netem.Path
+		if !down {
+			p = n.slotPath(slot)
+			n.dials++
+		}
+		n.mu.Unlock()
+		if p != nil {
+			go func() { _ = n.srv.HandleConn(context.Background(), p.B) }()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := n.cli.AddPath(ctx, p.A)
+			cancel()
+			if err == nil {
+				n.mu.Lock()
+				n.slots[p.A] = slot
+				n.live[slot] = p
+				n.mu.Unlock()
+				return
+			}
+			p.Close()
+		}
+		time.Sleep(delay)
+		delay = min(delay*2, 10*time.Second)
+	}
+}
+
+// TestOutageResume blackholes every path for 30 s and checks the session comes back; NETEM_BENCH=1
+func TestOutageResume(t *testing.T) {
+	if os.Getenv("NETEM_BENCH") == "" {
+		t.Skip("set NETEM_BENCH=1 to run the emulator benchmark")
+	}
+	mc := netem.DefaultMulti()
+	paths := netem.NewPaths(mc, 1)
+	rn := &redialNet{cfg: mc, seed: 1, slots: map[net.Conn]int{}, live: map[int]*netem.Path{}}
+	for i, p := range paths {
+		rn.slots[p.A] = i
+		rn.live[i] = p
+	}
+	st := newMpathStack(t, paths, Config{})
+	defer st.Close()
+	rn.srv, rn.cli = st.srv, st.cli
+	st.client.Session().SetPathHandlers(func(c net.Conn) { _ = c.Close() }, rn.removed)
+
+	const bucket = 250 * time.Millisecond
+	outageAt, outage := 6*time.Second, 30*time.Second
+	var restoredAt time.Duration
+	res := netem.RunStreams("outage", st, netem.StreamOptions{Streams: 16, Duration: outageAt + outage + 15*time.Second, Warmup: 3 * time.Second,
+		During: func(el time.Duration) {
+			switch {
+			case el >= outageAt && el < outageAt+outage:
+				rn.setDown(true)
+			case el >= outageAt+outage && restoredAt == 0:
+				restoredAt = el
+				rn.setDown(false)
+			}
+		}})
+	t.Log(res.String() + "  " + st.counters())
+	t.Logf("  timeline KB/250ms: %v  redials %d", kb(res.Timeline), rn.dials)
+
+	k0, k := int(outageAt/bucket), int(restoredAt/bucket)
+	var before int64
+	for _, v := range res.Timeline[k0-4 : k0] {
+		before += v
+	}
+	resumed := -1
+	for i := k; i+4 <= len(res.Timeline); i++ {
+		var sum int64
+		for _, v := range res.Timeline[i : i+4] {
+			sum += v
+		}
+		if sum*10 >= before*7 {
+			resumed = i - k
+			break
+		}
+	}
+	if resumed < 0 {
+		t.Fatalf("throughput did not recover after the outage")
+	}
+	t.Logf("  back to 70%% within %v of restore, stream errors %d", time.Duration(resumed)*bucket, res.Errors)
+	if res.Errors > 0 {
+		t.Fatalf("stream errors during outage: %d", res.Errors)
+	}
 }
