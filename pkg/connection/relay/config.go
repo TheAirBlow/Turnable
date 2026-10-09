@@ -23,6 +23,20 @@ type ClientConfig struct {
 	Peers      int    `json:"peers,omitempty" url:"query,peers,5"`               // Peer connections per session
 	Encryption string `json:"encryption,omitempty" url:"query,encryption,6"`     // Encryption mode
 	PubKey     string `json:"pub_key,omitempty" url:"query,pub_key,7,omitempty"` // Public key of the server
+	Mux        string `json:"mux,omitempty" url:"query,mux,8,omitempty"`         // Session transport: "mpath" (default) or "legacy"
+}
+
+const (
+	MuxMpath  = "mpath"  // multipath transport, one session striped over all peers
+	MuxLegacy = "legacy" // tinymux + KCP over round-robin peers
+)
+
+// MuxMode returns the effective session transport
+func (c ClientConfig) MuxMode() string {
+	if c.Mux == "" {
+		return MuxMpath
+	}
+	return c.Mux
 }
 
 // GetInner returns the inner shared configuration struct
@@ -85,6 +99,12 @@ func (c ClientConfig) Validate() error {
 	case "handshake", "full":
 	default:
 		return fmt.Errorf("invalid encryption mode: %s", c.Encryption)
+	}
+
+	switch c.MuxMode() {
+	case MuxMpath, MuxLegacy:
+	default:
+		return fmt.Errorf("invalid mux: %s (must be mpath or legacy)", c.Mux)
 	}
 
 	pubBytes, err := base64.StdEncoding.DecodeString(c.PubKey)

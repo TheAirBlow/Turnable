@@ -26,6 +26,7 @@ func (D *Handler) connectClientSession() error {
 	oldMuxClient := D.muxClient
 	oldPeerConn := D.peerConn
 	oldPlatform := D.platform
+	oldMpath := D.mpath
 	cfg := D.clientConfig
 	reconnectCtx := D.reconnectCtx
 	connEvents := D.events
@@ -33,10 +34,14 @@ func (D *Handler) connectClientSession() error {
 	D.muxClient = nil
 	D.peerConn = nil
 	D.platform = nil
+	D.mpath = nil
 	D.stateMu.Unlock()
 
 	if oldCancel != nil {
 		oldCancel()
+	}
+	if oldMpath != nil {
+		_ = oldMpath.mux.Close()
 	}
 	if oldMuxClient != nil {
 		_ = oldMuxClient.Disconnect()
@@ -179,6 +184,25 @@ func (D *Handler) connectClientSession() error {
 		_ = raw.SetDeadline(time.Time{})
 
 		return
+	}
+
+	if cfg.MuxMode() == MuxMpath {
+		dialRaw := func(ctx context.Context, idx int) (net.Conn, error) {
+			h, _ := protocol.GetHandler(cfg.Proto)
+			h.SetLogger(D.log.With("peer_idx", idx))
+			connCtx, connCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer connCancel()
+			return h.Connect(connCtx, dest, getTURNInfo(), true)
+		}
+		if err := D.startMpathClient(sessionCtx, cfg, numPeers, dialRaw, fullReconnect, connEvents); err != nil {
+			return err
+		}
+		D.stateMu.Lock()
+		D.cancel = sessionCancel
+		D.platform = platformHandler
+		D.stateMu.Unlock()
+		success = true
+		return nil
 	}
 
 	pickConn := func(p connPair) net.Conn {

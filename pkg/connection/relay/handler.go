@@ -14,6 +14,7 @@ import (
 	"github.com/theairblow/turnable/pkg/config/providers"
 	"github.com/theairblow/turnable/pkg/connection"
 	"github.com/theairblow/turnable/pkg/platform"
+	"github.com/theairblow/turnable/pkg/mpath"
 	"github.com/theairblow/turnable/pkg/protocol"
 	"github.com/theairblow/turnable/pkg/transport"
 )
@@ -45,10 +46,14 @@ type Handler struct {
 	proto        protocol.Handler
 	sessions     sync.Map
 
+	mpathServer   *mpath.Server
+	mpathSessions sync.Map // *mpath.Mux -> struct{}
+
 	// client-side
 	platform  platform.Handler
 	muxClient *connection.TinyMuxClient
 	peerConn  *connection.PeerConn
+	mpath     *mpathClientState
 	cancel    context.CancelFunc
 
 	clientConfig    *ClientConfig
@@ -111,9 +116,16 @@ func (D *Handler) Start(rawConfig config.Config, provider providers.Provider) er
 		return err
 	}
 
+	key, err := mpath.ParseServerKey(cfg.PrivKey)
+	if err != nil {
+		return err
+	}
+
 	if err := handler.Start(cfg.ListenAddr); err != nil {
 		return err
 	}
+
+	D.mpathServer = mpath.NewServer(key, mpathConfig(D.log))
 
 	D.serverConfig = cfg
 	D.provider = provider
@@ -141,6 +153,10 @@ func (D *Handler) Stop() error {
 		if ms := sess.muxServer.Load(); ms != nil {
 			_ = ms.Disconnect()
 		}
+		return true
+	})
+	D.mpathSessions.Range(func(key, _ any) bool {
+		_ = key.(*mpath.Mux).Close()
 		return true
 	})
 
@@ -200,8 +216,13 @@ func (D *Handler) OpenChannel(routeIdx byte) (net.Conn, error) {
 
 	D.stateMu.RLock()
 	muxClient := D.muxClient
+	mp := D.mpath
 	cfg := D.clientConfig
 	D.stateMu.RUnlock()
+
+	if mp != nil {
+		return mp.openChannel(routeIdx)
+	}
 
 	if muxClient == nil {
 		return nil, errors.New("relay: no active mux connection")
@@ -259,6 +280,8 @@ func (D *Handler) Disconnect() error {
 	peerConn := D.peerConn
 	reconnectCancel := D.reconnectCancel
 	events := D.events
+	mp := D.mpath
+	D.mpath = nil
 	D.cancel = nil
 	D.platform = nil
 	D.muxClient = nil
@@ -280,6 +303,10 @@ func (D *Handler) Disconnect() error {
 
 	if events != nil {
 		events.Close()
+	}
+
+	if mp != nil {
+		_ = mp.mux.Close()
 	}
 
 	return errors.Join(
@@ -318,6 +345,8 @@ func (D *Handler) Close() error {
 	peerConn := D.peerConn
 	reconnectCancel := D.reconnectCancel
 	events := D.events
+	mp := D.mpath
+	D.mpath = nil
 	D.cancel = nil
 	D.platform = nil
 	D.muxClient = nil
@@ -339,6 +368,10 @@ func (D *Handler) Close() error {
 
 	if events != nil {
 		events.Close()
+	}
+
+	if mp != nil {
+		_ = mp.mux.Close()
 	}
 
 	return errors.Join(
@@ -373,8 +406,22 @@ func (D *Handler) AcceptClients(ctx context.Context) (<-chan connection.ServerCl
 	protoHandler := D.proto
 	serverCfg := D.serverConfig
 
+	// out closes only after every producer has stopped
+	var producers sync.WaitGroup
+	acceptCtx, stopAccept := context.WithCancel(ctx)
+	producers.Add(2)
 	go func() {
-		defer close(out)
+		producers.Wait()
+		close(out)
+	}()
+	go func() {
+		defer producers.Done()
+		D.serveMpathSessions(acceptCtx, out)
+	}()
+
+	go func() {
+		defer producers.Done()
+		defer stopAccept()
 
 		if protoHandler == nil || serverCfg == nil {
 			return
@@ -386,9 +433,13 @@ func (D *Handler) AcceptClients(ctx context.Context) (<-chan connection.ServerCl
 			return
 		}
 
+		var peers sync.WaitGroup
+		defer peers.Wait()
 		for client := range clientCh {
+			peers.Add(1)
 			go func() {
-				if err := D.handleIncomingPeer(ctx, client, serverCfg, out); err != nil {
+				defer peers.Done()
+				if err := D.dispatchPeer(acceptCtx, client, serverCfg, out); err != nil {
 					D.log.Warn("relay peer handling failed", "addr", client.Address, "error", err)
 				}
 			}()

@@ -227,6 +227,9 @@ type DatagramFlow struct {
 	deadline atomic.Pointer[time.Time]
 }
 
+// ID returns the flow identifier
+func (f *DatagramFlow) ID() uint16 { return f.id }
+
 // Read returns one datagram
 func (f *DatagramFlow) Read(b []byte) (int, error) {
 	var timeout <-chan time.Time
