@@ -90,7 +90,7 @@ func (s *legacyStack) OpenStream() (net.Conn, error) {
 }
 
 func (s *legacyStack) OpenDatagram() (net.Conn, error) { return s.client.OpenChannel(routeDatagram) }
-func (s *legacyStack) Accept() <-chan net.Conn          { return s.accept }
+func (s *legacyStack) Accept() <-chan net.Conn         { return s.accept }
 
 func (s *legacyStack) Close() error {
 	_ = s.client.Close()
