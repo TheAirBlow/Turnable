@@ -15,16 +15,16 @@ import (
 
 // TurnableClient represents a Turnable client
 type TurnableClient struct {
-	Config config.Config
+	Config config.Config // Client config
 
-	running atomic.Bool
-	handler connection.Handler
-	events  <-chan connection.ConnectEvent
+	running atomic.Bool                    // the client is running
+	handler connection.Handler             // connection handler
+	events  <-chan connection.ConnectEvent // connectivity events from the handler
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx    context.Context    // lives as long as the client
+	cancel context.CancelFunc // cancels ctx
 
-	log *slog.Logger
+	log *slog.Logger // logger
 }
 
 // SetLogger changes the slog logger instance
@@ -118,6 +118,8 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 
 		acceptCh, err := socket.Open(c.ctx, route.Socket, addr)
 		if err != nil {
+			c.cancel()
+			_ = connHandler.Disconnect()
 			_ = connHandler.Close()
 			return fmt.Errorf("open tunnel for route %d (%s): %w", i, route.RouteID, err)
 		}

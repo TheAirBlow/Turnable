@@ -43,9 +43,9 @@ var warmupDomains = []string{
 
 // dnsCacheEntry describes one cached DNS answer
 type dnsCacheEntry struct {
-	IPs    []string  `json:"ips"`
-	TTL    int64     `json:"ttl_seconds"`
-	Expiry time.Time `json:"expiry"`
+	IPs    []string  `json:"ips"`         // Resolved addresses
+	TTL    int64     `json:"ttl_seconds"` // Record TTL in seconds
+	Expiry time.Time `json:"expiry"`      // When the entry goes stale
 }
 
 // fresh reports whether the cache entry has not yet reached its expiration date
@@ -55,7 +55,7 @@ func (e dnsCacheEntry) fresh() bool {
 
 // dnsCacheFile is the JSON container for DNS cache
 type dnsCacheFile struct {
-	Entries map[string]dnsCacheEntry `json:"entries"`
+	Entries map[string]dnsCacheEntry `json:"entries"` // Cached entries by host name
 }
 
 // init loads DNS cache state from disk

@@ -28,29 +28,29 @@ const SessionGrace = 3 * time.Minute
 
 // peerEntry holds one live connection inside PeerConn
 type peerEntry struct {
-	mu        sync.Mutex
-	conn      net.Conn
-	connected atomic.Bool
-	sendCh    chan []byte
+	mu        sync.Mutex  // guards conn
+	conn      net.Conn    // current connection, replaced on redial
+	connected atomic.Bool // the peer is online
+	sendCh    chan []byte // packets waiting to be written
 }
 
 // PeerConn aggregates multiple per-peer connections into one logical net.Conn
 type PeerConn struct {
-	mu       sync.RWMutex
-	peers    []*peerEntry
-	incoming chan []byte
-	ctx      context.Context
-	cancel   context.CancelFunc
-	writeIdx atomic.Uint64
-	closed   atomic.Bool
-	allGone  atomic.Bool
+	mu       sync.RWMutex       // guards peers
+	peers    []*peerEntry       // peer slots, nil once removed
+	incoming chan []byte        // packets read from all peers
+	ctx      context.Context    // lives as long as the conn
+	cancel   context.CancelFunc // cancels ctx
+	writeIdx atomic.Uint64      // round-robin write position
+	closed   atomic.Bool        // set once closed
+	allGone  atomic.Bool        // every peer slot is gone
 
 	lastOnline atomic.Int64 // unix nanoseconds when any peer was last online
 
-	peerReady chan struct{}
-	allGoneCh chan struct{}
+	peerReady chan struct{} // closed once the first peer is online
+	allGoneCh chan struct{} // closed once every peer is gone
 
-	log *slog.Logger
+	log *slog.Logger // logger
 }
 
 // NewPeerConn creates an empty PeerConn derived from the given context

@@ -14,7 +14,7 @@
     {
       "route_id": "https",
       "socket": "tcp",
-      "transport": "kcp"
+      "transport": "mpath"
     }
   ],
   "gateway": "203.0.113.45:56000",
@@ -38,7 +38,7 @@ turnable://user-uuid:call-id@vk.com/route-id?type=relay&gateway=203.0.113.45:560
 - `pass`: ID звонка
 - `host`: ID платформы
 - `path`: ID маршрутов (разделены слэшами, может быть несколько)
-- `query`: Доп. параметры (type, gateway, proto, encryption, peers, pub_key, cloak)
+- `query`: Доп. параметры (type, gateway, proto, encryption, peers, pub_key, cloak, mask)
 - `fragment`: Отображаемое название (опционально)
 
 ## Поля конфигурации
@@ -57,7 +57,7 @@ turnable://user-uuid:call-id@vk.com/route-id?type=relay&gateway=203.0.113.45:560
 |-------------|--------|--------------------------------------------------------------|
 | `route_id`  | string | Уникальный идентификатор маршрута                            |
 | `socket`    | string | Тип сокета (см. [Типы сокетов](../REFERENCE_RU.md))          |
-| `transport` | string | Транспортный протокол (см. [Транспорты](../REFERENCE_RU.md)) |
+| `transport` | string | Транспортный протокол: `mpath`, `kcp`, `sctp` или `none` (см. [Транспорты](../REFERENCE_RU.md)) |
 
 ### Поля режима Relay
 | Поле         | Тип     | Обязательно | Описание                                                       |
@@ -68,6 +68,8 @@ turnable://user-uuid:call-id@vk.com/route-id?type=relay&gateway=203.0.113.45:560
 | `peers`      | integer | Да          | Количество peer соединений (минимум 1)                         |
 | `pub_key`    | string  | Да          | Публичный ключ сервера (base64, формат ML-KEM-768)             |
 | `cloak`      | string  | Нет         | Метод маскировки трафика (пока только `none`)                  |
+| `mask`       | string  | Нет         | Маскирование внешнего шифрования при `mpath`, `on` по умолчанию или `off` |
+
 
 ### Поля режима Direct
 | Поле      | Тип     | Обязательно | Описание                               |

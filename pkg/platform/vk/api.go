@@ -14,16 +14,16 @@ import (
 
 // vkCallParticipantsResponse mirrors the VK call participants API response
 type vkCallParticipantsResponse struct {
-	Response struct {
-		Profiles []struct {
-			ID         int64  `json:"id"`
-			FirstName  string `json:"first_name"`
-			LastName   string `json:"last_name"`
-			ScreenName string `json:"screen_name"`
+	Response struct { // Response body
+		Profiles []struct { // Registered user profiles
+			ID         int64  `json:"id"`          // User ID
+			FirstName  string `json:"first_name"`  // First name
+			LastName   string `json:"last_name"`   // Last name
+			ScreenName string `json:"screen_name"` // Screen name
 		} `json:"profiles"`
-		Anonyms []struct {
-			ID   int64  `json:"id"`
-			Name string `json:"name"`
+		Anonyms []struct { // Anonymous participants
+			ID   int64  `json:"id"`   // Anonymous participant ID
+			Name string `json:"name"` // Display name
 		} `json:"anonyms"`
 	} `json:"response"`
 }
@@ -72,7 +72,7 @@ func (V *Handler) fetchParticipantNames(ctx context.Context, callID, accessToken
 	return result, nil
 }
 
-// postVKFormRaw performs an HTTP request with all profile headers applied and returns the raw response body.
+// postVKFormRaw performs an HTTP request with all profile headers applied and returns the raw response body
 func (V *Handler) postVKFormRaw(ctx context.Context, method, endpoint string, form *common.Values, extraHeaders map[string]string) ([]byte, error) {
 	p := V.profile
 	httpClient := V.httpClient
@@ -140,7 +140,7 @@ func (V *Handler) postVKFormRaw(ctx context.Context, method, endpoint string, fo
 	return io.ReadAll(resp.Body)
 }
 
-// postVKForm submits a form-encoded POST request and returns a decoded JSON response.
+// postVKForm submits a form-encoded POST request and returns a decoded JSON response
 func (V *Handler) postVKForm(ctx context.Context, endpoint string, form *common.Values, extraHeaders map[string]string) (vkFormResponse, error) {
 	body, err := V.postVKFormRaw(ctx, http.MethodPost, endpoint, form, extraHeaders)
 	if err != nil {

@@ -57,10 +57,10 @@ func (r *Route) Validate() error {
 	}
 
 	if r.Transport == "" {
-		r.Transport = "none"
+		r.Transport = "mpath"
 	}
 
-	if r.Transport != "" && !common.TransportsHolder.Exists(r.Transport) {
+	if r.Transport != "mpath" && !common.TransportsHolder.Exists(r.Transport) {
 		return fmt.Errorf("route %q has invalid transport: %s", r.ID, r.Transport)
 	}
 

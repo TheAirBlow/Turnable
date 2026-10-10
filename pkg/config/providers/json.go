@@ -9,13 +9,13 @@ import (
 
 // JSONProvider represents a Provider from a JSON file
 type JSONProvider struct {
-	mu sync.RWMutex
+	mu sync.RWMutex // guards data
 
 	path string // resolved path to the backing JSON file
 
-	data struct {
-		Routes map[string]Route `json:"routes"`
-		Users  map[string]User  `json:"users"`
+	data struct { // routes and users loaded from the file
+		Routes map[string]Route `json:"routes"` // Routes by ID
+		Users  map[string]User  `json:"users"`  // Users by UUID
 	}
 }
 
@@ -75,11 +75,12 @@ func (j *JSONProvider) Update(config json.RawMessage) error {
 		users[user.UUID] = user
 	}
 
-	for _, route := range routes {
+	for id, route := range routes {
 		err := route.Validate()
 		if err != nil {
 			return fmt.Errorf("route %s is invalid: %w", route.ID, err)
 		}
+		routes[id] = route
 	}
 
 	j.data.Routes = routes
@@ -94,24 +95,16 @@ func (j *JSONProvider) ToJSON() (json.RawMessage, error) {
 	defer j.mu.RUnlock()
 
 	data := struct {
-		Routes []Route `json:"routes"`
-		Users  []User  `json:"users"`
+		Type string `json:"type"`
+		JSONProviderConfig
 	}{
-		Routes: make([]Route, 0, len(j.data.Routes)),
-		Users:  make([]User, 0, len(j.data.Users)),
-	}
-
-	for _, r := range j.data.Routes {
-		data.Routes = append(data.Routes, r)
-	}
-
-	for _, u := range j.data.Users {
-		data.Users = append(data.Users, u)
+		Type:               j.ID(),
+		JSONProviderConfig: JSONProviderConfig{Path: j.path},
 	}
 
 	jsonBytes, err := json.Marshal(data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal provider data: %w", err)
+		return nil, fmt.Errorf("failed to marshal provider config: %w", err)
 	}
 
 	return jsonBytes, nil

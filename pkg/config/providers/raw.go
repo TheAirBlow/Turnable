@@ -8,11 +8,11 @@ import (
 
 // RawProvider represents a Provider from raw provider config JSON
 type RawProvider struct {
-	mu sync.RWMutex
+	mu sync.RWMutex // guards data
 
-	data struct {
-		Routes map[string]Route `json:"routes"`
-		Users  map[string]User  `json:"users"`
+	data struct { // routes and users by ID
+		Routes map[string]Route `json:"routes"` // Routes by ID
+		Users  map[string]User  `json:"users"`  // Users by UUID
 	}
 }
 
@@ -57,11 +57,12 @@ func (j *RawProvider) Update(config json.RawMessage) error {
 		users[user.UUID] = user
 	}
 
-	for _, route := range routes {
+	for id, route := range routes {
 		err := route.Validate()
 		if err != nil {
 			return fmt.Errorf("route %s is invalid: %w", route.ID, err)
 		}
+		routes[id] = route
 	}
 
 	j.data.Routes = routes
@@ -75,9 +76,11 @@ func (j *RawProvider) ToJSON() (json.RawMessage, error) {
 	defer j.mu.RUnlock()
 
 	data := struct {
+		Type   string  `json:"type"`
 		Routes []Route `json:"routes"`
 		Users  []User  `json:"users"`
 	}{
+		Type:   j.ID(),
 		Routes: make([]Route, 0, len(j.data.Routes)),
 		Users:  make([]User, 0, len(j.data.Users)),
 	}

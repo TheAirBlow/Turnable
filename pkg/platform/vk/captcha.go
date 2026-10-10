@@ -26,6 +26,7 @@ const (
 )
 
 var (
+	// deviceInfo is the device fingerprint reported to the captcha
 	deviceInfo = `{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1080,"innerWidth":1920,"innerHeight":951,"devicePixelRatio":1,"language":"en-US","languages":["en-US","en"],"webdriver":false,"hardwareConcurrency":8,"notificationsPermission":"denied"}`
 
 	reCaptchaPowArgs   = regexp.MustCompile(`}\('([^"]*)',\s*(\d+)`)                                               // extracts PoW input and difficulty from captcha HTML
@@ -36,39 +37,39 @@ var (
 
 // captchaContentSetting represents an available captcha content reference
 type captchaContentSetting struct {
-	Type        string `json:"type"`
-	Settings    string `json:"settings"`
-	SettingsKey string `json:"settings_key"`
+	Type        string `json:"type"`         // Content type
+	Settings    string `json:"settings"`     // Settings payload
+	SettingsKey string `json:"settings_key"` // Settings key
 }
 
 // captchaPage stores captcha metadata extracted from the challenge page
 type captchaPage struct {
-	PowInput      string
-	PowDifficulty int
-	DebugInfo     string
+	PowInput      string // proof-of-work input
+	PowDifficulty int    // proof-of-work difficulty in leading zeros
+	DebugInfo     string // debug info echoed back to the server
 }
 
 // captchaSession stores the state of a single captcha solving session
 type captchaSession struct {
-	Token     string
-	AdFP      string
-	BrowserFP string
-	DebugInfo string
-	PowHash   string
+	Token     string // captcha session token
+	AdFP      string // ad fingerprint
+	BrowserFP string // browser fingerprint
+	DebugInfo string // debug info
+	PowHash   string // solved proof-of-work hash
 }
 
 // captchaCheck stores the result of a captcha verification attempt
 type captchaCheck struct {
-	Status       string
-	SuccessToken string
-	ShowType     string
-	Settings     string
+	Status       string // check result status
+	SuccessToken string // token returned on success
+	ShowType     string // next challenge type, if any
+	Settings     string // settings for the next challenge
 }
 
 // captchaShowTypeError tells solveCaptcha to switch to another solver
 type captchaShowTypeError struct {
-	ShowType string
-	Settings string
+	ShowType string // challenge type that is not supported
+	Settings string // settings of that challenge
 }
 
 // Error returns error text
@@ -127,7 +128,7 @@ func (V *Handler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, 
 
 	var token string
 	for {
-		slog.Info("vk captcha solving", "show_type", showType)
+		slog.Debug("vk captcha solving", "show_type", showType)
 
 		switch showType {
 		case "slider":
@@ -155,7 +156,7 @@ func (V *Handler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, 
 	return token, nil
 }
 
-// initCaptchaSession initializes a VK captcha session.
+// initCaptchaSession initializes a VK captcha session
 func (V *Handler) initCaptchaSession(ctx context.Context, session *captchaSession) (string, string, error) {
 	resp, err := V.captchaRequest(ctx, "captchaNotRobot.initSession", common.NewValues(
 		"session_token", session.Token,

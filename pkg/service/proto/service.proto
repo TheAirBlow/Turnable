@@ -11,7 +11,8 @@ enum InstanceType {
   INSTANCE_TYPE_CLIENT = 2;
 }
 
-// InstanceEventType describes what happened to an instance
+// InstanceEventType describes what happened to an instance.
+// UPDATED is also sent when a client instance loses its connection and starts reconnecting.
 enum InstanceEventType {
   INSTANCE_EVENT_TYPE_UNSPECIFIED = 0;
   INSTANCE_EVENT_TYPE_CREATED = 1;
@@ -21,7 +22,8 @@ enum InstanceEventType {
   INSTANCE_EVENT_TYPE_UPDATED = 5;
 }
 
-// InstanceStatus describes an instance's current state
+// InstanceStatus describes an instance's current state.
+// Client instances are STARTED only while the tunnel is connected and fall back to STARTING while reconnecting.
 enum InstanceStatus {
   INSTANCE_STATUS_UNSPECIFIED = 0;
   INSTANCE_STATUS_STARTING = 1;
@@ -150,9 +152,10 @@ message ConvertClientConfigRequest {
   string config = 1;
 }
 
-// ConvertClientConfigResponse returns the converted client config
+// ConvertClientConfigResponse returns the converted client config or an error
 message ConvertClientConfigResponse {
   string config = 1;
+  string error = 2;
 }
 
 // ProviderInfo describes a managed provider
@@ -315,6 +318,102 @@ message GetInstanceResponse {
   string error = 4;
 }
 
+// Usage is traffic in bytes from the server's point of view
+message Usage {
+  int64 up = 1;   // sent by clients into the tunnel
+  int64 down = 2; // sent back to clients
+}
+
+// UserStats describes what a server instance knows about a user
+message UserStats {
+  string uuid = 1;
+  Usage usage = 2; // since the instance started
+  int32 channels = 3;
+  int32 sessions = 4;
+  repeated string ips = 5;
+  bool online = 6;
+  int64 last_seen = 7; // unix seconds, 0 if never
+}
+
+// SessionStats describes a live session
+message SessionStats {
+  string id = 1;
+  string user_uuid = 2;
+  string route_id = 3;
+  string addr = 4;
+  int64 since = 5; // unix seconds
+  Usage usage = 6;
+  int32 channels = 7;
+}
+
+// ServerTotals holds server wide numbers
+message ServerTotals {
+  int64 started = 1; // unix seconds
+  Usage usage = 2;
+  int32 channels = 3;
+  int32 sessions = 4;
+  int32 users = 5; // users with a live tunnel
+}
+
+// GetStatsRequest requests the stats of a server instance.
+// With collect set, the response also carries what each user moved since the previous collect and the counters start over.
+message GetStatsRequest {
+  string instance_id = 1;
+  bool collect = 2;
+}
+
+// GetStatsResponse carries server totals, every user seen and the collected usage
+message GetStatsResponse {
+  ServerTotals totals = 1;
+  repeated UserStats users = 2;
+  map<string, Usage> collected = 3; // user UUID to usage since the previous collect
+  string error = 4;
+}
+
+// ListSessionsRequest requests the live sessions of a server instance
+message ListSessionsRequest {
+  string instance_id = 1;
+}
+
+// ListSessionsResponse carries the live sessions
+message ListSessionsResponse {
+  repeated SessionStats sessions = 1;
+  string error = 2;
+}
+
+// KickRequest closes the tunnels of a user or a session, set exactly one of them
+message KickRequest {
+  string instance_id = 1;
+  string user_uuid = 2;
+  string session_id = 3;
+}
+
+// KickResponse carries how many tunnels were closed
+message KickResponse {
+  int32 kicked = 1;
+  string error = 2;
+}
+
+// SessionEventType describes what happened to a tunnel
+enum SessionEventType {
+  SESSION_EVENT_TYPE_UNSPECIFIED = 0;
+  SESSION_EVENT_TYPE_CONNECT = 1;
+  SESSION_EVENT_TYPE_DISCONNECT = 2;
+}
+
+// SessionEvent is broadcast when a tunnel of a server instance opens or closes
+message SessionEvent {
+  string instance_id = 1;
+  SessionEventType event_type = 2;
+  string user_uuid = 3;
+  string session_id = 4;
+  string route_id = 5;
+  string addr = 6;
+  int64 time = 7; // unix seconds
+  Usage usage = 8; // traffic of the tunnel, set on disconnect
+  int32 online = 9; // live tunnels of the user afterwards
+}
+
 // ErrorResponse returns a fatal protocol-level error
 message ErrorResponse {
   string message = 1;
@@ -342,6 +441,9 @@ message Request {
     AddProviderUserRequest add_provider_user = 23;
     DeleteProviderUserRequest delete_provider_user = 24;
     ListProviderUsersRequest list_provider_users = 25;
+    GetStatsRequest get_stats = 26;
+    ListSessionsRequest list_sessions = 27;
+    KickRequest kick = 28;
   }
 }
 
@@ -370,5 +472,9 @@ message Response {
     AddProviderUserResponse add_provider_user = 26;
     DeleteProviderUserResponse delete_provider_user = 27;
     ListProviderUsersResponse list_provider_users = 28;
+    GetStatsResponse get_stats = 29;
+    ListSessionsResponse list_sessions = 30;
+    KickResponse kick = 31;
+    SessionEvent session_event = 32;
   }
 }

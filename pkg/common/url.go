@@ -11,8 +11,8 @@ import (
 
 // Values is an ordered form-values collection that preserves insertion order when encoding
 type Values struct {
-	keys []string
-	data map[string][]string
+	keys []string            // keys in insertion order
+	data map[string][]string // values by key
 }
 
 // NewValues creates a new Values from alternating key-value pairs
@@ -104,17 +104,19 @@ func (v *Values) Encode() string {
 // weight controls the relative order within the same placement (lower = first)
 // omitempty skips the field when its value is the zero value for its type
 
+// tagKey is the struct tag that maps fields to URL parts
 const tagKey = "url"
 
+// placement is the part of a URL a field is encoded into
 type placement int
 
 const (
-	placementUser placement = iota
-	placementPass
-	placementHost
-	placementPath
-	placementQuery
-	placementFragment
+	placementUser     placement = iota // userinfo username
+	placementPass                      // userinfo password
+	placementHost                      // host
+	placementPath                      // path segment
+	placementQuery                     // query parameter
+	placementFragment                  // fragment
 )
 
 // parsePlacement parses the placement from the URL tag
@@ -139,12 +141,12 @@ func parsePlacement(s string) (placement, error) {
 
 // fieldMeta holds the parsed url tag for one struct field
 type fieldMeta struct {
-	index     []int
-	name      string
-	pl        placement
-	weight    int
-	omitempty bool
-	fieldType reflect.Type
+	index     []int        // field index path for reflection
+	name      string       // query parameter name
+	pl        placement    // URL part the field goes into
+	weight    int          // ordering within that part
+	omitempty bool         // omit when empty
+	fieldType reflect.Type // field type
 }
 
 // parseStructMeta reflects on a struct type and returns its url-tagged fields sorted by placement and weight

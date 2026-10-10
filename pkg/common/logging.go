@@ -26,22 +26,22 @@ func init() {
 
 // ANSI color string
 const (
-	colorReset  = "\x1b[0m"
-	colorDim    = "\x1b[2m"
-	colorGray   = "\x1b[90m"
-	colorRed    = "\x1b[31m"
-	colorGreen  = "\x1b[32m"
-	colorYellow = "\x1b[33m"
-	colorCyan   = "\x1b[36m"
+	colorReset  = "\x1b[0m"  // reset all attributes
+	colorDim    = "\x1b[2m"  // dim text
+	colorGray   = "\x1b[90m" // gray text
+	colorRed    = "\x1b[31m" // red text
+	colorGreen  = "\x1b[32m" // green text
+	colorYellow = "\x1b[33m" // yellow text
+	colorCyan   = "\x1b[36m" // cyan text
 )
 
 // PrettyHandler represents a pretty-print logging handler
 type PrettyHandler struct {
-	w      io.Writer
-	level  slog.Leveler
-	attrs  []slog.Attr
-	groups []string
-	mu     *sync.Mutex
+	w      io.Writer    // output
+	level  slog.Leveler // minimum level
+	attrs  []slog.Attr  // attributes added with WithAttrs
+	groups []string     // groups added with WithGroup
+	mu     *sync.Mutex  // serializes writes, shared with derived handlers
 }
 
 // NewPrettyHandler creates a new pretty-print logging handler for provided output stream with specified options
@@ -190,7 +190,7 @@ func SetLogHandler(h slog.Handler) {
 	slog.SetDefault(slog.New(h))
 }
 
-// SetLogLevel changes the current log level.
+// SetLogLevel changes the current log level
 func SetLogLevel(newLevel int) {
 	level.Set(slog.Level(newLevel))
 }

@@ -27,7 +27,7 @@ type AcceptedClient struct {
 
 // SocketHandler accepts local clients and dials remote routes for TCP and UDP sockets
 type SocketHandler struct {
-	log *slog.Logger
+	log *slog.Logger // logger
 }
 
 // SetLogger changes the slog logger instance
@@ -38,7 +38,7 @@ func (S *SocketHandler) SetLogger(log *slog.Logger) {
 	S.log = log
 }
 
-// ID returns the tunnel handler identifier.
+// ID returns the tunnel handler identifier
 func (S *SocketHandler) ID() string { return "socket" }
 
 // Open accepts local TCP or UDP clients and yields them as independent streams
@@ -135,7 +135,7 @@ func (S *SocketHandler) acceptUDP(ctx context.Context, listenAddr string) (<-cha
 		return nil, fmt.Errorf("failed to listen on udp %s: %w", listenAddr, err)
 	}
 
-	S.log.Info("local udp listener started", "addr", conn.LocalAddr())
+	S.log.Debug("local udp listener started", "addr", conn.LocalAddr())
 
 	var mu sync.Mutex
 	peers := make(map[string]*udpPeerStream)
@@ -207,13 +207,13 @@ func (S *SocketHandler) acceptUDP(ctx context.Context, listenAddr string) (<-cha
 
 // udpPeerStream is a virtual stream representing one UDP peer
 type udpPeerStream struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	conn      *net.UDPConn
-	peer      *net.UDPAddr
-	readCh    chan []byte
-	removeFn  func()
-	idleTimer *time.Timer
+	ctx       context.Context    // lives as long as the stream
+	cancel    context.CancelFunc // cancels ctx
+	conn      *net.UDPConn       // shared listening socket
+	peer      *net.UDPAddr       // peer address
+	readCh    chan []byte        // datagrams from the peer
+	removeFn  func()             // removes the stream from the listener
+	idleTimer *time.Timer        // closes the stream after inactivity
 }
 
 // Read returns the next datagram from this peer, or an error after udpIdleTimeout of inactivity

@@ -74,11 +74,11 @@ func (D *SCTPHandler) WrapServer(conn net.Conn) (net.Conn, error) {
 
 // managedSCTPConn wraps an SCTP stream and implements net.Conn
 type managedSCTPConn struct {
-	underlying net.Conn
-	assoc      *sctp.Association
-	stream     *sctp.Stream
+	underlying net.Conn          // packet conn SCTP runs over
+	assoc      *sctp.Association // SCTP association
+	stream     *sctp.Stream      // SCTP stream
 
-	closeOnce sync.Once
+	closeOnce sync.Once // guards Close
 }
 
 // Read reads from the SCTP stream

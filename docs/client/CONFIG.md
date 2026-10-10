@@ -14,7 +14,7 @@ A typical relay mode config looks like this:
     {
       "route_id": "https",
       "socket": "tcp",
-      "transport": "kcp"
+      "transport": "mpath"
     }
   ],
   "gateway": "203.0.113.45:56000",
@@ -37,7 +37,7 @@ The schema is as follows:
 - `pass`: Call ID
 - `host`: Platform ID
 - `path`: Route IDs (slash-separated, can be multiple routes)
-- `query`: Additional parameters (type, gateway, proto, encryption, peers, pub_key, cloak)
+- `query`: Additional parameters (type, gateway, proto, encryption, peers, pub_key, cloak, mask)
 - `fragment`: Display name (optional)
 
 ## Configuration Fields
@@ -56,7 +56,7 @@ The schema is as follows:
 |-------------|--------|----------------------------------------------------------------------------------|
 | `route_id`  | string | Unique identifier for this route                                                 |
 | `socket`    | string | Socket type: `tcp` or `udp` (see [Socket Types](../REFERENCE.md))                |
-| `transport` | string | Transport protocol: `kcp`, `sctp`, or `none` (see [Transports](../REFERENCE.md)) |
+| `transport` | string | Transport protocol: `mpath`, `kcp`, `sctp`, or `none` (see [Transports](../REFERENCE.md)) |
 
 ### Relay Mode Fields
 | Field        | Type    | Required | Description                                               |
@@ -67,6 +67,7 @@ The schema is as follows:
 | `peers`      | integer | Yes      | Number of peer connections (minimum 1)                    |
 | `pub_key`    | string  | Yes      | Server's public key (base64 encoded, ML-KEM-768 format)   |
 | `cloak`      | string  | No       | Traffic obfuscation method (currently only `none`)        |
+| `mask`       | string  | No       | Outer encryption masking with `mpath`, `on` by default or `off` |
 
 ### Direct Mode Fields
 | Field     | Type    | Required | Description                            |

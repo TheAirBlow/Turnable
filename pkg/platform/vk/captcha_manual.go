@@ -19,14 +19,14 @@ import (
 var vkCaptchaUserScript []byte
 
 const (
-	manualCaptchaTimeout = 10 * time.Minute
-	manualCaptchaPort    = "1984"
+	manualCaptchaTimeout = 10 * time.Minute // how long the user has to solve the captcha
+	manualCaptchaPort    = "1984"           // local port of the captcha page
 )
 
 // manualCaptchaResult carries both tokens extracted from the VK join page flow
 type manualCaptchaResult struct {
-	messages string
-	calls    string
+	messages string // token for the messages API
+	calls    string // token for the calls API
 }
 
 // solveManualCaptcha starts a local token capture server and prompts the user to run a userscript

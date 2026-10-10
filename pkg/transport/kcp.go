@@ -44,7 +44,7 @@ func WrapKCP(conn net.Conn) (net.Conn, error) {
 	return wrapKCPWithInterval(conn, kcpUpdateMs, kcpResend)
 }
 
-// WrapControlKCP initializes a KCP session optimized for control channels that need to drain instantly.
+// WrapControlKCP initializes a KCP session optimized for control channels that need to drain instantly
 func WrapControlKCP(conn net.Conn) (net.Conn, error) {
 	return wrapKCPWithInterval(conn, kcpControlUpdateMs, kcpResend)
 }
@@ -71,11 +71,11 @@ func wrapKCPWithInterval(conn net.Conn, intervalMs int, resend int) (net.Conn, e
 
 // managedKCPConn wraps a KCP session and implements net.Conn
 type managedKCPConn struct {
-	underlying net.Conn
-	packetConn net.PacketConn
-	session    *kcp.UDPSession
+	underlying net.Conn        // packet conn KCP runs over
+	packetConn net.PacketConn  // packet adapter over underlying
+	session    *kcp.UDPSession // KCP session
 
-	closeOnce sync.Once
+	closeOnce sync.Once // guards Close
 }
 
 // Read reads from the KCP session
@@ -123,7 +123,7 @@ func (c *managedKCPConn) SetWriteDeadline(t time.Time) error { return c.session.
 
 // connPacketConn adapts a packet-centric net.Conn to net.PacketConn
 type connPacketConn struct {
-	net.Conn
+	net.Conn // packet-oriented conn
 }
 
 // ReadFrom reads a packet and returns the local address as source

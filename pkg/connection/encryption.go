@@ -15,27 +15,27 @@ import (
 )
 
 const (
-	encryptedTunnelMagic   = "TENC"
-	encryptedTunnelVersion = 1
+	encryptedTunnelMagic   = "TENC" // tunnel hello magic
+	encryptedTunnelVersion = 1      // tunnel hello version
 )
 
 // EncryptedConn wraps a net.Conn with per-packet AES-256-GCM-12 encryption
 type EncryptedConn struct {
-	conn net.Conn
+	conn net.Conn // underlying packet conn
 
-	readAEAD  cipher.AEAD
-	writeAEAD cipher.AEAD
+	readAEAD  cipher.AEAD // decrypts incoming packets
+	writeAEAD cipher.AEAD // encrypts outgoing packets
 
-	readPrefix  [4]byte
-	writePrefix [4]byte
-	writeSeq    uint64
+	readPrefix  [4]byte // nonce prefix for incoming packets
+	writePrefix [4]byte // nonce prefix for outgoing packets
+	writeSeq    uint64  // next outgoing packet counter
 
-	readBuf  []byte
-	plainBuf []byte
-	writeBuf []byte
+	readBuf  []byte // raw read buffer
+	plainBuf []byte // decrypted read buffer
+	writeBuf []byte // write buffer
 
-	readMu  sync.Mutex
-	writeMu sync.Mutex
+	readMu  sync.Mutex // serializes reads
+	writeMu sync.Mutex // serializes writes
 }
 
 // WrapClientEncryptedConn bootstraps the encrypted tunnel from the client side

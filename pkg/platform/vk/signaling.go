@@ -24,18 +24,18 @@ import (
 
 // vkMessage stores one decoded VK signaling message
 type vkMessage struct {
-	Type               string         `json:"type"`
-	Notification       string         `json:"notification"`
-	Response           string         `json:"response"`
-	Sequence           int            `json:"sequence"`
-	Description        string         `json:"description"`
-	ParticipantID      float64        `json:"participantId"`
-	Participant        map[string]any `json:"participant"`
-	PeerID             map[string]any `json:"peerId"`
-	Reason             string         `json:"reason"`
-	Endpoint           string         `json:"endpoint"`
-	Conversation       map[string]any `json:"conversation"`
-	ConversationParams map[string]any `json:"conversationParams"`
+	Type               string         `json:"type"`               // Message type
+	Notification       string         `json:"notification"`       // Notification name
+	Response           string         `json:"response"`           // Response name
+	Sequence           int            `json:"sequence"`           // Sequence number of the request answered
+	Description        string         `json:"description"`        // Error description
+	ParticipantID      float64        `json:"participantId"`      // Participant ID
+	Participant        map[string]any `json:"participant"`        // Participant details
+	PeerID             map[string]any `json:"peerId"`             // Peer ID
+	Reason             string         `json:"reason"`             // Reason for a hangup or error
+	Endpoint           string         `json:"endpoint"`           // Signaling endpoint
+	Conversation       map[string]any `json:"conversation"`       // Conversation details
+	ConversationParams map[string]any `json:"conversationParams"` // Conversation parameters
 }
 
 // Connect connects to the signaling server and starts the internal signaling loop

@@ -23,21 +23,21 @@ import (
 
 // sliderPuzzle stores one parsed slider captcha puzzle
 type sliderPuzzle struct {
-	Image    image.Image
-	Size     int
-	Swaps    []int
-	Attempts int
+	Image    image.Image // puzzle image
+	Size     int         // grid size
+	Swaps    []int       // tile swaps that scramble the image
+	Attempts int         // allowed attempts
 }
 
 // sliderGuess stores the scoring result for one slider candidate
 type sliderGuess struct {
-	Index         int
-	Swaps         []int
-	Score         int64
-	ScoreRGB      int64
-	ScoreLuma     int64
-	ScoreText     float64
-	ConsensusRank int
+	Index         int     // candidate slider position
+	Swaps         []int   // tile swaps for this candidate
+	Score         int64   // combined score, lower is better
+	ScoreRGB      int64   // color mismatch score
+	ScoreLuma     int64   // brightness mismatch score
+	ScoreText     float64 // text-region score
+	ConsensusRank int     // rank across scoring methods
 }
 
 // solveSliderCaptcha solves the slider variant using ranked candidates

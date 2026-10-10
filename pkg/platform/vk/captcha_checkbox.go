@@ -58,11 +58,11 @@ func (V *Handler) solveCheckboxCaptcha(ctx context.Context, session *captchaSess
 
 // captchaPowResult is the V2 proof-of-work captcha result
 type captchaPowResult struct {
-	Hash       string          `json:"hash"`
-	Nonce      int             `json:"nonce"`
-	DurationMs int64           `json:"duration_ms"`
-	Telemetry  json.RawMessage `json:"telemetry"`
-	TelHash    string          `json:"tel_hash"`
+	Hash       string          `json:"hash"`        // Proof-of-work hash
+	Nonce      int             `json:"nonce"`       // Nonce that solves the proof of work
+	DurationMs int64           `json:"duration_ms"` // Time spent solving, in milliseconds
+	Telemetry  json.RawMessage `json:"telemetry"`   // Browser telemetry sent with the solution
+	TelHash    string          `json:"tel_hash"`    // Hash of the telemetry
 }
 
 // buildCaptchaPoW solves the challenge and assembles the envelope submitted as the hash field
@@ -116,164 +116,164 @@ func solveCaptchaPoW(input string, difficulty int) (string, int) {
 
 // captchaProbe wraps the result of a single telemetry probe
 type captchaProbe struct {
-	OK     bool `json:"ok"`
-	Result any  `json:"result"`
+	OK     bool `json:"ok"`     // Probe completed without error
+	Result any  `json:"result"` // Probe result
 }
 
 // captchaTelemetry holds every probe the PoW script runs, in the order it runs them
 type captchaTelemetry struct {
-	Globals          captchaProbe `json:"globals"`
-	UA               captchaProbe `json:"ua"`
-	Frame            captchaProbe `json:"frame"`
-	MatchMedia       captchaProbe `json:"match_media"`
-	Plugins          captchaProbe `json:"plugins"`
-	NavTamper        captchaProbe `json:"nav_tamper"`
-	Referrer         captchaProbe `json:"referrer"`
-	DevTools         captchaProbe `json:"devtools"`
-	CSS              captchaProbe `json:"css"`
-	NativeIntegrity  captchaProbe `json:"native_integrity"`
-	CookieTest       captchaProbe `json:"cookie_test"`
-	AncestorOrigins  captchaProbe `json:"ancestor_origins"`
-	SandboxBehavior  captchaProbe `json:"sandbox_behavior"`
-	MaxTouchPoints   captchaProbe `json:"max_touch_points"`
-	TimezoneLocale   captchaProbe `json:"timezone_locale"`
-	DevicePixelRatio captchaProbe `json:"device_pixel_ratio"`
+	Globals          captchaProbe `json:"globals"`            // Global object checks
+	UA               captchaProbe `json:"ua"`                 // User agent checks
+	Frame            captchaProbe `json:"frame"`              // Frame embedding checks
+	MatchMedia       captchaProbe `json:"match_media"`        // Media query checks
+	Plugins          captchaProbe `json:"plugins"`            // Plugin list checks
+	NavTamper        captchaProbe `json:"nav_tamper"`         // Navigator tampering checks
+	Referrer         captchaProbe `json:"referrer"`           // Referrer checks
+	DevTools         captchaProbe `json:"devtools"`           // Developer tools checks
+	CSS              captchaProbe `json:"css"`                // CSS support checks
+	NativeIntegrity  captchaProbe `json:"native_integrity"`   // Native function integrity checks
+	CookieTest       captchaProbe `json:"cookie_test"`        // Cookie write check
+	AncestorOrigins  captchaProbe `json:"ancestor_origins"`   // Ancestor origin checks
+	SandboxBehavior  captchaProbe `json:"sandbox_behavior"`   // Sandbox behavior checks
+	MaxTouchPoints   captchaProbe `json:"max_touch_points"`   // Touch point checks
+	TimezoneLocale   captchaProbe `json:"timezone_locale"`    // Timezone and locale checks
+	DevicePixelRatio captchaProbe `json:"device_pixel_ratio"` // Display density checks
 }
 
 // captchaGlobalsProbe reports which globals a browser is expected to expose
 type captchaGlobalsProbe struct {
-	Doc          bool `json:"doc"`
-	Win          bool `json:"win"`
-	Nav          bool `json:"nav"`
-	Webdriver    bool `json:"webdriver"`
-	Subtle       bool `json:"subtle"`
-	Secure       bool `json:"secure"`
-	GCS          bool `json:"gcs"`
-	RAF          bool `json:"raf"`
-	Wasm         bool `json:"wasm"`
-	PluginsLen   int  `json:"plugins_len"`
-	LanguagesLen int  `json:"languages_len"`
-	HW           int  `json:"hw"`
-	Mem          int  `json:"mem"`
+	Doc          bool `json:"doc"`           // Document object present
+	Win          bool `json:"win"`           // Window object present
+	Nav          bool `json:"nav"`           // Navigator object present
+	Webdriver    bool `json:"webdriver"`     // Webdriver flag set
+	Subtle       bool `json:"subtle"`        // SubtleCrypto available
+	Secure       bool `json:"secure"`        // Secure context
+	GCS          bool `json:"gcs"`           // getComputedStyle available
+	RAF          bool `json:"raf"`           // requestAnimationFrame available
+	Wasm         bool `json:"wasm"`          // WebAssembly available
+	PluginsLen   int  `json:"plugins_len"`   // Number of plugins
+	LanguagesLen int  `json:"languages_len"` // Number of languages
+	HW           int  `json:"hw"`            // Hardware concurrency
+	Mem          int  `json:"mem"`           // Device memory in GB
 }
 
 // captchaUAProbe reports the user agent and its structured client hints counterpart
 type captchaUAProbe struct {
-	UserAgent     string              `json:"userAgent"`
-	UserAgentData *captchaUADataProbe `json:"userAgentData"`
+	UserAgent     string              `json:"userAgent"`     // User agent string
+	UserAgentData *captchaUADataProbe `json:"userAgentData"` // User agent client hints
 }
 
 // captchaUADataProbe reports navigator.userAgentData
 type captchaUADataProbe struct {
-	Brands       []common.BrowserBrand `json:"brands"`
-	Platform     string                `json:"platform"`
-	Mobile       bool                  `json:"mobile"`
-	Architecture *string               `json:"architecture"`
+	Brands       []common.BrowserBrand `json:"brands"`       // Browser brands
+	Platform     string                `json:"platform"`     // Platform name
+	Mobile       bool                  `json:"mobile"`       // Mobile device
+	Architecture *string               `json:"architecture"` // CPU architecture, if reported
 }
 
 // captchaFrameProbe reports whether the captcha runs inside a frame
 type captchaFrameProbe struct {
-	FrameElement       *string `json:"frameElement"`
-	AncestorOriginsLen int     `json:"ancestorOriginsLen"`
-	ParentAccessible   bool    `json:"parentAccessible"`
+	FrameElement       *string `json:"frameElement"`       // Frame element, nil when top-level
+	AncestorOriginsLen int     `json:"ancestorOriginsLen"` // Number of ancestor origins
+	ParentAccessible   bool    `json:"parentAccessible"`   // Parent frame is accessible
 }
 
 // captchaMatchMediaProbe reports the media queries a browser resolves
 type captchaMatchMediaProbe struct {
-	PrefersDark   bool `json:"prefersDark"`
-	PrefersLight  bool `json:"prefersLight"`
-	ReducedMotion bool `json:"reducedMotion"`
-	PointerFine   bool `json:"pointerFine"`
+	PrefersDark   bool `json:"prefersDark"`   // Prefers a dark color scheme
+	PrefersLight  bool `json:"prefersLight"`  // Prefers a light color scheme
+	ReducedMotion bool `json:"reducedMotion"` // Prefers reduced motion
+	PointerFine   bool `json:"pointerFine"`   // Has a fine pointer
 }
 
 // captchaPluginsProbe reports navigator.plugins
 type captchaPluginsProbe struct {
-	Length       int        `json:"length"`
-	Names        []string   `json:"names"`
-	Descriptions []string   `json:"descriptions"`
-	MimeTypes    [][]string `json:"mimeTypes"`
-	IsChrome     bool       `json:"isChrome"`
+	Length       int        `json:"length"`       // Number of plugins
+	Names        []string   `json:"names"`        // Plugin names
+	Descriptions []string   `json:"descriptions"` // Plugin descriptions
+	MimeTypes    [][]string `json:"mimeTypes"`    // MIME types per plugin
+	IsChrome     bool       `json:"isChrome"`     // Plugin list matches Chrome
 }
 
 // captchaNavTamperProbe reports whether anything has been patched over the DOM
 type captchaNavTamperProbe struct {
-	Tampered       bool   `json:"tampered"`
-	ElCtor         string `json:"el_ctor"`
-	StyleCtor      string `json:"style_ctor"`
-	NavCtor        string `json:"nav_ctor"`
-	AlertNative    bool   `json:"alert_native"`
-	ToStringNative bool   `json:"to_string_native"`
+	Tampered       bool   `json:"tampered"`         // Navigator looks tampered with
+	ElCtor         string `json:"el_ctor"`          // Element constructor name
+	StyleCtor      string `json:"style_ctor"`       // Style declaration constructor name
+	NavCtor        string `json:"nav_ctor"`         // Navigator constructor name
+	AlertNative    bool   `json:"alert_native"`     // alert is native
+	ToStringNative bool   `json:"to_string_native"` // toString is native
 }
 
 // captchaReferrerProbe reports where the captcha page was navigated from
 type captchaReferrerProbe struct {
-	Referrer string `json:"referrer"`
-	InIframe bool   `json:"inIframe"`
-	Domain   string `json:"domain"`
+	Referrer string `json:"referrer"` // Document referrer
+	InIframe bool   `json:"inIframe"` // Running inside an iframe
+	Domain   string `json:"domain"`   // Document domain
 }
 
 // captchaDevToolsProbe reports whether developer tools are open
 type captchaDevToolsProbe struct {
-	Open    bool `json:"open"`
-	DelayMs int  `json:"delay_ms"`
+	Open    bool `json:"open"`     // Developer tools appear open
+	DelayMs int  `json:"delay_ms"` // Detection delay in milliseconds
 }
 
 // captchaCSSProbe reports how many expected stylesheet rules are missing
 type captchaCSSProbe struct {
-	ExpectedMissing int `json:"expectedMissing"`
+	ExpectedMissing int `json:"expectedMissing"` // Count of CSS features expected to be missing
 }
 
 // captchaNativeIntegrityProbe reports whether builtins are still native code
 type captchaNativeIntegrityProbe struct {
-	ProtoMatch             bool `json:"protoMatch"`
-	XHRNative              bool `json:"xhrNative"`
-	XHRSendNative          bool `json:"xhrSendNative"`
-	AddEventListenerNative bool `json:"addEventListenerNative"`
-	AlertNative            bool `json:"alertNative"`
-	ToStringNative         bool `json:"toStringNative"`
+	ProtoMatch             bool `json:"protoMatch"`             // Prototypes match native ones
+	XHRNative              bool `json:"xhrNative"`              // XMLHttpRequest is native
+	XHRSendNative          bool `json:"xhrSendNative"`          // XMLHttpRequest.send is native
+	AddEventListenerNative bool `json:"addEventListenerNative"` // addEventListener is native
+	AlertNative            bool `json:"alertNative"`            // alert is native
+	ToStringNative         bool `json:"toStringNative"`         // toString is native
 }
 
 // captchaCookieTestProbe reports whether cookies can be written
 type captchaCookieTestProbe struct {
-	Write bool `json:"write"`
+	Write bool `json:"write"` // Cookie could be written
 }
 
 // captchaAncestorOriginsProbe reports the origin that embedded the captcha page
 type captchaAncestorOriginsProbe struct {
-	AncestorOrigin *string `json:"ancestorOrigin"`
+	AncestorOrigin *string `json:"ancestorOrigin"` // First ancestor origin, if any
 }
 
 // captchaSandboxBehaviorProbe reports whether the page runs sandboxed
 type captchaSandboxBehaviorProbe struct {
-	OriginIsNull   bool `json:"originIsNull"`
-	LocalStorage   bool `json:"localStorage"`
-	SessionStorage bool `json:"sessionStorage"`
+	OriginIsNull   bool `json:"originIsNull"`   // Origin is null
+	LocalStorage   bool `json:"localStorage"`   // localStorage is accessible
+	SessionStorage bool `json:"sessionStorage"` // sessionStorage is accessible
 }
 
 // captchaMaxTouchPointsProbe reports the touch point count of the device
 type captchaMaxTouchPointsProbe struct {
-	MaxTouchPoints int `json:"maxTouchPoints"`
+	MaxTouchPoints int `json:"maxTouchPoints"` // Maximum touch points
 }
 
 // captchaTimezoneLocaleProbe reports the timezone and languages of the device
 type captchaTimezoneLocaleProbe struct {
-	Timezone  string   `json:"timezone"`
-	Languages []string `json:"languages"`
+	Timezone  string   `json:"timezone"`  // IANA timezone
+	Languages []string `json:"languages"` // Preferred languages
 }
 
 // captchaDevicePixelRatioProbe reports the pixel ratio and orientation of the screen
 type captchaDevicePixelRatioProbe struct {
-	DPR              float64 `json:"dpr"`
-	Orientation      string  `json:"orientation"`
-	OrientationAngle int     `json:"orientationAngle"`
+	DPR              float64 `json:"dpr"`              // Device pixel ratio
+	Orientation      string  `json:"orientation"`      // Screen orientation type
+	OrientationAngle int     `json:"orientationAngle"` // Screen orientation angle
 }
 
-// captchaPowDuration approximates how long a browser would have spent on the challenge.
+// captchaPowDuration approximates how long a browser would have spent on the challenge
 func captchaPowDuration(nonce int) int64 {
 	return max(int64(math.Round(float64(nonce+1)*0.015)), 1)
 }
 
-// hashCaptchaTelemetry generates the telemetry hash.
+// hashCaptchaTelemetry generates the telemetry hash
 func hashCaptchaTelemetry(telemetry []byte) (string, error) {
 	var decoded any
 	if err := json.Unmarshal(telemetry, &decoded); err != nil {

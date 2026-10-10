@@ -17,11 +17,11 @@ import (
 
 // clientOptions holds CLI flags for the client subcommand
 type clientOptions struct {
-	configPath    string
-	configURL     string
-	listenAddrs   []string
-	noInteractive bool
-	verbose       bool
+	configPath    string   // client config path
+	configURL     string   // client config URL
+	listenAddrs   []string // local listen addresses, one per route
+	noInteractive bool     // disable interactive prompts
+	verbose       bool     // enable debug logging
 }
 
 // newClientCommand creates the Client cobra command
@@ -83,7 +83,6 @@ func clientMain(opts *clientOptions) error {
 
 	innerCfg := cfg.GetInner().(config.ClientConfig)
 
-	slog.Info("starting turnable client", "connection_type", innerCfg.Type)
 	client := engine.NewTurnableClient(cfg)
 	if err := client.Start(opts.listenAddrs); err != nil {
 		return fmt.Errorf("failed to start vpn client: %w", err)

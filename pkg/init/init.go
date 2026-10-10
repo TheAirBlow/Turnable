@@ -12,6 +12,7 @@ import (
 	"github.com/theairblow/turnable/pkg/transport"
 )
 
+// init registers every built-in handler and provider
 func init() {
 	// Config Providers
 	common.ProvidersHolder = providers.Providers

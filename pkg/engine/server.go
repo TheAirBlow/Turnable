@@ -14,16 +14,17 @@ import (
 
 // TurnableServer represents a Turnable server
 type TurnableServer struct {
-	Config   config.Config
-	Provider providers.Provider
+	Config   config.Config      // Server config
+	Provider providers.Provider // User and route provider
 
-	running atomic.Bool
-	handler connection.Handler
+	running atomic.Bool        // the server is running
+	handler connection.Handler // connection handler
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx    context.Context    // lives as long as the server
+	cancel context.CancelFunc // cancels ctx
 
-	log *slog.Logger
+	tr  *tracker     // usage and live tunnels
+	log *slog.Logger // logger
 }
 
 // SetLogger changes the slog logger instance
@@ -42,6 +43,7 @@ func NewTurnableServer(cfg config.Config, provider providers.Provider) *Turnable
 		Provider: provider,
 		ctx:      ctx,
 		cancel:   cancel,
+		tr:       newTracker(),
 		log:      slog.Default(),
 	}
 }
@@ -152,5 +154,7 @@ func (s *TurnableServer) handleClient(client connection.ServerClient, socket Soc
 	}
 
 	s.log.Debug("piping client to route", "addr", client.Address, "route", route.ID, "session", client.SessionUUID)
-	pipeStreams(client.Conn, routeIO)
+	ch := s.tr.open(client.User.UUID, client.SessionUUID, route.ID, client.Address, func() { _ = client.Conn.Close() })
+	defer s.tr.done(ch)
+	pipeStreams(&countConn{Conn: client.Conn, ch: ch}, routeIO)
 }

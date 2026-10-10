@@ -11,7 +11,7 @@ import (
 	"github.com/theairblow/turnable/pkg/config/providers"
 )
 
-// ErrReconnecting is returned when a full reconnect is in progress.
+// ErrReconnecting is returned when a full reconnect is in progress
 var ErrReconnecting = errors.New("full reconnect is in progress")
 
 // ErrFatal marks a server authorization rejection that must not be retried

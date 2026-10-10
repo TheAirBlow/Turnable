@@ -2,8 +2,10 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/theairblow/turnable/pkg/common"
@@ -25,15 +27,64 @@ type Instance struct {
 	client       *engine.TurnableClient // Client instance (nil for servers)
 	status       atomic.Int32           // Current status
 	provider     providers.Provider     // Provider instance (servers only)
+	lifeMu       sync.Mutex             // Serializes start and stop
+	stopped      bool                   // Whether Stop was called
+	unsubscribe  func()                 // Stops the session event feed (servers only)
+}
+
+// errInstanceStopped is returned when an instance is started after being stopped
+var errInstanceStopped = errors.New("instance was stopped")
+
+// Start starts the underlying server or client unless the instance was already stopped
+func (i *Instance) Start() error {
+	i.lifeMu.Lock()
+	defer i.lifeMu.Unlock()
+
+	if i.stopped {
+		return errInstanceStopped
+	}
+
+	if i.server != nil {
+		return i.server.Start()
+	}
+
+	return i.client.Start(i.listenAddrs)
+}
+
+// Stopped returns whether the instance was stopped
+func (i *Instance) Stopped() bool {
+	i.lifeMu.Lock()
+	defer i.lifeMu.Unlock()
+	return i.stopped
+}
+
+// Type returns the protobuf type of this instance
+func (i *Instance) Type() pb.InstanceType {
+	if i.server != nil {
+		return pb.InstanceType_INSTANCE_TYPE_SERVER
+	}
+	return pb.InstanceType_INSTANCE_TYPE_CLIENT
 }
 
 // Stop stops the instance
 func (i *Instance) Stop() error {
-	if i.server != nil {
+	i.lifeMu.Lock()
+	defer i.lifeMu.Unlock()
+
+	if i.stopped {
+		return nil
+	}
+	i.stopped = true
+
+	if i.unsubscribe != nil {
+		i.unsubscribe()
+	}
+
+	if i.server != nil && i.server.IsRunning() {
 		return i.server.Stop()
 	}
 
-	if i.client != nil {
+	if i.client != nil && i.client.IsRunning() {
 		return i.client.Stop()
 	}
 
@@ -47,12 +98,7 @@ func (i *Instance) Info() *pb.InstanceInfo {
 		Name:      i.Name,
 		Status:    pb.InstanceStatus(i.status.Load()),
 		Autostart: i.Autostart,
-	}
-
-	if i.server != nil {
-		info.Type = pb.InstanceType_INSTANCE_TYPE_SERVER
-	} else {
-		info.Type = pb.InstanceType_INSTANCE_TYPE_CLIENT
+		Type:      i.Type(),
 	}
 
 	return info
@@ -167,4 +213,17 @@ func handleValidateProviderConfig(req *pb.ValidateProviderConfigRequest) *pb.Val
 	// TODO: providers dont have any validation routines just yet
 
 	return &pb.ValidateProviderConfigResponse{Valid: true}
+}
+
+// setUnsubscribe stores the function that ends the session event feed, calling it right away if the instance already stopped
+func (i *Instance) setUnsubscribe(fn func()) {
+	i.lifeMu.Lock()
+	defer i.lifeMu.Unlock()
+
+	if i.stopped {
+		fn()
+		return
+	}
+
+	i.unsubscribe = fn
 }

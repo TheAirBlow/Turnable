@@ -7,10 +7,10 @@ import (
 )
 
 const (
-	BrowserHardwareConcurrency = 8
-	BrowserDeviceMemory        = 8
-	BrowserDevicePixelRatio    = 1.0
-	BrowserTimezone            = "Europe/Moscow"
+	BrowserHardwareConcurrency = 8               // navigator.hardwareConcurrency
+	BrowserDeviceMemory        = 8               // navigator.deviceMemory in GB
+	BrowserDevicePixelRatio    = 1.0             // window.devicePixelRatio
+	BrowserTimezone            = "Europe/Moscow" // IANA timezone
 )
 
 // BrowserLanguages is navigator.languages every profile in the pool reports
@@ -21,30 +21,29 @@ var reBrowserBrand = regexp.MustCompile(`"([^"]+)";v="([^"]+)"`)
 
 // BrowserProfile holds browser identity headers
 type BrowserProfile struct {
-	UserAgent       string
-	SecChUa         string
-	SecChUaMobile   string
-	SecChUaPlatform string
+	UserAgent       string // User-Agent header
+	SecChUa         string // Sec-CH-UA header
+	SecChUaMobile   string // Sec-CH-UA-Mobile header
+	SecChUaPlatform string // Sec-CH-UA-Platform header
 }
 
 // BrowserBrand holds a single navigator.userAgentData brand entry
 type BrowserBrand struct {
-	Brand   string `json:"brand"`
-	Version string `json:"version"`
+	Brand   string `json:"brand"`   // Brand name
+	Version string `json:"version"` // Major version
 }
 
 // BrowserPlugin holds a single navigator.plugins entry
 type BrowserPlugin struct {
-	Name        string
-	Description string
-	MimeTypes   []string
+	Name        string   // plugin name
+	Description string   // plugin description
+	MimeTypes   []string // supported MIME types
 }
 
 // chromePDFMimeTypes is what every entry of the Chrome PDF viewer plugin list handles
 var chromePDFMimeTypes = []string{"application/pdf", "text/pdf"}
 
-// chromePlugins represents the plugin list desktop Chrome reports, all five of its entries
-// are aliases of the same bundled PDF viewer
+// chromePlugins is the plugin list desktop Chrome reports; all five are aliases of its bundled PDF viewer
 var chromePlugins = []BrowserPlugin{
 	{Name: "PDF Viewer", Description: "Portable Document Format", MimeTypes: chromePDFMimeTypes},
 	{Name: "Chrome PDF Viewer", Description: "Portable Document Format", MimeTypes: chromePDFMimeTypes},
