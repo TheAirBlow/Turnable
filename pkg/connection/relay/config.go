@@ -16,13 +16,19 @@ import (
 
 // ClientConfig represents the relay mode client config
 type ClientConfig struct {
-	config.ClientConfig
-	Gateway    string `json:"gateway,omitempty"  url:"query,gateway,2"`          // Gateway's IP and port
-	Proto      string `json:"proto,omitempty" url:"query,proto,3"`               // Protocol to use
-	Cloak      string `json:"cloak,omitempty" url:"query,cloak,4"`               // Cloak method
-	Peers      int    `json:"peers,omitempty" url:"query,peers,5"`               // Peer connections per session
-	Encryption string `json:"encryption,omitempty" url:"query,encryption,6"`     // Encryption mode
-	PubKey     string `json:"pub_key,omitempty" url:"query,pub_key,7,omitempty"` // Public key of the server
+	config.ClientConfig        // shared client config
+	Gateway             string `json:"gateway,omitempty"  url:"query,gateway,2"`          // Gateway's IP and port
+	Proto               string `json:"proto,omitempty" url:"query,proto,3"`               // Protocol to use
+	Cloak               string `json:"cloak,omitempty" url:"query,cloak,4"`               // Cloak method
+	Peers               int    `json:"peers,omitempty" url:"query,peers,5"`               // Peer connections per session
+	Encryption          string `json:"encryption,omitempty" url:"query,encryption,6"`     // Encryption mode
+	PubKey              string `json:"pub_key,omitempty" url:"query,pub_key,7,omitempty"` // Public key of the server
+	Mask                string `json:"mask,omitempty" url:"query,mask,9,omitempty"`       // Outer record masking
+}
+
+// MaskEnabled reports whether the outer DTLS/SRTP encryption is replaced by masking
+func (c ClientConfig) MaskEnabled() bool {
+	return c.Routes[0].Transport == "mpath" && c.Mask != "off"
 }
 
 // GetInner returns the inner shared configuration struct
@@ -32,13 +38,13 @@ func (c ClientConfig) GetInner() any {
 
 // ServerConfig represents the relay mode server config
 type ServerConfig struct {
-	config.ServerConfig
-	Proto      string `json:"proto"`       // Protocol to use
-	PubKey     string `json:"pub_key"`     // Public key
-	PrivKey    string `json:"priv_key"`    // Private key
-	Cloak      string `json:"cloak"`       // Cloak method to use
-	PublicIP   string `json:"public_ip"`   // Server's public IP
-	ListenAddr string `json:"listen_addr"` // Listening address (IP:port)
+	config.ServerConfig        // shared server config
+	Proto               string `json:"proto"`       // Protocol to use
+	PubKey              string `json:"pub_key"`     // Public key
+	PrivKey             string `json:"priv_key"`    // Private key
+	Cloak               string `json:"cloak"`       // Cloak method to use
+	PublicIP            string `json:"public_ip"`   // Server's public IP
+	ListenAddr          string `json:"listen_addr"` // Listening address (IP:port)
 }
 
 // GetInner returns the inner shared configuration struct
@@ -83,8 +89,18 @@ func (c ClientConfig) Validate() error {
 
 	switch c.Encryption {
 	case "handshake", "full":
+	case "":
+		if c.Routes[0].Transport != "mpath" {
+			return errors.New("encryption is required with legacy route transports")
+		}
 	default:
 		return fmt.Errorf("invalid encryption mode: %s", c.Encryption)
+	}
+
+	switch c.Mask {
+	case "", "on", "off":
+	default:
+		return fmt.Errorf("invalid mask: %s (must be on or off)", c.Mask)
 	}
 
 	pubBytes, err := base64.StdEncoding.DecodeString(c.PubKey)
@@ -119,22 +135,26 @@ func (c ClientConfig) Validate() error {
 			return fmt.Errorf("routes[%d].route_id is required", i)
 		}
 
-		if c.Routes[i].Transport == "" {
-			c.Routes[i].Transport = "none"
-		}
-
 		switch route.Socket {
 		case "tcp", "udp":
 		default:
 			return fmt.Errorf("routes[%d]: invalid socket %q (must be tcp or udp)", i, route.Socket)
 		}
 
+		if (route.Transport == "mpath") != (c.Routes[0].Transport == "mpath") {
+			return fmt.Errorf("routes[%d]: transport %q cannot be mixed with mpath routes in one session", i, route.Transport)
+		}
+
+		if c.Routes[i].Transport == "" {
+			c.Routes[i].Transport = "none"
+		}
+
 		if route.Socket == "tcp" && c.Routes[i].Transport == "none" {
 			return fmt.Errorf("routes[%d]: transport is required for tcp to work reliably", i)
 		}
 
-		if !common.TransportsHolder.Exists(c.Routes[i].Transport) {
-			return fmt.Errorf("routes[%d]: invalid transport: %s", i, c.Routes[i].Transport)
+		if c.Routes[i].Transport != "mpath" && !common.TransportsHolder.Exists(c.Routes[i].Transport) {
+			return fmt.Errorf("routes[%d]: invalid transport: %s", i, route.Transport)
 		}
 	}
 
@@ -276,7 +296,10 @@ func (D *Handler) GetClientConfig(serverCfg config.Config, user *providers.User,
 		}
 
 		trans := route.Transport
-		if trans == "none" {
+		switch trans {
+		case "":
+			trans = "mpath"
+		case "none":
 			trans = ""
 		}
 

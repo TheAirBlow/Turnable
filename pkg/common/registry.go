@@ -28,8 +28,8 @@ type RegistryHolder interface {
 
 // Registry represents a generic item registry addressed by a string ID
 type Registry[T RegistryItem] struct {
-	mu    sync.RWMutex
-	items map[string]reflect.Type
+	mu    sync.RWMutex            // guards items
+	items map[string]reflect.Type // registered handler types by ID
 }
 
 // NewRegistry creates a new Registry for the specified type

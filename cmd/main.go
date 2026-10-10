@@ -11,6 +11,7 @@ import (
 	_ "github.com/theairblow/turnable/pkg/init"
 )
 
+// buildVersion is set at build time with -ldflags
 var buildVersion string
 
 // main runs the specified command

@@ -12,7 +12,7 @@ import (
 	"github.com/theairblow/turnable/pkg/config/providers"
 )
 
-// validateClientConfig parses the client config JSON, validates it and authorizes access to every requested route.
+// validateClientConfig parses the client config JSON, validates it and authorizes access to every requested route
 func (D *Handler) validateClientConfig(configJSON []byte) (ClientConfig, *providers.User, []providers.Route, error) {
 	clientCfg, err := config.ParseConfigGeneric[ClientConfig](configJSON)
 	if err != nil {
@@ -31,6 +31,10 @@ func (D *Handler) validateClientConfig(configJSON []byte) (ClientConfig, *provid
 
 	switch clientCfg.Encryption {
 	case "handshake", "full":
+	case "":
+		if clientCfg.Routes[0].Transport != "mpath" {
+			return clientCfg, nil, nil, errors.New("relay handshake missing encryption for legacy route transports")
+		}
 	default:
 		return clientCfg, nil, nil, fmt.Errorf("invalid relay encryption mode %q", clientCfg.Encryption)
 	}
@@ -59,6 +63,9 @@ func (D *Handler) validateClientConfig(configJSON []byte) (ClientConfig, *provid
 		}
 		if cr.Socket != route.Socket {
 			return clientCfg, nil, nil, fmt.Errorf("route %d (%q): expected socket %s, got %s", i, cr.RouteID, route.Socket, cr.Socket)
+		}
+		if route.Socket == "tcp" && (cr.Transport == "" || cr.Transport == "none") {
+			return clientCfg, nil, nil, fmt.Errorf("route %d (%q): transport is required for tcp to work reliably", i, cr.RouteID)
 		}
 		routes = append(routes, *route)
 	}

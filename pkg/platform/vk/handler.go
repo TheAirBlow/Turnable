@@ -35,41 +35,41 @@ const (
 
 // Handler manages VK authorization, signaling, and peer state
 type Handler struct {
-	once   sync.Once
+	once   sync.Once    // guards one-time setup
 	mu     sync.RWMutex // protects all data fields except conn/seq/readerCancel
 	connMu sync.Mutex   // protects conn, seq, readerCancel
 
-	httpClient *http.Client
-	profile    common.BrowserProfile
+	httpClient *http.Client          // HTTP client with the browser profile
+	profile    common.BrowserProfile // browser fingerprint to imitate
 
-	callID              string
-	joinURL             string
-	username            string
-	messagesAccessToken string
-	anonymToken         string
-	sessionKey          string
-	endpoint            string
-	turnInfos           []protocol.TURNInfo
+	callID              string              // call ID
+	joinURL             string              // call join link
+	username            string              // display name in the call
+	messagesAccessToken string              // token for the messages API
+	anonymToken         string              // anonymous call token
+	sessionKey          string              // OK API session key
+	endpoint            string              // signaling websocket endpoint
+	turnInfos           []protocol.TURNInfo // TURN servers handed out for the call
 
-	conn         *websocket.Conn
-	seq          int
-	readerCancel context.CancelFunc
+	conn         *websocket.Conn    // signaling websocket
+	seq          int                // next signaling sequence number
+	readerCancel context.CancelFunc // stops the signaling reader
 
-	participantsByID  map[int64]*vkParticipant
-	participantByPeer map[string]int64
-	remoteMedia       platform.RemoteMediaInfo
-	videoTrackSlots   int
+	participantsByID  map[int64]*vkParticipant // call participants by ID
+	participantByPeer map[string]int64         // participant IDs by peer ID
+	remoteMedia       platform.RemoteMediaInfo // remote media description
+	videoTrackSlots   int                      // video track slots in use
 
-	subscribers    map[int]chan platform.Event
-	nextSubscriber int
+	subscribers    map[int]chan platform.Event // event subscribers by ID
+	nextSubscriber int                         // next subscriber ID
 }
 
 // vkParticipant stores one call participant tracked from VK signaling
 type vkParticipant struct {
-	ID         int64
-	PeerID     string
-	ExternalID string
-	Name       string
+	ID         int64  // Participant ID
+	PeerID     string // Peer ID in the call
+	ExternalID string // External user ID
+	Name       string // Display name
 }
 
 // ID returns the unique ID of this handler

@@ -17,59 +17,59 @@ import (
 )
 
 const (
-	muxControlMagic        = "TMUX"
-	muxControlVersion byte = 2
+	muxControlMagic        = "TMUX" // control channel preface
+	muxControlVersion byte = 2      // control protocol version
 
-	muxControlTypeOpen       byte = 1
-	muxControlTypePing       byte = 2
-	muxControlTypePong       byte = 3
-	muxControlTypeClose      byte = 4
-	muxControlTypeDisconnect byte = 7
+	muxControlTypeOpen       byte = 1 // open a flow
+	muxControlTypePing       byte = 2 // client keepalive
+	muxControlTypePong       byte = 3 // keepalive reply
+	muxControlTypeClose      byte = 4 // close a flow
+	muxControlTypeDisconnect byte = 7 // end the session
 
-	muxFlowBufSize      = 2048
-	muxWriteCtrlBufSize = 256
-	muxFlowSendBuf      = 256
-	muxMaxPacket        = 65535
+	muxFlowBufSize      = 2048  // incoming packet queue per flow
+	muxWriteCtrlBufSize = 256   // queued control frames
+	muxFlowSendBuf      = 256   // outgoing packet queue per flow
+	muxMaxPacket        = 65535 // largest mux frame payload
 
-	muxDRRQuantum = 32768
-	muxBurstFloor = 2 * 1420
+	muxDRRQuantum = 32768    // bytes a flow may send per DRR round
+	muxBurstFloor = 2 * 1420 // smallest rate limiter burst, two packets
 
-	muxClientPingInterval = 1 * time.Second
+	muxClientPingInterval = 1 * time.Second // how often the client pings
 	muxPingStall          = 5 * time.Second // pong silence before the path counts as stalled
 )
 
 // muxControlMessage is a control protocol message
 type muxControlMessage struct {
-	Type     byte
-	FlowID   uint16
-	RouteIdx byte
+	Type     byte   // message type
+	FlowID   uint16 // flow the message refers to
+	RouteIdx byte   // route index for open requests
 }
 
 // MuxChannel is one negotiated data flow
 type MuxChannel struct {
-	FlowID   uint16
-	RouteIdx byte
-	Conn     net.Conn
+	FlowID   uint16   // flow identifier
+	RouteIdx byte     // route index the flow was opened for
+	Conn     net.Conn // flow connection
 }
 
 // tinyMuxCore represents the shared core implementation of tinymux
 type tinyMuxCore struct {
-	conn   net.Conn
-	flows  sync.Map
-	nextID uint16
-	nextMu sync.Mutex
-	closed atomic.Bool
-	done   chan struct{}
-	ctrlCh chan []byte
+	conn   net.Conn      // underlying packet conn
+	flows  sync.Map      // flows by ID
+	nextID uint16        // next flow ID to allocate
+	nextMu sync.Mutex    // guards nextID
+	closed atomic.Bool   // set once closed
+	done   chan struct{} // closed on Close
+	ctrlCh chan []byte   // queued control frames
 
-	drFlowsMu sync.RWMutex
-	drFlows   []*flowConn
-	notifyCh  chan struct{}
+	drFlowsMu sync.RWMutex  // guards drFlows
+	drFlows   []*flowConn   // data flows in DRR order
+	notifyCh  chan struct{} // wakes the write loop
 
-	rateLimiter *rate.Limiter
-	stageBuf    []byte
+	rateLimiter *rate.Limiter // aggregate outbound rate limit
+	stageBuf    []byte        // reused frame buffer for writes
 
-	log *slog.Logger
+	log *slog.Logger // logger
 }
 
 // newTinyMuxCore creates a new tinymux core
@@ -200,7 +200,7 @@ func (m *tinyMuxCore) setRateLimit(bytesPerSec float64) {
 	}
 }
 
-// rateWait absorbs the rate-limiter delay for n bytes, draining control packets while sleeping.
+// rateWait absorbs the rate-limiter delay for n bytes, draining control packets while sleeping
 func (m *tinyMuxCore) rateWait(n int) {
 	if m.rateLimiter.Limit() == rate.Inf {
 		return
@@ -319,14 +319,14 @@ func (m *tinyMuxCore) Close() error {
 
 // flowConn represents a mux flow's net.Conn
 type flowConn struct {
-	mux       *tinyMuxCore
-	id        uint16
-	incoming  chan []byte
-	sendCh    chan []byte
-	closed    chan struct{}
-	deficit   int
-	readBuf   []byte
-	closeOnce sync.Once
+	mux       *tinyMuxCore  // owning mux
+	id        uint16        // flow ID
+	incoming  chan []byte   // received packets
+	sendCh    chan []byte   // packets waiting to be sent
+	closed    chan struct{} // closed on Close
+	deficit   int           // DRR byte credit
+	readBuf   []byte        // leftover bytes from a partly read packet
+	closeOnce sync.Once     // guards Close
 }
 
 // Read reads the next chunk from the flow's receive buffer
@@ -407,13 +407,13 @@ func (f *flowConn) SetWriteDeadline(t time.Time) error {
 
 // managedFlowConn wraps a flowConn and sends a Close control message when closed
 type managedFlowConn struct {
-	*flowConn
-	writeControl func(muxControlMessage) error
-	flowStates   *sync.Map
-	closeOnce    sync.Once
+	*flowConn                                  // the flow
+	writeControl func(muxControlMessage) error // sends control messages
+	flowStates   *sync.Map                     // live flows by ID
+	closeOnce    sync.Once                     // guards Close
 }
 
-// Close notifies the peer and tears down the flow.
+// Close notifies the peer and tears down the flow
 func (m *managedFlowConn) Close() error {
 	m.closeOnce.Do(func() {
 		m.flowStates.Delete(m.flowConn.id)
@@ -428,21 +428,21 @@ func (m *managedFlowConn) Close() error {
 
 // TinyMuxClient represents a client tinymux connection
 type TinyMuxClient struct {
-	mux       *tinyMuxCore
-	control   net.Conn
-	controlMu sync.Mutex
-	openMu    sync.Mutex
+	mux       *tinyMuxCore // shared mux core
+	control   net.Conn     // control channel
+	controlMu sync.Mutex   // serializes control writes
+	openMu    sync.Mutex   // serializes open requests
 
-	lastPingSent    atomic.Int64
-	lastPong        atomic.Int64
-	firstUnanswered atomic.Int64
-	stallHandler    atomic.Pointer[func()]
+	lastPingSent    atomic.Int64           // unix nanoseconds of the last ping
+	lastPong        atomic.Int64           // unix nanoseconds of the last pong
+	firstUnanswered atomic.Int64           // unix nanoseconds of the first unanswered ping, 0 if none
+	stallHandler    atomic.Pointer[func()] // called when pongs stop
 
-	pingCtx    context.Context
-	pingCancel context.CancelFunc
+	pingCtx    context.Context    // lives as long as the session
+	pingCancel context.CancelFunc // cancels pingCtx
 
-	openReplyCh chan uint16
-	flowStates  sync.Map
+	openReplyCh chan uint16 // flow IDs from open replies
+	flowStates  sync.Map    // live flows by ID
 }
 
 // SetRateLimit configures the aggregate outbound rate limit in bytes/sec
@@ -640,14 +640,14 @@ func (c *TinyMuxClient) writeControl(msg muxControlMessage) error {
 
 // TinyMuxServer accepts logical channels from one authenticated connection
 type TinyMuxServer struct {
-	mux       *tinyMuxCore
-	control   net.Conn
-	controlMu sync.Mutex
+	mux       *tinyMuxCore // shared mux core
+	control   net.Conn     // control channel
+	controlMu sync.Mutex   // serializes control writes
 
-	lastPing   atomic.Int64
-	flowStates sync.Map
-	doneOnce   sync.Once
-	done       chan struct{}
+	lastPing   atomic.Int64  // unix nanoseconds of the last ping
+	flowStates sync.Map      // live flows by ID
+	doneOnce   sync.Once     // guards done
+	done       chan struct{} // closed when the session ends
 }
 
 // NewTinyMuxServer creates a mux server over the provided packet-centric connection
@@ -768,7 +768,7 @@ func (s *TinyMuxServer) pingTimeoutLoop(ctx context.Context) {
 	}
 }
 
-// SetRateLimit configures the aggregate outbound rate limit in bytes/sec; 0 = unlimited.
+// SetRateLimit configures the aggregate outbound rate limit in bytes/sec; 0 = unlimited
 func (s *TinyMuxServer) SetRateLimit(bytesPerSec float64) {
 	s.mux.setRateLimit(bytesPerSec)
 }

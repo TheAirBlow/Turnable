@@ -23,30 +23,30 @@ import (
 
 // configGenerateOptions holds CLI flags for the config generate subcommand
 type configGenerateOptions struct {
-	configPath string
-	serverId   string
-	userUUID   string
-	routeIDs   []string
-	json       bool
+	configPath string   // server config path
+	serverId   string   // server ID to generate for
+	userUUID   string   // user UUID
+	routeIDs   []string // route IDs to include
+	json       bool     // print JSON instead of a URL
 }
 
 // configKeygenOptions holds CLI flags for the config keygen subcommand
 type configKeygenOptions struct {
-	json bool
+	json bool // print JSON
 }
 
 // configDirectOptions holds CLI flags for the direct relay config subcommand
 type configDirectOptions struct {
-	platformId string
-	callId     string
-	gateway    string
-	peers      int
-	json       bool
+	platformId string // platform ID
+	callId     string // call ID
+	gateway    string // gateway address
+	peers      int    // number of peers
+	json       bool   // print JSON instead of a URL
 }
 
 // configBootstrapOptions holds CLI flags for the config bootstrap subcommand
 type configBootstrapOptions struct {
-	output string
+	output string // output file path
 }
 
 // newConfigCommand creates the config cobra command
@@ -286,6 +286,7 @@ func directConfigMain(opts *configDirectOptions) error {
 	return nil
 }
 
+// prompt asks msg and returns the answer, or def when empty
 func prompt(r *bufio.Reader, msg, def string) string {
 	if def != "" {
 		fmt.Printf("%s [%s]: ", msg, def)
@@ -300,6 +301,7 @@ func prompt(r *bufio.Reader, msg, def string) string {
 	return line
 }
 
+// promptRequired asks msg until a non-empty answer is given
 func promptRequired(r *bufio.Reader, msg string) string {
 	for {
 		v := prompt(r, msg, "")
@@ -310,6 +312,7 @@ func promptRequired(r *bufio.Reader, msg string) string {
 	}
 }
 
+// promptChoice asks msg until one of choices is given, defaulting to def
 func promptChoice(r *bufio.Reader, msg string, choices []string, def string) string {
 	joined := strings.Join(choices, "/")
 	for {
@@ -328,6 +331,7 @@ func promptChoice(r *bufio.Reader, msg string, choices []string, def string) str
 	}
 }
 
+// promptInt asks msg until an integer is given, defaulting to def
 func promptInt(r *bufio.Reader, msg string, def int) int {
 	for {
 		raw := prompt(r, msg, strconv.Itoa(def))
@@ -339,6 +343,7 @@ func promptInt(r *bufio.Reader, msg string, def int) int {
 	}
 }
 
+// promptIntAtLeast asks msg until an integer of at least min is given
 func promptIntAtLeast(r *bufio.Reader, msg string, def, min int) int {
 	for {
 		raw := prompt(r, msg, strconv.Itoa(def))
@@ -350,6 +355,7 @@ func promptIntAtLeast(r *bufio.Reader, msg string, def, min int) int {
 	}
 }
 
+// promptIP asks msg until a valid IP address is given
 func promptIP(r *bufio.Reader, msg string) string {
 	for {
 		v := promptRequired(r, msg)
@@ -360,6 +366,7 @@ func promptIP(r *bufio.Reader, msg string) string {
 	}
 }
 
+// promptPort asks msg until a valid port is given, defaulting to def
 func promptPort(r *bufio.Reader, msg string, def int) int {
 	for {
 		v := promptInt(r, msg, def)

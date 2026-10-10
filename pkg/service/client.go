@@ -19,23 +19,25 @@ const (
 	EventInstanceStopped                  // an instance was stopped
 	EventInstanceFailed                   // an instance failed to start
 	EventInstanceUpdated                  // an instance was updated
+	EventSession                          // a tunnel of a server instance opened or closed
 )
 
 // Event is emitted by the client read loop to signal logs, instance events, or disconnects
 type Event struct {
-	Kind          EventKind
-	Log           *pb.LogRecord
-	InstanceEvent *pb.InstanceEvent
-	Err           error
+	Kind          EventKind         // event kind
+	Log           *pb.LogRecord     // log record, for log events
+	InstanceEvent *pb.InstanceEvent // instance event, for instance events
+	SessionEvent  *pb.SessionEvent  // session event, for session events
+	Err           error             // error, for error events
 }
 
 // Client communicates with a Turnable service server over a custom protocol
 type Client struct {
-	conn    net.Conn
-	writeMu sync.Mutex
-	respCh  chan *pb.Response
-	eventCh chan Event
-	done    chan struct{}
+	conn    net.Conn          // connection to the service
+	reqMu   sync.Mutex        // serializes requests
+	respCh  chan *pb.Response // responses to requests
+	eventCh chan Event        // pushed events
+	done    chan struct{}     // closed when the connection ends
 }
 
 // NewClient connects to a remote Turnable service server
@@ -123,6 +125,11 @@ func (c *Client) readLoop() {
 			case c.eventCh <- Event{Kind: kind, InstanceEvent: ev}:
 			default:
 			}
+		case resp.GetSessionEvent() != nil:
+			select {
+			case c.eventCh <- Event{Kind: EventSession, SessionEvent: resp.GetSessionEvent()}:
+			default:
+			}
 		case resp.GetError() != nil:
 			select {
 			case c.eventCh <- Event{Kind: EventDisconnected, Err: fmt.Errorf("%s", resp.GetError().Message)}:
@@ -131,17 +138,21 @@ func (c *Client) readLoop() {
 			close(c.eventCh)
 			return
 		default:
-			c.respCh <- &resp
+			select {
+			case c.respCh <- &resp:
+			default:
+				// Unsolicited response with no pending request, drop it
+			}
 		}
 	}
 }
 
-// sendRequest sends a proto request and waits for a response via the read loop
+// sendRequest sends a proto request and waits for its response via the read loop
 func (c *Client) sendRequest(req *pb.Request) (*pb.Response, error) {
-	c.writeMu.Lock()
-	err := writeFramed(c.conn, req)
-	c.writeMu.Unlock()
-	if err != nil {
+	c.reqMu.Lock()
+	defer c.reqMu.Unlock()
+
+	if err := writeFramed(c.conn, req); err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
@@ -154,13 +165,14 @@ func (c *Client) sendRequest(req *pb.Request) (*pb.Response, error) {
 }
 
 // StartServer requests a new server instance with a provider UUID
-func (c *Client) StartServer(config, instanceID, name, providerUUID string) (string, error) {
+func (c *Client) StartServer(config, instanceID, name, providerUUID string, autostart bool) (string, error) {
 	req := &pb.Request{
 		Payload: &pb.Request_StartServer{
 			StartServer: &pb.StartServerRequest{
 				Config:       config,
 				InstanceId:   instanceID,
 				Name:         name,
+				Autostart:    autostart,
 				ProviderUuid: providerUUID,
 			},
 		},
@@ -182,7 +194,7 @@ func (c *Client) StartServer(config, instanceID, name, providerUUID string) (str
 }
 
 // StartClient requests a new client instance
-func (c *Client) StartClient(config string, listenAddrs []string, instanceID, name string) (string, error) {
+func (c *Client) StartClient(config string, listenAddrs []string, instanceID, name string, autostart bool) (string, error) {
 	req := &pb.Request{
 		Payload: &pb.Request_StartClient{
 			StartClient: &pb.StartClientRequest{
@@ -190,6 +202,7 @@ func (c *Client) StartClient(config string, listenAddrs []string, instanceID, na
 				ListenAddrs: listenAddrs,
 				InstanceId:  instanceID,
 				Name:        name,
+				Autostart:   autostart,
 			},
 		},
 	}
@@ -345,6 +358,9 @@ func (c *Client) ConvertClientConfig(config string) (string, error) {
 	}
 
 	if cr := resp.GetConvertClientConfig(); cr != nil {
+		if cr.Error != "" {
+			return "", fmt.Errorf("convert client config: %s", cr.Error)
+		}
 		return cr.Config, nil
 	}
 
@@ -625,4 +641,83 @@ func (c *Client) ListProviderUsers(providerUUID string) ([]*pb.UserInfo, error) 
 	}
 
 	return nil, fmt.Errorf("unexpected response type")
+}
+
+// GetStats fetches the stats of a server instance, with collect set it also returns the usage of every user since the
+// previous collect and resets the counters
+func (c *Client) GetStats(instanceID string, collect bool) (*pb.GetStatsResponse, error) {
+	req := &pb.Request{
+		Payload: &pb.Request_GetStats{
+			GetStats: &pb.GetStatsRequest{
+				InstanceId: instanceID,
+				Collect:    collect,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if gs := resp.GetGetStats(); gs != nil {
+		if gs.Error != "" {
+			return nil, fmt.Errorf("get stats: %s", gs.Error)
+		}
+		return gs, nil
+	}
+
+	return nil, fmt.Errorf("unexpected response type")
+}
+
+// ListSessions lists the live sessions of a server instance
+func (c *Client) ListSessions(instanceID string) ([]*pb.SessionStats, error) {
+	req := &pb.Request{
+		Payload: &pb.Request_ListSessions{
+			ListSessions: &pb.ListSessionsRequest{
+				InstanceId: instanceID,
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if ls := resp.GetListSessions(); ls != nil {
+		if ls.Error != "" {
+			return nil, fmt.Errorf("list sessions: %s", ls.Error)
+		}
+		return ls.Sessions, nil
+	}
+
+	return nil, fmt.Errorf("unexpected response type")
+}
+
+// KickUser closes every tunnel of a user on a server instance and returns how many it closed
+func (c *Client) KickUser(instanceID, userUUID string) (int, error) {
+	return c.kick(&pb.KickRequest{InstanceId: instanceID, UserUuid: userUUID})
+}
+
+// KickSession closes every tunnel of a session on a server instance and returns how many it closed
+func (c *Client) KickSession(instanceID, sessionID string) (int, error) {
+	return c.kick(&pb.KickRequest{InstanceId: instanceID, SessionId: sessionID})
+}
+
+// kick sends a kick request
+func (c *Client) kick(kr *pb.KickRequest) (int, error) {
+	resp, err := c.sendRequest(&pb.Request{Payload: &pb.Request_Kick{Kick: kr}})
+	if err != nil {
+		return 0, err
+	}
+
+	if k := resp.GetKick(); k != nil {
+		if k.Error != "" {
+			return 0, fmt.Errorf("kick: %s", k.Error)
+		}
+		return int(k.Kicked), nil
+	}
+
+	return 0, fmt.Errorf("unexpected response type")
 }

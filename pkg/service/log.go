@@ -13,8 +13,8 @@ import (
 
 // logBroadcast fans out log records to all connected service clients
 type logBroadcast struct {
-	mu   sync.RWMutex
-	subs map[*clientConn]struct{}
+	mu   sync.RWMutex             // guards subs
+	subs map[*clientConn]struct{} // subscribed clients
 }
 
 // subscribe registers a connection to receive all log records
@@ -42,10 +42,10 @@ func (b *logBroadcast) dispatch(rec *pb.LogRecord) {
 
 // LogRelayHandler is a slog handler that forwards records to all service clients and an inner handler
 type LogRelayHandler struct {
-	inner     slog.Handler
-	broadcast *logBroadcast
-	attrs     []slog.Attr
-	groups    []string
+	inner     slog.Handler  // handler records are also passed to
+	broadcast *logBroadcast // subscribers to forward records to
+	attrs     []slog.Attr   // attributes added with WithAttrs
+	groups    []string      // groups added with WithGroup
 }
 
 // newLogRelayHandler wraps an existing handler with a log relay

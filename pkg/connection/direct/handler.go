@@ -16,19 +16,19 @@ import (
 
 // Handler establishes a direct raw UDP connection to a gateway
 type Handler struct {
-	running atomic.Bool
+	running atomic.Bool // the handler is connected
 
-	cancel          context.CancelFunc
-	peerConn        *connection.PeerConn
-	clientConfig    *ClientConfig
-	reconnecting    atomic.Bool
-	reconnectMu     sync.Mutex
-	stateMu         sync.RWMutex
-	reconnectCtx    context.Context
-	reconnectCancel context.CancelFunc
-	events          *connection.EventStream
+	cancel          context.CancelFunc      // cancels the current session
+	peerConn        *connection.PeerConn    // peer aggregator
+	clientConfig    *ClientConfig           // config being connected with
+	reconnecting    atomic.Bool             // a full reconnect is running
+	reconnectMu     sync.Mutex              // serializes session setup
+	stateMu         sync.RWMutex            // guards the client state
+	reconnectCtx    context.Context         // lifetime context for reconnects
+	reconnectCancel context.CancelFunc      // cancels reconnectCtx
+	events          *connection.EventStream // connectivity events for the caller
 
-	log *slog.Logger
+	log *slog.Logger // logger
 }
 
 // SetLogger changes the slog logger instance

@@ -11,7 +11,7 @@ import (
 
 // NoneHandler passes traffic as raw UDP without any encryption or framing
 type NoneHandler struct {
-	log *slog.Logger
+	log *slog.Logger // logger
 }
 
 // ID returns the unique ID of this handler
@@ -75,9 +75,9 @@ func newNoneClientConn(underlay net.PacketConn, remote net.Addr) *noneConn {
 
 // noneConn is a net.Conn backed by a raw UDP PacketConn with no encryption
 type noneConn struct {
-	raw       net.PacketConn
-	remote    net.Addr
-	closeOnce sync.Once
+	raw       net.PacketConn // UDP socket
+	remote    net.Addr       // peer address
+	closeOnce sync.Once      // guards Close
 }
 
 // Read reads the next packet from the underlying PacketConn

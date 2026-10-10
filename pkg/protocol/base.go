@@ -35,20 +35,20 @@ type Handler interface {
 	SetLogger(log *slog.Logger)                                                                  // Changes the slog logger instance
 }
 
-// Handlers represents protocol Handler registry.
+// Handlers represents protocol Handler registry
 var Handlers = common.NewRegistry[Handler]()
 
-// GetHandler fetches a protocol Handler by its string ID.
+// GetHandler fetches a protocol Handler by its string ID
 func GetHandler(name string) (Handler, error) {
 	return Handlers.Get(name)
 }
 
-// ListHandlers lists all protocol Handler string IDs.
+// ListHandlers lists all protocol Handler string IDs
 func ListHandlers() []string {
 	return Handlers.List()
 }
 
-// HandlerExists checks whether a protocol Handler with specified string ID exists.
+// HandlerExists checks whether a protocol Handler with specified string ID exists
 func HandlerExists(name string) bool {
 	return Handlers.Exists(name)
 }

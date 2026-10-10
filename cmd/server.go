@@ -15,8 +15,8 @@ import (
 
 // serverOptions holds CLI flags for the server subcommand
 type serverOptions struct {
-	configPath string
-	verbose    bool
+	configPath string // server config path
+	verbose    bool   // enable debug logging
 }
 
 // newServerCommand creates the server cobra command

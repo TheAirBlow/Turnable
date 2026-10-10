@@ -18,20 +18,20 @@ import (
 
 // vkAPIError stores VK API error metadata, including captcha details
 type vkAPIError struct {
-	Code           int
-	Message        string
-	CaptchaSID     string
-	CaptchaTS      string
-	CaptchaAttempt string
-	SessionToken   string
-	AdFP           string
-	RedirectURI    string
+	Code           int    // VK error code
+	Message        string // error message
+	CaptchaSID     string // captcha session ID, set when a captcha is required
+	CaptchaTS      string // captcha timestamp
+	CaptchaAttempt string // captcha attempt counter
+	SessionToken   string // captcha session token
+	AdFP           string // ad fingerprint for the captcha
+	RedirectURI    string // captcha page URL
 }
 
 // vkCallsError stores an error returned by the VK calls backend
 type vkCallsError struct {
-	Code    int
-	Message string
+	Code    int    // calls API error code
+	Message string // error message
 }
 
 // Error formats the VK calls backend error
@@ -54,19 +54,19 @@ func checkVKCallsError(resp map[string]any) error {
 
 // vkCallsSessionData stores the anonymous VK calls login payload
 type vkCallsSessionData struct {
-	Version       int    `json:"version"`
-	DeviceID      string `json:"device_id,omitempty"`
-	ClientVersion string `json:"client_version,omitempty"`
-	ClientType    string `json:"client_type,omitempty"`
+	Version       int    `json:"version"`                  // Session data format version
+	DeviceID      string `json:"device_id,omitempty"`      // Device ID
+	ClientVersion string `json:"client_version,omitempty"` // Client version
+	ClientType    string `json:"client_type,omitempty"`    // Client type
 }
 
 // vkStartedConversationInfo stores the conversation bootstrap payload returned by VK
 type vkStartedConversationInfo struct {
-	Endpoint   string `json:"endpoint"`
-	TurnServer struct {
-		Urls     []string `json:"urls"`
-		Username string   `json:"username"`
-		Password string   `json:"password"`
+	Endpoint   string   `json:"endpoint"` // Signaling endpoint
+	TurnServer struct { // TURN server credentials
+		Urls     []string `json:"urls"`     // TURN server URLs
+		Username string   `json:"username"` // TURN username
+		Password string   `json:"password"` // TURN password
 	} `json:"turnServer"`
 }
 
@@ -191,7 +191,11 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 			if apiErr.Code != 14 {
 				return "", "", fmt.Errorf("vk api error %d: %s", apiErr.Code, apiErr.Message)
 			}
-			slog.Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
+			if attempt > 0 {
+				slog.Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
+			} else {
+				slog.Debug("vk captcha challenge received")
+			}
 
 			solveStartedAt := time.Now()
 			successToken, solveErr := V.solveCaptcha(ctx, apiErr)

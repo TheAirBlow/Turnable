@@ -34,7 +34,7 @@ type Config struct {
 	BandwidthP2P        float64 // Outbound rate limit per peer connection in bytes/sec for P2P mode (0 = unlimited)
 }
 
-// PeerInfo represents a currently known participant/peer snapshot.
+// PeerInfo represents a currently known participant/peer snapshot
 type PeerInfo struct {
 	ID         string // Platform-local participant identifier.
 	PeerID     string // Platform-specific transport/signaling peer identifier.
@@ -42,7 +42,7 @@ type PeerInfo struct {
 	Name       string // Resolved display name, when available.
 }
 
-// MediaKind represents the generic kind of remote media section.
+// MediaKind represents the generic kind of remote media section
 type MediaKind string
 
 const (
@@ -52,7 +52,7 @@ const (
 	MediaKindApplication MediaKind = "application" // Non-RTP application/data media section.
 )
 
-// MediaDirection represents the direction advertised for a remote media section.
+// MediaDirection represents the direction advertised for a remote media section
 type MediaDirection string
 
 const (
@@ -63,7 +63,7 @@ const (
 	MediaDirectionInactive MediaDirection = "inactive" // Media section is inactive.
 )
 
-// RemoteMediaTrack describes one remote media section from the latest offer.
+// RemoteMediaTrack describes one remote media section from the latest offer
 type RemoteMediaTrack struct {
 	Index     int            // Zero-based media section index in SDP order
 	MID       string         // MID of the media section
@@ -74,7 +74,7 @@ type RemoteMediaTrack struct {
 	SourceIDs []string       // SSRC-like source identifiers exposed by signaling
 }
 
-// RemoteMediaInfo describes the latest remote media topology exposed by signaling.
+// RemoteMediaInfo describes the latest remote media topology exposed by signaling
 type RemoteMediaInfo struct {
 	BundleMIDs             []string           // Media section order advertised in the BUNDLE group
 	Tracks                 []RemoteMediaTrack // Parsed media sections in the same order as the offer
@@ -93,9 +93,9 @@ const (
 
 // Event represents a signaling event with arbitrary data
 type Event struct {
-	Type     EventType
-	Payload  any
-	Metadata map[string]string
+	Type     EventType         // event type
+	Payload  any               // event payload
+	Metadata map[string]string // extra string details
 }
 
 // Handlers represents platform Handler registry

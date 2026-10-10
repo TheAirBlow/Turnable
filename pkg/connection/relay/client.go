@@ -16,7 +16,7 @@ import (
 	"github.com/theairblow/turnable/pkg/protocol"
 )
 
-// connectClientSession establishes the platform, underlay, and tinymux session for the client.
+// connectClientSession establishes the platform, underlay, and tinymux session for the client
 func (D *Handler) connectClientSession() error {
 	D.reconnectMu.Lock()
 	defer D.reconnectMu.Unlock()
@@ -26,6 +26,7 @@ func (D *Handler) connectClientSession() error {
 	oldMuxClient := D.muxClient
 	oldPeerConn := D.peerConn
 	oldPlatform := D.platform
+	oldMpath := D.mpath
 	cfg := D.clientConfig
 	reconnectCtx := D.reconnectCtx
 	connEvents := D.events
@@ -33,10 +34,14 @@ func (D *Handler) connectClientSession() error {
 	D.muxClient = nil
 	D.peerConn = nil
 	D.platform = nil
+	D.mpath = nil
 	D.stateMu.Unlock()
 
 	if oldCancel != nil {
 		oldCancel()
+	}
+	if oldMpath != nil {
+		_ = oldMpath.mux.Close()
 	}
 	if oldMuxClient != nil {
 		_ = oldMuxClient.Disconnect()
@@ -179,6 +184,28 @@ func (D *Handler) connectClientSession() error {
 		_ = raw.SetDeadline(time.Time{})
 
 		return
+	}
+
+	if cfg.Routes[0].Transport == "mpath" {
+		dialRaw := func(ctx context.Context, idx int) (net.Conn, error) {
+			h, _ := protocol.GetHandler(cfg.Proto)
+			h.SetLogger(D.log.With("peer_idx", idx))
+			connCtx, connCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer connCancel()
+			if cfg.MaskEnabled() {
+				connCtx = protocol.WithMasking(connCtx)
+			}
+			return h.Connect(connCtx, dest, getTURNInfo(), true)
+		}
+		if err := D.startMpathClient(sessionCtx, cfg, numPeers, dialRaw, fullReconnect); err != nil {
+			return err
+		}
+		D.stateMu.Lock()
+		D.cancel = sessionCancel
+		D.platform = platformHandler
+		D.stateMu.Unlock()
+		success = true
+		return nil
 	}
 
 	pickConn := func(p connPair) net.Conn {
@@ -376,18 +403,15 @@ func (D *Handler) connectClientSession() error {
 // stallSettleDelay is how long pongs get to return before the session is rebuilt
 const stallSettleDelay = 3 * time.Second
 
-// recoverStalledPeers waits out a silent path and triggers a full reconnect if the server stays silent once the network is back
+// recoverStalledPeers reconnects once the network is back: always if connectivity was lost, otherwise only if the server stays silent
 func recoverStalledPeers(ctx context.Context, mux *connection.TinyMuxClient, fullReconnect func(string)) {
-	online := make(chan struct{})
-	go func() {
-		common.WaitForConnectivity()
-		close(online)
-	}()
-
-	select {
-	case <-ctx.Done():
+	wasOffline, err := common.WaitForConnectivity(ctx)
+	if err != nil {
 		return
-	case <-online:
+	}
+	if wasOffline {
+		fullReconnect("network connectivity restored")
+		return
 	}
 
 	select {

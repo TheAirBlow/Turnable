@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/theairblow/turnable/pkg/common"
@@ -22,42 +23,64 @@ import (
 
 // Server manages Turnable server or client instances and exposes management via a custom protocol
 type Server struct {
-	running atomic.Bool
-	mu      sync.RWMutex
+	running atomic.Bool  // service is running
+	mu      sync.RWMutex // guards instances and providers
 
-	instances map[string]*Instance
-	providers map[string]*ManagedProvider
+	instances map[string]*Instance        // instances by ID
+	providers map[string]*ManagedProvider // providers by UUID
 
-	log   *slog.Logger
-	relay *LogRelayHandler
+	log   *slog.Logger     // logger
+	relay *LogRelayHandler // forwards logs to subscribed clients
 
-	cfg         config.ServiceConfig
-	keyPair     *KeyPair
-	allowedKeys [][]byte
+	cfg         config.ServiceConfig // service config
+	keyPair     *KeyPair             // service key pair
+	allowedKeys [][]byte             // public keys allowed to connect
 
-	persistDir string
+	persistDir string // directory for persisted state
 
-	listenersMu sync.Mutex
-	listeners   []net.Listener
+	listenersMu sync.Mutex     // guards listeners
+	listeners   []net.Listener // open control listeners
 }
 
 // ManagedProvider represents a provider with metadata
 type ManagedProvider struct {
-	UUID     string
-	Name     string
-	Provider providers.Provider
-	Config   string
+	UUID     string             // Unique UUID of this provider
+	Name     string             // Display name
+	Provider providers.Provider // Running provider
+	Config   string             // Provider config JSON
+}
+
+// eventSendTimeout is how long an instance event may wait for space in a client's write queue
+const eventSendTimeout = 5 * time.Second
+
+// providersDir is the persist subdirectory holding provider records
+const providersDir = "providers"
+
+// persistProviderRecord is the on-disk representation of a persisted provider
+type persistProviderRecord struct {
+	UUID   string          `json:"uuid"`   // Provider UUID
+	Name   string          `json:"name"`   // Display name
+	Config json.RawMessage `json:"config"` // Provider config
+}
+
+// CurrentConfig returns the provider's live config, falling back to the config it was created with
+func (mp *ManagedProvider) CurrentConfig() string {
+	data, err := mp.Provider.ToJSON()
+	if err != nil {
+		return mp.Config
+	}
+	return string(data)
 }
 
 // persistRecord is the on-disk representation of a persisted instance
 type persistRecord struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Type         string   `json:"type"`
-	Config       string   `json:"config"`
-	ListenAddrs  []string `json:"listen_addrs,omitempty"`
-	Autostart    bool     `json:"autostart"`
-	ProviderUUID string   `json:"provider_uuid,omitempty"`
+	ID           string   `json:"id"`                      // Instance ID
+	Name         string   `json:"name"`                    // Display name
+	Type         string   `json:"type"`                    // Instance type
+	Config       string   `json:"config"`                  // Instance config
+	ListenAddrs  []string `json:"listen_addrs,omitempty"`  // Listen addresses
+	Autostart    bool     `json:"autostart"`               // Start with the service
+	ProviderUUID string   `json:"provider_uuid,omitempty"` // UUID of the provider used
 }
 
 // NewServer creates a new Server instance
@@ -142,6 +165,7 @@ func (s *Server) Start() error {
 	}
 
 	if s.persistDir != "" {
+		s.loadPersistedProviders()
 		s.loadPersistedInstances()
 	}
 
@@ -165,6 +189,14 @@ func (s *Server) listenTCP(addr string) error {
 
 // listenUnix accepts service connections on the given Unix socket path
 func (s *Server) listenUnix(path string) error {
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSocket != 0 {
+		if c, err := net.Dial("unix", path); err == nil {
+			_ = c.Close()
+			return fmt.Errorf("listen unix: %s is already in use", path)
+		}
+		_ = os.Remove(path)
+	}
+
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return fmt.Errorf("listen unix: %w", err)
@@ -201,6 +233,9 @@ func (s *Server) Stop() error {
 	for _, inst := range s.instances {
 		_ = inst.Stop()
 	}
+	for _, mp := range s.providers {
+		_ = mp.Provider.Stop()
+	}
 
 	return nil
 }
@@ -218,12 +253,25 @@ func (s *Server) accept(ln net.Listener) {
 }
 
 // resolveInstanceID returns the provided ID if non-empty, otherwise generates a new UUID
-func resolveInstanceID(provided string) string {
+func resolveInstanceID(provided string) (string, error) {
 	provided = strings.TrimSpace(provided)
-	if provided != "" {
-		return provided
+	if provided == "" {
+		return uuid.New().String(), nil
 	}
-	return uuid.New().String()
+
+	if err := validateID(provided); err != nil {
+		return "", fmt.Errorf("invalid instance id: %w", err)
+	}
+
+	return provided, nil
+}
+
+// validateID ensures an ID is safe to use as a persisted file name
+func validateID(id string) error {
+	if id == "." || id == ".." || strings.ContainsAny(id, `/\`) || strings.ContainsRune(id, 0) {
+		return fmt.Errorf("%q is not allowed", id)
+	}
+	return nil
 }
 
 // resolveInstanceName returns the provided name if non-empty, otherwise "Unnamed"
@@ -237,19 +285,18 @@ func resolveInstanceName(provided string) string {
 
 // startServer creates and starts a Turnable server instance
 func (s *Server) startServer(req *pb.StartServerRequest, providerUUID string) (string, error) {
-	id := resolveInstanceID(req.InstanceId)
-	name := resolveInstanceName(req.Name)
+	id, err := resolveInstanceID(req.InstanceId)
+	if err != nil {
+		return "", err
+	}
 
 	s.mu.RLock()
 	_, exists := s.instances[id]
+	managedProv, providerExists := s.providers[providerUUID]
 	s.mu.RUnlock()
 	if exists {
 		return "", fmt.Errorf("instance %q already exists", id)
 	}
-
-	s.mu.RLock()
-	managedProv, providerExists := s.providers[providerUUID]
-	s.mu.RUnlock()
 	if !providerExists {
 		return "", fmt.Errorf("provider with UUID %q not found", providerUUID)
 	}
@@ -261,65 +308,24 @@ func (s *Server) startServer(req *pb.StartServerRequest, providerUUID string) (s
 
 	inst := &Instance{
 		ID:           id,
-		Name:         name,
+		Name:         resolveInstanceName(req.Name),
+		Autostart:    req.Autostart,
 		config:       req.Config,
 		server:       srv,
 		ProviderUUID: providerUUID,
 		provider:     managedProv.Provider,
 	}
 
-	s.mu.Lock()
-	if _, exists := s.instances[id]; exists {
-		s.mu.Unlock()
-		return "", fmt.Errorf("instance %q already exists", id)
-	}
-	s.instances[id] = inst
-	s.mu.Unlock()
-
-	if s.persistDir != "" {
-		s.savePersisted(inst)
-	}
-
-	s.broadcastEvent(&pb.InstanceEvent{
-		InstanceId:   id,
-		Name:         name,
-		InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
-		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_CREATED,
-	})
-
-	go func() {
-		srv.SetLogger(s.log.With("server_id", id))
-
-		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTING)
-
-		if err := srv.Start(); err != nil {
-			s.log.Warn("server start failed", "server_id", id, "error", err)
-			s.broadcastEvent(&pb.InstanceEvent{
-				InstanceId:   id,
-				Name:         name,
-				InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
-				EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_FAILED,
-			})
-
-			return
-		}
-
-		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTED)
-		s.broadcastEvent(&pb.InstanceEvent{
-			InstanceId:   id,
-			Name:         name,
-			InstanceType: pb.InstanceType_INSTANCE_TYPE_SERVER,
-			EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED,
-		})
-	}()
-
-	return id, nil
+	srv.SetLogger(s.log.With("server_id", id))
+	return id, s.addInstance(inst)
 }
 
 // startClient creates and starts a Turnable client instance
 func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
-	id := resolveInstanceID(req.InstanceId)
-	name := resolveInstanceName(req.Name)
+	id, err := resolveInstanceID(req.InstanceId)
+	if err != nil {
+		return "", err
+	}
 
 	s.mu.RLock()
 	_, exists := s.instances[id]
@@ -333,53 +339,105 @@ func (s *Server) startClient(req *pb.StartClientRequest) (string, error) {
 		return "", err
 	}
 
-	inst := &Instance{ID: id, Name: name, config: req.Config, listenAddrs: req.ListenAddrs, client: cli}
-	s.mu.Lock()
-	if _, exists := s.instances[id]; exists {
-		s.mu.Unlock()
-		return "", fmt.Errorf("instance %q already exists", id)
+	inst := &Instance{
+		ID:          id,
+		Name:        resolveInstanceName(req.Name),
+		Autostart:   req.Autostart,
+		config:      req.Config,
+		listenAddrs: req.ListenAddrs,
+		client:      cli,
 	}
-	s.instances[id] = inst
+
+	cli.SetLogger(s.log.With("client_id", id))
+	return id, s.addInstance(inst)
+}
+
+// addInstance registers, persists and asynchronously starts an instance
+func (s *Server) addInstance(inst *Instance) error {
+	s.mu.Lock()
+	if _, exists := s.instances[inst.ID]; exists {
+		s.mu.Unlock()
+		return fmt.Errorf("instance %q already exists", inst.ID)
+	}
+	if inst.ProviderUUID != "" {
+		if _, ok := s.providers[inst.ProviderUUID]; !ok {
+			s.mu.Unlock()
+			return fmt.Errorf("provider with UUID %q not found", inst.ProviderUUID)
+		}
+	}
+	s.instances[inst.ID] = inst
 	s.mu.Unlock()
 
 	if s.persistDir != "" {
 		s.savePersisted(inst)
 	}
 
-	s.broadcastEvent(&pb.InstanceEvent{
-		InstanceId:   id,
-		Name:         name,
-		InstanceType: pb.InstanceType_INSTANCE_TYPE_CLIENT,
-		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_CREATED,
-	})
+	inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTING)
+	s.emitEvent(inst, pb.InstanceEventType_INSTANCE_EVENT_TYPE_CREATED)
 
-	go func() {
-		cli.SetLogger(s.log.With("client_id", id))
-		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTING)
+	go s.runInstance(inst)
+	return nil
+}
 
-		if err := cli.Start(req.ListenAddrs); err != nil {
-			s.log.Warn("client start failed", "client_id", id, "error", err)
-			inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_FAILED)
-			s.broadcastEvent(&pb.InstanceEvent{
-				InstanceId:   id,
-				Name:         name,
-				InstanceType: pb.InstanceType_INSTANCE_TYPE_CLIENT,
-				EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_FAILED,
-			})
-
+// runInstance starts an instance and tracks its state until it stops
+func (s *Server) runInstance(inst *Instance) {
+	if err := inst.Start(); err != nil {
+		if errors.Is(err, errInstanceStopped) {
 			return
 		}
 
-		inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STARTED)
-		s.broadcastEvent(&pb.InstanceEvent{
-			InstanceId:   id,
-			Name:         name,
-			InstanceType: pb.InstanceType_INSTANCE_TYPE_CLIENT,
-			EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED,
-		})
-	}()
+		s.log.Warn("instance start failed", "id", inst.ID, "error", err)
+		s.failInstance(inst)
+		return
+	}
 
-	return id, nil
+	if inst.server != nil {
+		go s.forwardSessionEvents(inst)
+		s.setInstanceStatus(inst, pb.InstanceStatus_INSTANCE_STATUS_STARTED, pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED)
+		return
+	}
+
+	// Clients count as started only while the tunnel is actually connected
+	for ev := range inst.client.Events() {
+		if ev.Connected {
+			s.setInstanceStatus(inst, pb.InstanceStatus_INSTANCE_STATUS_STARTED, pb.InstanceEventType_INSTANCE_EVENT_TYPE_STARTED)
+		} else {
+			s.setInstanceStatus(inst, pb.InstanceStatus_INSTANCE_STATUS_STARTING, pb.InstanceEventType_INSTANCE_EVENT_TYPE_UPDATED)
+		}
+	}
+
+	s.log.Warn("client instance stopped unexpectedly", "id", inst.ID)
+	s.failInstance(inst)
+}
+
+// setInstanceStatus updates a live instance's status and broadcasts the event if it changed
+func (s *Server) setInstanceStatus(inst *Instance, status pb.InstanceStatus, event pb.InstanceEventType) {
+	if inst.Stopped() || inst.GetStatus() == status {
+		return
+	}
+
+	inst.SetStatus(status)
+	s.emitEvent(inst, event)
+}
+
+// failInstance marks a live instance as failed and broadcasts the event
+func (s *Server) failInstance(inst *Instance) {
+	if inst.Stopped() {
+		return
+	}
+
+	inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_FAILED)
+	s.emitEvent(inst, pb.InstanceEventType_INSTANCE_EVENT_TYPE_FAILED)
+}
+
+// emitEvent broadcasts an InstanceEvent of the given type for an instance
+func (s *Server) emitEvent(inst *Instance, event pb.InstanceEventType) {
+	s.broadcastEvent(&pb.InstanceEvent{
+		InstanceId:   inst.ID,
+		Name:         inst.Name,
+		InstanceType: inst.Type(),
+		EventType:    event,
+	})
 }
 
 // stopInstance stops and removes an instance by ID
@@ -400,18 +458,7 @@ func (s *Server) stopInstance(id string) error {
 
 	err := inst.Stop()
 	inst.SetStatus(pb.InstanceStatus_INSTANCE_STATUS_STOPPED)
-
-	itype := pb.InstanceType_INSTANCE_TYPE_CLIENT
-	if inst.server != nil {
-		itype = pb.InstanceType_INSTANCE_TYPE_SERVER
-	}
-
-	s.broadcastEvent(&pb.InstanceEvent{
-		InstanceId:   id,
-		Name:         inst.Name,
-		InstanceType: itype,
-		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_STOPPED,
-	})
+	s.emitEvent(inst, pb.InstanceEventType_INSTANCE_EVENT_TYPE_STOPPED)
 
 	return err
 }
@@ -422,16 +469,7 @@ func (s *Server) persistInstance(inst *Instance) {
 		s.savePersisted(inst)
 	}
 
-	itype := pb.InstanceType_INSTANCE_TYPE_CLIENT
-	if inst.server != nil {
-		itype = pb.InstanceType_INSTANCE_TYPE_SERVER
-	}
-	s.broadcastEvent(&pb.InstanceEvent{
-		InstanceId:   inst.ID,
-		Name:         inst.Name,
-		InstanceType: itype,
-		EventType:    pb.InstanceEventType_INSTANCE_EVENT_TYPE_UPDATED,
-	})
+	s.emitEvent(inst, pb.InstanceEventType_INSTANCE_EVENT_TYPE_UPDATED)
 }
 
 // broadcastEvent sends an InstanceEvent to all connected service clients
@@ -484,11 +522,10 @@ func (s *Server) savePersisted(inst *Instance) {
 		Config:       inst.config,
 		ListenAddrs:  inst.listenAddrs,
 		ProviderUUID: inst.ProviderUUID,
+		Type:         "client",
 	}
 	if inst.server != nil {
 		rec.Type = "server"
-	} else {
-		rec.Type = "client"
 	}
 
 	data, err := json.MarshalIndent(rec, "", "  ")
@@ -508,6 +545,82 @@ func (s *Server) deletePersisted(id string) {
 	path := filepath.Join(s.persistDir, id+".json")
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		s.log.Warn("persist: failed to remove record", "path", path, "error", err)
+	}
+}
+
+// persistProvider saves a provider record if persistence is enabled
+func (s *Server) persistProvider(mp *ManagedProvider) {
+	if s.persistDir != "" {
+		s.saveProvider(mp)
+	}
+}
+
+// saveProvider writes a provider record with its current config to the persist directory
+func (s *Server) saveProvider(mp *ManagedProvider) {
+	dir := filepath.Join(s.persistDir, providersDir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		s.log.Warn("persist: failed to create providers dir", "dir", dir, "error", err)
+		return
+	}
+
+	data, err := json.MarshalIndent(persistProviderRecord{
+		UUID:   mp.UUID,
+		Name:   mp.Name,
+		Config: json.RawMessage(mp.CurrentConfig()),
+	}, "", "  ")
+	if err != nil {
+		s.log.Warn("persist: failed to marshal provider record", "uuid", mp.UUID, "error", err)
+		return
+	}
+
+	path := filepath.Join(dir, mp.UUID+".json")
+	if err := os.WriteFile(path, data, 0o640); err != nil {
+		s.log.Warn("persist: failed to write provider record", "path", path, "error", err)
+	}
+}
+
+// deletePersistedProvider removes a persisted provider record from disk
+func (s *Server) deletePersistedProvider(uuid string) {
+	path := filepath.Join(s.persistDir, providersDir, uuid+".json")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		s.log.Warn("persist: failed to remove provider record", "path", path, "error", err)
+	}
+}
+
+// loadPersistedProviders reads all provider records from the persist dir and restores them
+func (s *Server) loadPersistedProviders() {
+	dir := filepath.Join(s.persistDir, providersDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			s.log.Warn("persist: failed to read providers dir", "dir", dir, "error", err)
+		}
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			s.log.Warn("persist: failed to read provider record", "path", path, "error", err)
+			continue
+		}
+
+		var rec persistProviderRecord
+		if err := json.Unmarshal(data, &rec); err != nil {
+			s.log.Warn("persist: failed to parse provider record", "path", path, "error", err)
+			continue
+		}
+
+		if _, err := s.addProvider(rec.UUID, rec.Name, string(rec.Config)); err != nil {
+			s.log.Warn("persist: failed to restore provider", "uuid", rec.UUID, "error", err)
+		} else {
+			s.log.Info("persist: restored provider", "uuid", rec.UUID, "name", rec.Name)
+		}
 	}
 }
 
@@ -577,10 +690,11 @@ func (s *Server) loadPersistedInstances() {
 
 // clientConn handles a single service client connection
 type clientConn struct {
-	svc     *Server
-	nc      net.Conn
-	remote  net.Addr
-	writeCh chan *pb.Response
+	svc     *Server           // owning service
+	nc      net.Conn          // client connection
+	remote  net.Addr          // client address
+	writeCh chan *pb.Response // responses waiting to be written
+	done    chan struct{}     // closed when the connection ends
 }
 
 // newClientConn allocates a clientConn for an incoming connection
@@ -589,7 +703,8 @@ func newClientConn(svc *Server, nc net.Conn) *clientConn {
 		svc:     svc,
 		nc:      nc,
 		remote:  nc.RemoteAddr(),
-		writeCh: make(chan *pb.Response, 64),
+		writeCh: make(chan *pb.Response, 256),
+		done:    make(chan struct{}),
 	}
 }
 
@@ -608,15 +723,19 @@ func (c *clientConn) serve() {
 
 	pubKeyB64 := base64.StdEncoding.EncodeToString(pubKey)
 	c.svc.log.Info("client connected", "remote", c.remote, "pubkey", pubKeyB64)
-	defer close(c.writeCh)
-	defer func() {
-		c.svc.relay.broadcast.unsubscribe(c)
-		c.svc.log.Info("client disconnected", "remote", c.remote, "pubkey", pubKeyB64)
+	c.svc.relay.broadcast.subscribe(c)
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		c.writeLoop()
 	}()
 
-	c.svc.relay.broadcast.subscribe(c)
-	go c.writeLoop()
 	c.readLoop()
+
+	c.svc.relay.broadcast.unsubscribe(c)
+	close(c.writeCh)
+	<-writerDone
+	c.svc.log.Info("client disconnected", "remote", c.remote, "pubkey", pubKeyB64)
 }
 
 // readLoop reads and dispatches requests until the connection closes
@@ -629,21 +748,39 @@ func (c *clientConn) readLoop() {
 
 		resp, err := c.dispatch(&req)
 		if err != nil {
-			c.sendErr(err)
+			resp = &pb.Response{Payload: &pb.Response_Error{Error: &pb.ErrorResponse{Message: err.Error()}}}
+		}
+
+		if resp != nil && !c.send(resp) {
 			return
 		}
 
-		if resp != nil {
-			c.writeCh <- resp
+		if err != nil {
+			return
 		}
+	}
+}
+
+// send enqueues a response, blocking until it is queued or the writer has exited
+func (c *clientConn) send(resp *pb.Response) bool {
+	select {
+	case c.writeCh <- resp:
+		return true
+	case <-c.done:
+		return false
 	}
 }
 
 // writeLoop drains channel and sends responses to the client
 func (c *clientConn) writeLoop() {
 	defer c.nc.Close()
+	defer close(c.done)
 	for resp := range c.writeCh {
 		if err := writeFramed(c.nc, resp); err != nil {
+			return
+		}
+
+		if resp.GetError() != nil {
 			return
 		}
 	}
@@ -657,17 +794,17 @@ func (c *clientConn) sendLog(rec *pb.LogRecord) {
 	}
 }
 
-// sendInstanceEvent enqueues an InstanceEvent without blocking
+// sendInstanceEvent enqueues an InstanceEvent, waiting a bounded time for queue space so state changes aren't dropped
 func (c *clientConn) sendInstanceEvent(event *pb.InstanceEvent) {
+	timer := time.NewTimer(eventSendTimeout)
+	defer timer.Stop()
+
 	select {
 	case c.writeCh <- &pb.Response{Payload: &pb.Response_InstanceEvent{InstanceEvent: event}}:
-	default:
+	case <-c.done:
+	case <-timer.C:
+		c.svc.log.Warn("dropped instance event for slow client", "remote", c.remote, "id", event.InstanceId)
 	}
-}
-
-// sendErr sends a fatal ErrorResponse
-func (c *clientConn) sendErr(err error) {
-	_ = writeFramed(c.nc, &pb.Response{Payload: &pb.Response_Error{Error: &pb.ErrorResponse{Message: err.Error()}}})
 }
 
 // dispatch handles an incoming request and sends a response
@@ -732,10 +869,12 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 	case *pb.Request_ConvertClientConfig:
 		resp, err := handleConvertClientConfig(p.ConvertClientConfig)
 		if err != nil {
-			return nil, err
+			c.svc.log.Warn("failed to convert client config", "remote", c.remote, "error", err)
+			resp = &pb.ConvertClientConfigResponse{Error: err.Error()}
+		} else {
+			c.svc.log.Debug("converted client config", "remote", c.remote)
 		}
 
-		c.svc.log.Debug("converted client config", "remote", c.remote)
 		return &pb.Response{Payload: &pb.Response_ConvertClientConfig{ConvertClientConfig: resp}}, nil
 	case *pb.Request_AddProvider:
 		resp := &pb.AddProviderResponse{}
@@ -784,7 +923,7 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 			c.svc.log.Warn("failed to add provider route", "remote", c.remote, "provider", p.AddProviderRoute.ProviderUuid, "error", err)
 			resp.Error = err.Error()
 		} else {
-			c.svc.log.Info("added provider route", "remote", c.remote, "provider", p.AddProviderRoute.ProviderUuid, "route", p.AddProviderRoute.Route.Id)
+			c.svc.log.Info("added provider route", "remote", c.remote, "provider", p.AddProviderRoute.ProviderUuid, "route", p.AddProviderRoute.Route.GetId())
 		}
 		return &pb.Response{Payload: &pb.Response_AddProviderRoute{AddProviderRoute: resp}}, nil
 	case *pb.Request_DeleteProviderRoute:
@@ -810,7 +949,7 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 			c.svc.log.Warn("failed to add provider user", "remote", c.remote, "provider", p.AddProviderUser.ProviderUuid, "error", err)
 			resp.Error = err.Error()
 		} else {
-			c.svc.log.Info("added provider user", "remote", c.remote, "provider", p.AddProviderUser.ProviderUuid, "user", p.AddProviderUser.User.Uuid)
+			c.svc.log.Info("added provider user", "remote", c.remote, "provider", p.AddProviderUser.ProviderUuid, "user", p.AddProviderUser.User.GetUuid())
 		}
 		return &pb.Response{Payload: &pb.Response_AddProviderUser{AddProviderUser: resp}}, nil
 	case *pb.Request_DeleteProviderUser:
@@ -830,18 +969,49 @@ func (c *clientConn) dispatch(req *pb.Request) (*pb.Response, error) {
 			c.svc.log.Debug("listed provider users", "remote", c.remote, "provider", p.ListProviderUsers.ProviderUuid)
 		}
 		return &pb.Response{Payload: &pb.Response_ListProviderUsers{ListProviderUsers: resp}}, nil
+	case *pb.Request_GetStats:
+		resp := c.svc.getStats(p.GetStats)
+		if resp.Error != "" {
+			c.svc.log.Warn("failed to get stats", "remote", c.remote, "id", p.GetStats.InstanceId, "error", resp.Error)
+		} else {
+			c.svc.log.Debug("fetched stats", "remote", c.remote, "id", p.GetStats.InstanceId, "collect", p.GetStats.Collect)
+		}
+		return &pb.Response{Payload: &pb.Response_GetStats{GetStats: resp}}, nil
+	case *pb.Request_ListSessions:
+		resp := c.svc.listSessions(p.ListSessions.InstanceId)
+		if resp.Error != "" {
+			c.svc.log.Warn("failed to list sessions", "remote", c.remote, "id", p.ListSessions.InstanceId, "error", resp.Error)
+		} else {
+			c.svc.log.Debug("listed sessions", "remote", c.remote, "id", p.ListSessions.InstanceId)
+		}
+		return &pb.Response{Payload: &pb.Response_ListSessions{ListSessions: resp}}, nil
+	case *pb.Request_Kick:
+		resp := c.svc.kick(p.Kick)
+		if resp.Error != "" {
+			c.svc.log.Warn("failed to kick", "remote", c.remote, "id", p.Kick.InstanceId, "error", resp.Error)
+		} else {
+			c.svc.log.Info("kicked", "remote", c.remote, "id", p.Kick.InstanceId, "user", p.Kick.UserUuid, "session", p.Kick.SessionId, "tunnels", resp.Kicked)
+		}
+		return &pb.Response{Payload: &pb.Response_Kick{Kick: resp}}, nil
 	default:
 		return nil, fmt.Errorf("unknown request type")
 	}
 }
 
 // addProvider creates and registers a new managed provider with the specified UUID
-func (s *Server) addProvider(uuid, name string, providerData string) (string, error) {
+func (s *Server) addProvider(id, name string, providerData string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		id = uuid.New().String()
+	} else if err := validateID(id); err != nil {
+		return "", fmt.Errorf("invalid provider uuid: %w", err)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.providers[uuid]; exists {
-		return "", fmt.Errorf("provider with UUID %q already exists", uuid)
+	if _, exists := s.providers[id]; exists {
+		return "", fmt.Errorf("provider with UUID %q already exists", id)
 	}
 
 	var providerCfg map[string]any
@@ -864,19 +1034,24 @@ func (s *Server) addProvider(uuid, name string, providerData string) (string, er
 		return "", fmt.Errorf("provider handler does not implement providers.Provider interface")
 	}
 
-	if err := prov.Update([]byte(providerData)); err != nil {
+	if err = prov.Update([]byte(providerData)); err != nil {
 		return "", fmt.Errorf("failed to configure provider: %w", err)
 	}
 
-	s.providers[uuid] = &ManagedProvider{
-		UUID:     uuid,
-		Name:     name,
+	mp := &ManagedProvider{
+		UUID:     id,
+		Name:     resolveInstanceName(name),
 		Provider: prov,
 		Config:   providerData,
 	}
+	s.providers[id] = mp
 
-	s.log.Info("added provider", "uuid", uuid, "name", name, "type", providerType)
-	return uuid, nil
+	if s.persistDir != "" {
+		s.saveProvider(mp)
+	}
+
+	s.log.Info("added provider", "uuid", id, "name", mp.Name, "type", providerType)
+	return id, nil
 }
 
 // listProviders returns info for all registered providers with their usage status
@@ -924,7 +1099,7 @@ func (s *Server) getProvider(uuid string) *pb.GetProviderResponse {
 		Provider: &pb.ProviderInfo{
 			Uuid:   mp.UUID,
 			Name:   mp.Name,
-			Config: mp.Config,
+			Config: mp.CurrentConfig(),
 			InUse:  inUse,
 		},
 	}
@@ -948,6 +1123,10 @@ func (s *Server) deleteProvider(uuid string) error {
 	mp := s.providers[uuid]
 	delete(s.providers, uuid)
 
+	if s.persistDir != "" {
+		s.deletePersistedProvider(uuid)
+	}
+
 	if err := mp.Provider.Stop(); err != nil {
 		s.log.Warn("failed to stop provider during deletion", "uuid", uuid, "error", err)
 	}
@@ -964,6 +1143,9 @@ func (s *Server) addProviderRoute(providerUUID string, route *pb.RouteInfo) erro
 	if !ok {
 		return fmt.Errorf("provider %q not found", providerUUID)
 	}
+	if route == nil {
+		return errors.New("route is required")
+	}
 
 	r := &providers.Route{
 		ID:         route.Id,
@@ -975,7 +1157,16 @@ func (s *Server) addProviderRoute(providerUUID string, route *pb.RouteInfo) erro
 		Name:       route.Name,
 	}
 
-	return mp.Provider.AddRoute(r)
+	if err := r.Validate(); err != nil {
+		return err
+	}
+
+	if err := mp.Provider.AddRoute(r); err != nil {
+		return err
+	}
+
+	s.persistProvider(mp)
+	return nil
 }
 
 // deleteProviderRoute removes a route from a provider
@@ -987,7 +1178,12 @@ func (s *Server) deleteProviderRoute(providerUUID string, routeID string) error 
 		return fmt.Errorf("provider %q not found", providerUUID)
 	}
 
-	return mp.Provider.DeleteRoute(routeID)
+	if err := mp.Provider.DeleteRoute(routeID); err != nil {
+		return err
+	}
+
+	s.persistProvider(mp)
+	return nil
 }
 
 // listProviderRoutes returns all routes from a provider
@@ -1024,6 +1220,9 @@ func (s *Server) addProviderUser(providerUUID string, user *pb.UserInfo) error {
 	if !ok {
 		return fmt.Errorf("provider %q not found", providerUUID)
 	}
+	if user == nil {
+		return errors.New("user is required")
+	}
 
 	u := &providers.User{
 		UUID:          user.Uuid,
@@ -1033,7 +1232,12 @@ func (s *Server) addProviderUser(providerUUID string, user *pb.UserInfo) error {
 		Peers:         int(user.Peers),
 	}
 
-	return mp.Provider.AddUser(u)
+	if err := mp.Provider.AddUser(u); err != nil {
+		return err
+	}
+
+	s.persistProvider(mp)
+	return nil
 }
 
 // deleteProviderUser removes a user from a provider
@@ -1045,7 +1249,13 @@ func (s *Server) deleteProviderUser(providerUUID string, userUUID string) error 
 		return fmt.Errorf("provider %q not found", providerUUID)
 	}
 
-	return mp.Provider.DeleteUser(userUUID)
+	if err := mp.Provider.DeleteUser(userUUID); err != nil {
+		return err
+	}
+
+	s.persistProvider(mp)
+	s.kickProviderUser(providerUUID, userUUID)
+	return nil
 }
 
 // listProviderUsers returns all users from a provider

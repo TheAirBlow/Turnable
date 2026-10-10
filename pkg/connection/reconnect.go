@@ -17,9 +17,9 @@ import (
 
 // EventStream is a single-slot, latest-wins ConnectEvent channel with idempotent close
 type EventStream struct {
-	ch     chan ConnectEvent
-	mu     sync.Mutex
-	closed bool
+	ch     chan ConnectEvent // event channel, one pending event
+	mu     sync.Mutex        // guards closed
+	closed bool              // the stream is closed
 }
 
 // NewEventStream creates an empty EventStream
@@ -132,10 +132,7 @@ func isTransientNetworkError(err error) bool {
 	return false
 }
 
-// RunReconnectLoop calls connect repeatedly until it succeeds or ctx is cancelled, classifying
-// each failure to retry immediately, back off, or give up for good. ctx must be the handler's
-// stable, whole-lifetime context (not a per-session child), since connect itself may cancel
-// whatever context the caller was previously using as soon as it is called.
+// RunReconnectLoop retries connect until it succeeds, backing off or giving up by error class; ctx must outlive sessions, since connect may cancel the current one
 func RunReconnectLoop(ctx context.Context, log *slog.Logger, reconnecting *atomic.Bool, events *EventStream, reason string, connect func() error) {
 	if log == nil {
 		log = slog.Default()
@@ -146,7 +143,11 @@ func RunReconnectLoop(ctx context.Context, log *slog.Logger, reconnecting *atomi
 
 	go func() {
 		defer reconnecting.Store(false)
-		log.Info("starting reconnect", "reason", reason)
+		if reason == "initial connect" {
+			log.Debug("starting reconnect", "reason", reason)
+		} else {
+			log.Info("starting reconnect", "reason", reason)
+		}
 
 		delay := ReconnectBackoffInit
 		for {
@@ -169,7 +170,10 @@ func RunReconnectLoop(ctx context.Context, log *slog.Logger, reconnecting *atomi
 			if action == reconnectImmediate {
 				wait = reconnectImmediateWait
 				delay = ReconnectBackoffInit
-				common.WaitForConnectivity()
+				if _, werr := common.WaitForConnectivity(ctx); werr != nil {
+					events.Close()
+					return
+				}
 			} else {
 				delay = min(delay*2, ReconnectBackoffMax)
 			}

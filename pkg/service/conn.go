@@ -22,13 +22,11 @@ func writeFramed(nc net.Conn, msg proto.Message) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
-	if _, err := nc.Write(lenBuf[:]); err != nil {
-		return err
-	}
+	frame := make([]byte, 4, 4+len(data))
+	binary.BigEndian.PutUint32(frame, uint32(len(data)))
+	frame = append(frame, data...)
 
-	_, err = nc.Write(data)
+	_, err = nc.Write(frame)
 	return err
 }
 

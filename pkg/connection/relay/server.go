@@ -176,7 +176,11 @@ func (D *Handler) handlePrimaryPeer(
 		}
 		route := newSess.routes[routeIdx]
 
-		transportHandler, wrapErr := transport.GetHandler(route.Transport)
+		transportID := clientCfg.Routes[routeIdx].Transport
+		if transportID == "" {
+			transportID = "none"
+		}
+		transportHandler, wrapErr := transport.GetHandler(transportID)
 		if wrapErr != nil {
 			D.log.Warn("transport setup failed", "flow_id", channel.FlowID, "route", route.ID, "error", wrapErr)
 			_ = channel.Conn.Close()

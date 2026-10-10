@@ -12,9 +12,9 @@ import (
 
 // ClientConfig represents the direct mode client config
 type ClientConfig struct {
-	config.ClientConfig
-	Gateway string `json:"gateway"  url:"query,gateway,2"` // Gateway's IP and port
-	Peers   int    `json:"peers" url:"query,peers,3"`      // Peer connections per session
+	config.ClientConfig        // shared client config
+	Gateway             string `json:"gateway"  url:"query,gateway,2"` // Gateway's IP and port
+	Peers               int    `json:"peers" url:"query,peers,3"`      // Peer connections per session
 }
 
 // Validate validates the config

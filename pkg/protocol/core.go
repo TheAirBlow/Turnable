@@ -128,10 +128,10 @@ func handleTURNError(err error) error {
 
 // turnPacketConn wraps a TURN allocation and closes the TURN client and raw underlay on Close
 type turnPacketConn struct {
-	net.PacketConn
-	underlay  net.PacketConn
-	client    *turn.Client
-	closeOnce sync.Once
+	net.PacketConn                // TURN relay conn
+	underlay       net.PacketConn // local socket the TURN client runs on
+	client         *turn.Client   // TURN client
+	closeOnce      sync.Once      // guards Close
 }
 
 // Close closes the TURN allocation, client, and raw underlay
@@ -151,9 +151,9 @@ func (c *turnPacketConn) Close() error {
 
 // turnLoggerFactory represents a factory of scoped TURN loggers that forwards to slog
 type turnLoggerFactory struct {
-	log    *slog.Logger
-	level  *slog.Level
-	onFail func()
+	log    *slog.Logger // logger
+	level  *slog.Level  // minimum level
+	onFail func()       // called when a TURN request fails
 }
 
 // NewLogger creates a new scoped TURN logger
@@ -163,9 +163,9 @@ func (f *turnLoggerFactory) NewLogger(scope string) pionlog.LeveledLogger {
 
 // turnScopedLogger represents a scoped TURN logger that forwards to slog
 type turnScopedLogger struct {
-	log    *slog.Logger
-	level  *slog.Level
-	onFail func()
+	log    *slog.Logger // logger
+	level  *slog.Level  // minimum level
+	onFail func()       // called when a TURN request fails
 }
 
 // emit logs msg at lvl, dropping it if below the configured minimum level

@@ -27,18 +27,18 @@ import (
 
 // serviceServerOptions holds CLI flags for the service server subcommand
 type serviceServerOptions struct {
-	configPath string
-	persistDir string
-	verbose    bool
+	configPath string // service config path
+	persistDir string // directory for persisted state
+	verbose    bool   // enable debug logging
 }
 
 // serviceServerOptions holds CLI flags for the service server subcommand
 type serviceClientOptions struct {
-	unixSocket string
-	serverAddr string
-	privKey    string
-	pubKey     string
-	command    string
+	unixSocket string // unix socket of a local service
+	serverAddr string // address of a remote service
+	privKey    string // client private key
+	pubKey     string // service public key
+	command    string // command to run, interactive when empty
 }
 
 // newServiceCommand creates the service cobra command
@@ -189,6 +189,14 @@ func splitAddrs(s string) []string {
 	return out
 }
 
+// parseAutostart parses the optional autostart argument of a start command
+func parseAutostart(parts []string) (bool, error) {
+	if len(parts) < 6 {
+		return false, nil
+	}
+	return strconv.ParseBool(parts[5])
+}
+
 // loadConfig loads config from file if path starts with @
 func loadConfig(input string) (string, error) {
 	if strings.HasPrefix(input, "@") {
@@ -337,6 +345,10 @@ func serviceClientMain(opts *serviceClientOptions) error {
 		readline.PcItem("delete-route", readline.PcItemDynamic(instanceIDs)),
 		readline.PcItem("add-user", readline.PcItemDynamic(instanceIDs)),
 		readline.PcItem("delete-user", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("stats", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("sessions", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("kick-user", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("kick-session", readline.PcItemDynamic(instanceIDs)),
 		readline.PcItem("validate-server"),
 		readline.PcItem("validate-client"),
 		readline.PcItem("convert"),
@@ -545,6 +557,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			fmt.Printf("Name:     %s\n", detail.Info.Name)
 			fmt.Printf("Type:     %s\n", typeName)
 			fmt.Printf("Status:   %s\n", status)
+			fmt.Printf("Autostart: %t\n", detail.Info.Autostart)
 			if len(detail.ListenAddrs) > 0 {
 				fmt.Printf("Listen:   %s\n", strings.Join(detail.ListenAddrs, ", "))
 			}
@@ -558,7 +571,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 3 {
-				fmt.Println("usage: start-server <config_json|@file> <provider_uuid> [instance_id] [name]")
+				fmt.Println("usage: start-server <config_json|@file> <provider_uuid> [instance_id] [name] [autostart]")
 				continue
 			}
 
@@ -571,13 +584,19 @@ func serviceClientMain(opts *serviceClientOptions) error {
 				name = parts[4]
 			}
 
+			autostart, err := parseAutostart(parts)
+			if err != nil {
+				fmt.Println("Invalid autostart value:", err)
+				continue
+			}
+
 			configStr, err := loadConfig(parts[1])
 			if err != nil {
 				fmt.Println("Failed to load config:", err)
 				continue
 			}
 
-			id, err := c.StartServer(configStr, instanceID, name, parts[2])
+			id, err := c.StartServer(configStr, instanceID, name, parts[2], autostart)
 			if err != nil {
 				fmt.Println("Failed to start server:", err)
 				continue
@@ -593,7 +612,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 3 {
-				fmt.Println("usage: start-client <config_json_or_url|@file> <listen_addr> [instance_id] [name]")
+				fmt.Println("usage: start-client <config_json_or_url|@file> <listen_addr> [instance_id] [name] [autostart]")
 				continue
 			}
 
@@ -605,13 +624,19 @@ func serviceClientMain(opts *serviceClientOptions) error {
 				name = parts[4]
 			}
 
+			autostart, err := parseAutostart(parts)
+			if err != nil {
+				fmt.Println("Invalid autostart value:", err)
+				continue
+			}
+
 			configStr, err := loadConfig(parts[1])
 			if err != nil {
 				fmt.Println("Failed to load config:", err)
 				continue
 			}
 
-			id, err := c.StartClient(configStr, splitAddrs(parts[2]), instanceID, name)
+			id, err := c.StartClient(configStr, splitAddrs(parts[2]), instanceID, name, autostart)
 			if err != nil {
 				fmt.Println("Failed to start client:", err)
 				continue
@@ -990,6 +1015,88 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			for _, user := range users {
 				fmt.Printf("  %s (type: %s, peers: %d)\n", user.Uuid, user.Type, user.Peers)
 			}
+		case "stats":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 2 {
+				fmt.Println("usage: stats <instance_id> [collect]")
+				continue
+			}
+
+			stats, err := c.GetStats(parts[1], len(parts) > 2 && parts[2] == "collect")
+			if err != nil {
+				fmt.Println("Failed to get stats:", err)
+				continue
+			}
+
+			t := stats.Totals
+			fmt.Printf("Instance %s: %d users online, %d sessions, %d tunnels, up %d B, down %d B\n",
+				parts[1], t.Users, t.Sessions, t.Channels, t.Usage.Up, t.Usage.Down)
+			for _, u := range stats.Users {
+				fmt.Printf("  %s (online: %v, tunnels: %d, ips: %v) up %d B, down %d B\n",
+					u.Uuid, u.Online, u.Channels, u.Ips, u.Usage.Up, u.Usage.Down)
+			}
+
+			for uuid, u := range stats.Collected {
+				fmt.Printf("  collected %s: up %d B, down %d B\n", uuid, u.Up, u.Down)
+			}
+		case "sessions":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 2 {
+				fmt.Println("usage: sessions <instance_id>")
+				continue
+			}
+
+			sessions, err := c.ListSessions(parts[1])
+			if err != nil {
+				fmt.Println("Failed to list sessions:", err)
+				continue
+			}
+
+			if len(sessions) == 0 {
+				fmt.Println("No live sessions in instance:", parts[1])
+				continue
+			}
+
+			for _, s := range sessions {
+				fmt.Printf("  %s (user: %s, route: %s, from: %s, tunnels: %d) up %d B, down %d B\n",
+					s.Id, s.UserUuid, s.RouteId, s.Addr, s.Channels, s.Usage.Up, s.Usage.Down)
+			}
+		case "kick-user", "kick-session":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Printf("usage: %s <instance_id> <%s>\n", parts[0], strings.TrimPrefix(parts[0], "kick-")+"_uuid")
+				continue
+			}
+
+			var n int
+			var err error
+			if parts[0] == "kick-user" {
+				n, err = c.KickUser(parts[1], parts[2])
+			} else {
+				n, err = c.KickSession(parts[1], parts[2])
+			}
+
+			if err != nil {
+				fmt.Println("Failed to kick:", err)
+				continue
+			}
+
+			fmt.Println("Closed", n, "tunnels")
 		case "logs":
 			if len(parts) < 2 {
 				fmt.Println("usage: logs <true/false>")
@@ -1013,8 +1120,8 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			fmt.Println("Instance Management:")
 			fmt.Println("  list                                                       list all managed instances")
 			fmt.Println("  get <id>                                                   get full details + config for an instance")
-			fmt.Println("  start-server <config|@file> <provider_uuid> [id] [name]    start a server instance")
-			fmt.Println("  start-client <config|@file> <listen_addr> [id] [name]      start a client instance")
+			fmt.Println("  start-server <config|@file> <provider_uuid> [id] [name] [autostart]    start a server instance")
+			fmt.Println("  start-client <config|@file> <listen_addr> [id] [name] [autostart]      start a client instance")
 			fmt.Println("  stop <id>                                                  stop an instance")
 			fmt.Println()
 			fmt.Println("Provider Management:")
@@ -1033,6 +1140,12 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			fmt.Println("  add-user <provider_uuid> <user_uuid>       add a user to a provider")
 			fmt.Println("  delete-user <provider_uuid> <user_uuid>    remove a user from a provider")
 			fmt.Println("  list-users <provider_uuid>                 list users in a provider")
+			fmt.Println()
+			fmt.Println("Stats & Control:")
+			fmt.Println("  stats <id> [collect]              server totals and users, collect also returns usage since the last collect")
+			fmt.Println("  sessions <id>                     list live sessions")
+			fmt.Println("  kick-user <id> <user_uuid>        close all tunnels of a user")
+			fmt.Println("  kick-session <id> <session_id>    close all tunnels of a session")
 			fmt.Println()
 			fmt.Println("Validation & Conversion:")
 			fmt.Println("  validate-server <config|@file>   validate a server config")

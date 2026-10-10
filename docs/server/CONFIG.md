@@ -27,7 +27,7 @@ Server configuration uses a single JSON file that contains multiple servers and 
           "address": "127.0.0.1",
           "port": 443,
           "socket": "tcp",
-          "transport": "kcp",
+          "transport": "mpath",
           "encryption": "handshake",
           "name": "HTTPS Server"
         }
@@ -98,12 +98,12 @@ Each route describes a destination that clients can tunnel to:
 | `address`    | string  | Yes      | Destination IP address                                                                |
 | `port`       | integer | Yes      | Destination port (1-65535)                                                            |
 | `socket`     | string  | Yes      | Socket type: `tcp` or `udp` (see [Socket Types](../REFERENCE.md))                     |
-| `transport`  | string  | No       | Transport protocol (see [Transports](../REFERENCE.md); defaults to `none` if omitted) |
+| `transport`  | string  | No       | Transport protocol (see [Transports](../REFERENCE.md); defaults to `mpath` if omitted) |
 | `encryption` | string  | No       | Encryption mode (see [Encryption Modes](../REFERENCE.md); defaults to `handshake`)    |
 | `name`       | string  | No       | Display name for this route                                                           |
 
 > [!NOTE]
-> TCP routes must use a transport protocol, preferably `kcp`, and UDP should use `none`.
+> `mpath` is recommended for all routes. Otherwise, TCP routes must use `kcp` or `sctp`, and UDP should use `none`.
 
 ## Users
 Each user object defines access control and connection settings:

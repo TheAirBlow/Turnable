@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -15,8 +16,8 @@ import (
 
 // KeyPair holds a parsed ML-KEM768 keypair for service encryption
 type KeyPair struct {
-	pubKeyBytes []byte
-	privKey     *mlkem.DecapsulationKey768
+	pubKeyBytes []byte                     // encoded public key
+	privKey     *mlkem.DecapsulationKey768 // private key
 }
 
 // NewKeyPair parses a base64-encoded ML-KEM768 keypair
@@ -45,11 +46,12 @@ func NewKeyPair(pubKeyB64, privKeyB64 string) (*KeyPair, error) {
 
 // serviceEncLayer provides directional AES-256-GCM-12 encryption over byte slices
 type serviceEncLayer struct {
-	readAEAD    cipher.AEAD
-	writeAEAD   cipher.AEAD
-	readPrefix  [4]byte
-	writePrefix [4]byte
-	writeSeq    uint64
+	readAEAD    cipher.AEAD // decrypts incoming frames
+	writeAEAD   cipher.AEAD // encrypts outgoing frames
+	readPrefix  [4]byte     // nonce prefix for incoming frames
+	writePrefix [4]byte     // nonce prefix for outgoing frames
+	writeSeq    uint64      // next outgoing frame counter
+	readSeq     uint64      // next expected incoming frame counter
 }
 
 // newServiceEncLayer derives directional AEAD contexts from the shared key
@@ -95,6 +97,10 @@ func (e *serviceEncLayer) decrypt(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("encrypted payload too short (%d bytes)", len(data))
 	}
 
+	if seq := binary.BigEndian.Uint64(data[:8]); seq != e.readSeq {
+		return nil, fmt.Errorf("unexpected sequence number %d (want %d)", seq, e.readSeq)
+	}
+
 	var nonce [12]byte
 	copy(nonce[:4], e.readPrefix[:])
 	copy(nonce[4:], data[:8])
@@ -103,17 +109,19 @@ func (e *serviceEncLayer) decrypt(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}
 
+	e.readSeq++
 	return plain, nil
 }
 
 // encryptedConn wraps a net.Conn with transparent encryption/decryption
 type encryptedConn struct {
-	nc      net.Conn
-	enc     *serviceEncLayer
-	mu      sync.Mutex
-	readBuf []byte
-	readPos int
-	readEnd int
+	nc      net.Conn         // underlying connection
+	enc     *serviceEncLayer // frame encryption
+	readMu  sync.Mutex       // serializes reads
+	writeMu sync.Mutex       // serializes writes
+	readBuf []byte           // decrypted bytes not yet returned
+	readPos int              // read position in readBuf
+	readEnd int              // end of valid data in readBuf
 }
 
 // newEncryptedConn wraps a conn with encryption layer
@@ -127,12 +135,12 @@ func newEncryptedConn(nc net.Conn, enc *serviceEncLayer) *encryptedConn {
 
 // Read decrypts data transparently
 func (ec *encryptedConn) Read(p []byte) (int, error) {
-	ec.mu.Lock()
-	defer ec.mu.Unlock()
+	ec.readMu.Lock()
+	defer ec.readMu.Unlock()
 
 	if ec.readPos >= ec.readEnd {
 		var lenBuf [4]byte
-		if _, err := ec.nc.Read(lenBuf[:]); err != nil {
+		if _, err := io.ReadFull(ec.nc, lenBuf[:]); err != nil {
 			return 0, err
 		}
 
@@ -142,7 +150,7 @@ func (ec *encryptedConn) Read(p []byte) (int, error) {
 		}
 
 		encData := make([]byte, size)
-		if _, err := ec.nc.Read(encData); err != nil {
+		if _, err := io.ReadFull(ec.nc, encData); err != nil {
 			return 0, err
 		}
 
@@ -163,19 +171,16 @@ func (ec *encryptedConn) Read(p []byte) (int, error) {
 
 // Write encrypts data transparently
 func (ec *encryptedConn) Write(p []byte) (int, error) {
-	ec.mu.Lock()
-	defer ec.mu.Unlock()
+	ec.writeMu.Lock()
+	defer ec.writeMu.Unlock()
 
 	encrypted := ec.enc.encrypt(p)
 
-	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(encrypted)))
+	frame := make([]byte, 4, 4+len(encrypted))
+	binary.BigEndian.PutUint32(frame, uint32(len(encrypted)))
+	frame = append(frame, encrypted...)
 
-	if _, err := ec.nc.Write(lenBuf[:]); err != nil {
-		return 0, err
-	}
-
-	if _, err := ec.nc.Write(encrypted); err != nil {
+	if _, err := ec.nc.Write(frame); err != nil {
 		return 0, err
 	}
 

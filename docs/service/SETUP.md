@@ -53,7 +53,7 @@ Create a `service.json` file:
 | `pub_key`      | No       | Server's public ML-KEM-768 key for authentication (base64)         |
 | `priv_key`     | No       | Server's private ML-KEM-768 key for decryption (base64)            |
 | `allowed_keys` | No       | List of allowed client public keys that can connect (base64)       |
-| `persist_dir`  | No       | Directory to auto-load and persist instance configurations         |
+| `persist_dir`  | No       | Directory to auto-load and persist providers and instance configs  |
 
 > [!NOTE]
 > At least one of `unix_socket` or `listen_addr` must be set. If no keypair is provided, the service runs with no authentication. If authentication is enabled, `allowed_keys` is required.
@@ -96,7 +96,23 @@ Available flags:
 ## 5. Manage instances in the CLI
 Once connected to the service, you can use commands. Type `help` for a list of commands.
 
-## 6. Custom service clients
+Providers are always persisted, instances are restored on service start only when created with `autostart` set to `true` (the optional last argument of `start-server` and `start-client`).
+
+## 6. Stats and control for panels
+Server instances count traffic per user and keep track of live sessions, so a panel does not need to guess:
+
+| Command (`pkg/service` client method) | What it does |
+|---|---|
+| `stats <id> [collect]` (`GetStats`) | Server totals and every user seen: traffic, live tunnels, connected IPs, last seen. With `collect` it also returns what each user moved since the previous collect and starts counting again, which is what a panel polls to add usage up |
+| `sessions <id>` (`ListSessions`) | Live sessions with their user, route, address and traffic |
+| `kick-user <id> <user_uuid>` (`KickUser`) | Closes all tunnels of a user, they can reconnect unless removed from the provider |
+| `kick-session <id> <session_id>` (`KickSession`) | Closes all tunnels of a session |
+
+Tunnel open and close events are pushed to every connected client as `SessionEvent` (`EventSession` in the Go client). Deleting a user from a provider also closes their live tunnels. Traffic is counted from the server's point of view: up is what clients sent into the tunnel, down is what came back.
+
+Embedding the server directly? `engine.TurnableServer` has the same data as methods: `Stats`, `Users`, `User`, `CollectUsage`, `Sessions`, `KickUser`, `KickSession` and `Subscribe`.
+
+## 7. Custom service clients
 For integration with your own tools, you can implement a custom client. See [service.proto](/pkg/service/proto/service.proto) and [encryption.go](/pkg/service/encryption.go) for the protocol and encryption specification.
 
 ## Detailed Configuration
