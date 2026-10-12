@@ -142,7 +142,7 @@ func (D *Handler) connectSession() error {
 		conn, err := h.Connect(connCtx, dest, turn, true)
 		if err != nil && errors.Is(err, protocol.ErrTURNRejected) {
 			if dialCtx.Err() == nil {
-				D.log.Warn("peer connection failed with TURN error, triggering full reconnect", "peer_idx", idx, "error", err)
+				D.log.Warn("TURN rejected peer, reconnecting", "peer_idx", idx, "error", err)
 				fullReconnect(err.Error())
 			}
 		}

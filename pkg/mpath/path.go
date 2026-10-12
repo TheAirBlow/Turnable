@@ -94,25 +94,29 @@ type path struct {
 	lastEliciting time.Time  // last ack-eliciting send, for keepalives
 	lastProbe     time.Time  // last probe sent on a dead path
 
-	srtt   time.Duration // smoothed RTT
-	rttvar time.Duration // RTT variation
-	minRTT time.Duration // lowest RTT seen
-	hasRTT bool          // srtt holds a real sample
+	srtt            time.Duration // smoothed RTT
+	rttvar          time.Duration // RTT variation
+	minRTT          time.Duration // lowest RTT in the last two windows, the queue-free baseline
+	minCur, minPrev time.Duration // lowest RTT in the current and previous window
+	minRotate       time.Time     // when the current window ends
+	hasRTT          bool          // srtt holds a real sample
 
-	bw            bwFilter  // windowed max delivery rate
-	ceiling       float64   // loss-derived rate cap, 0 for none
-	capFound      bool      // a policer has been hit at least once
-	demand        bool      // the session has more to send than the paths take; probing only then
-	delivered     uint64    // bytes acknowledged so far
-	deliveredTime time.Time // when delivered last advanced
-	firstSent     time.Time // send time of the newest acknowledged packet
-	gainIdx       int       // position in gainCycle
-	gainStart     time.Time // start of the current gain phase
-	epochStart    time.Time // start of the current loss epoch
-	epochSent     int       // packets
-	epochLost     int       // packets lost this epoch
-	epochBytes    int       // bytes sent
-	epochAcked    int       // bytes acked
+	bw             bwFilter  // windowed max delivery rate
+	ceiling        float64   // loss-derived rate cap, 0 for none
+	capFound       bool      // a policer has been hit at least once
+	demand         bool      // the session has more to send than the paths take; probing only then
+	delivered      uint64    // bytes acknowledged so far
+	deliveredTime  time.Time // when delivered last advanced
+	firstSent      time.Time // send time of the newest acknowledged packet
+	gainIdx        int       // position in gainCycle
+	gainStart      time.Time // start of the current gain phase
+	delayStart     time.Time // start of the current delay-control interval
+	delayDelivered uint64    // delivered bytes at delayStart
+	epochStart     time.Time // start of the current loss epoch
+	epochSent      int       // packets
+	epochLost      int       // packets lost this epoch
+	epochBytes     int       // bytes sent
+	epochAcked     int       // bytes acked
 
 	// receiver state
 	recvLargest  uint32
@@ -134,6 +138,9 @@ type PathStats struct {
 	SmoothedRTT  time.Duration // smoothed RTT
 	Dead         bool          // the path is dead
 	PacketsRecvd uint64        // packets received
+	MinRTT       time.Duration // lowest RTT seen
+	Inflight     int           // bytes in flight
+	Ceiling      float64       // loss-derived rate cap, 0 for none
 }
 
 // newPath creates the state for a newly attached peer conn
@@ -174,8 +181,12 @@ func (p *path) rate(now time.Time) float64 {
 	if p.ceiling > 0 && r > p.ceiling {
 		r = p.ceiling
 	}
-	if r < p.cfg.MinRate {
-		r = p.cfg.MinRate
+	floor := p.cfg.MinRate
+	if p.ceiling > 0 {
+		floor = min(floor, p.ceiling) // a delay cap may sit below the floor: the paths share one link, and 10 floors can exceed it
+	}
+	if r < floor {
+		r = floor
 	}
 	if p.cfg.MaxRate > 0 && r > p.cfg.MaxRate {
 		r = p.cfg.MaxRate
@@ -188,7 +199,13 @@ func (p *path) probing() bool { return p.demand && gainCycle[p.gainIdx] > 1 }
 
 // cwnd caps bytes in flight so a stalled path cannot swallow unbounded data
 func (p *path) cwnd(now time.Time) int {
-	bdp := p.rate(now) * (p.rtt() + 4*p.rttvar).Seconds()
+	// sized from the minimum RTT: srtt includes our own queueing, so using it would let the window grow with the queue
+	base := p.minRTT
+	if base == 0 {
+		base = p.rtt()
+	}
+	// the rttvar term absorbs ACK bursts on jittery links
+	bdp := p.rate(now) * (base + 4*p.rttvar).Seconds()
 	return max(int(2*bdp), 12*p.cfg.MaxPacketSize)
 }
 
@@ -305,7 +322,7 @@ func (p *path) onAck(now time.Time, largest uint32, delay time.Duration, bitmap 
 					bestSample, sampleValid = s, true
 				}
 			}
-		case int32(largest-sp.seq) > 0 && (int32(largest-sp.seq) >= 3 || now.Sub(sp.sendTime) > p.rtt()*9/8+p.cfg.MaxAckDelay):
+		case int32(largest-sp.seq) > 0 && (int32(largest-sp.seq) >= 3 || now.Sub(sp.sendTime) > p.lossDelay()):
 			lost = append(lost, sp)
 			p.inflight -= sp.size
 		default:
@@ -334,6 +351,13 @@ func (p *path) onAck(now time.Time, largest uint32, delay time.Duration, bitmap 
 	return lost, acked, newlyAcked
 }
 
+// lossDelay is how old an unacknowledged packet must be, with a later one acked, to be declared lost
+// it allows for RTT jitter, so a delayed packet on a mobile link is not resent and counted as lost
+func (p *path) lossDelay() time.Duration {
+	rtt := p.rtt()
+	return rtt + max(rtt/8, 2*p.rttvar) + p.cfg.MaxAckDelay
+}
+
 // onLoss counts lost packets toward the current epoch
 func (p *path) onLoss(n int) {
 	p.epochLost += n
@@ -345,9 +369,7 @@ func (p *path) updateRTT(sample, delay time.Duration) {
 	if sample <= 0 {
 		return
 	}
-	if p.minRTT == 0 || sample < p.minRTT {
-		p.minRTT = sample
-	}
+	p.noteMinRTT(sample)
 	if sample-delay >= p.minRTT {
 		sample -= delay
 	}
@@ -363,8 +385,65 @@ func (p *path) updateRTT(sample, delay time.Duration) {
 	p.srtt = (7*p.srtt + sample) / 8
 }
 
+// minRTTWindow is the length of one min-RTT window; the baseline spans two so stale lows age out
+const minRTTWindow = 5 * time.Second
+
+// noteMinRTT feeds the windowed minimum that approximates the queue-free RTT
+func (p *path) noteMinRTT(sample time.Duration) {
+	now := time.Now()
+	if p.minRotate.IsZero() {
+		p.minRotate = now.Add(minRTTWindow)
+	} else if now.After(p.minRotate) {
+		p.minPrev, p.minCur = p.minCur, 0
+		p.minRotate = now.Add(minRTTWindow)
+	}
+	if p.minCur == 0 || sample < p.minCur {
+		p.minCur = sample
+	}
+	p.minRTT = p.minCur
+	if p.minPrev > 0 && p.minPrev < p.minRTT {
+		p.minRTT = p.minPrev
+	}
+}
+
+// queueDelayed reports whether the smoothed RTT sits above the baseline by more than the target and the jitter
+func (p *path) queueDelayed() bool {
+	return p.hasRTT && p.minRTT > 0 && p.srtt-p.minRTT > max(p.cfg.DelayTarget, p.minRTT/2, 4*p.rttvar)
+}
+
+// delayControl keeps the standing queue short: while the RTT sits above the baseline the path is capped just under its recent delivery rate, and the cap relaxes once the queue drains
+// the paths share one bottleneck and each carries little of the load, so this must not wait for per-path packet counts
+func (p *path) delayControl(now time.Time) {
+	if p.delayStart.IsZero() {
+		p.delayStart, p.delayDelivered = now, p.delivered
+		return
+	}
+	el := now.Sub(p.delayStart)
+	if el < max(2*p.rtt(), 250*time.Millisecond) {
+		return
+	}
+	got := float64(p.delivered-p.delayDelivered) / el.Seconds()
+	p.delayStart, p.delayDelivered = now, p.delivered
+	switch {
+	case p.queueDelayed():
+		if got > 0 {
+			// only a real drop lowers an existing cap, otherwise it ratchets down on its own delivery rate
+			if c := max(0.9*max(got, p.bw.max(now)), p.cfg.MinRate/4); p.ceiling == 0 || c < 0.7*p.ceiling {
+				p.ceiling = c
+				p.bw.reset(now, c)
+			}
+		}
+	case p.ceiling > 0:
+		p.ceiling *= 1.15
+		if p.ceiling > 4*max(p.bw.max(now), p.cfg.InitialRate) {
+			p.ceiling = 0
+		}
+	}
+}
+
 // advanceCycle cycles the pacing gain each round trip and reacts to loss once per epoch
 func (p *path) advanceCycle(now time.Time) {
+	p.delayControl(now)
 	round := max(p.rtt(), p.cfg.MinRound)
 	if !now.Before(p.gainStart.Add(round)) {
 		p.gainIdx = (p.gainIdx + 1) % len(gainCycle)
@@ -385,7 +464,7 @@ func (p *path) advanceCycle(now time.Time) {
 		p.capFound = true
 		p.bw.reset(now, p.ceiling)
 	case p.ceiling > 0 && lossRate < p.cfg.LossThreshold/2:
-		p.ceiling *= 1.05 // creep back up so a lifted throttle is rediscovered
+		p.ceiling *= 1.15 // creep back up so a lifted throttle is rediscovered
 		if p.ceiling > 4*max(p.bw.max(now), p.cfg.InitialRate) {
 			p.ceiling = 0
 		}

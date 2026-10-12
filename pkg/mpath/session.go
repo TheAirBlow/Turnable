@@ -24,7 +24,7 @@ type Config struct {
 	MaxAckDelay   time.Duration // longest an ACK may be delayed
 	PacingBurst   time.Duration // pacer credit kept after idle, absorbs timer granularity
 	QueueHorizon  time.Duration // how far ahead a path's pacer may be booked before it stops taking packets
-	LossThreshold float64       // per-epoch loss fraction that caps a path's rate
+	LossThreshold float64       // per-epoch loss fraction taken as policing and capping a path's rate; random radio loss stays below it
 	LossEpoch     time.Duration // shortest loss-measurement epoch
 	DeadTimeout   time.Duration // ACK silence after which a path is declared dead
 	ProbeInterval time.Duration // probe period on a dead path
@@ -34,6 +34,8 @@ type Config struct {
 	RecvWindow    int           // receive window in segments
 	SendBuffer    int           // bytes buffered by Write before it blocks
 	DatagramQueue int           // queued outgoing datagram packets before the oldest is dropped
+	DelayTarget   time.Duration // queueing delay (srtt above the baseline) tolerated before a path backs off
+	DatagramAge   time.Duration // longest a datagram may wait to be sent before it is dropped, bounds the standing queue
 	ReorderWait   time.Duration // if > 0, hold a datagram up to this long for an earlier missing one (adds latency)
 	Logger        *slog.Logger  // logger, slog.Default when nil
 }
@@ -62,7 +64,7 @@ func (c *Config) withDefaults() *Config {
 	def(&out.PacingBurst, 5*time.Millisecond)
 	def(&out.QueueHorizon, 20*time.Millisecond)
 	if out.LossThreshold <= 0 {
-		out.LossThreshold = 0.02
+		out.LossThreshold = 0.08
 	}
 	def(&out.LossEpoch, 500*time.Millisecond)
 	def(&out.DeadTimeout, 1500*time.Millisecond)
@@ -79,6 +81,8 @@ func (c *Config) withDefaults() *Config {
 	if out.DatagramQueue <= 0 {
 		out.DatagramQueue = 256
 	}
+	def(&out.DelayTarget, 80*time.Millisecond)
+	def(&out.DatagramAge, 300*time.Millisecond)
 	if out.Logger == nil {
 		out.Logger = slog.Default()
 	}
@@ -160,6 +164,12 @@ type SessionStats struct {
 	Paths           []PathStats // per-path counters
 }
 
+// queuedDgram is a datagram fragment waiting for a path
+type queuedDgram struct {
+	data []byte    // fragment with its header
+	at   time.Time // when it was queued
+}
+
 // outPkt is a plaintext ready to be sealed and written to a path
 type outPkt struct {
 	p     *path  // path to write to
@@ -197,7 +207,7 @@ type Session struct {
 	windowPending bool              // a window update should be sent
 
 	// datagrams
-	dgOut       [][]byte
+	dgOut       []queuedDgram           // outgoing datagram fragments, oldest first
 	dgIn        chan []byte             // received datagrams for ReceiveDatagram
 	dgNextID    uint16                  // next outgoing datagram ID
 	dgOrderInit bool                    // dgNext holds a real value
@@ -357,7 +367,7 @@ func (s *Session) Write(b []byte) (int, error) {
 	mss := s.mss()
 	n := 0
 	for len(b) > 0 {
-		for s.sendBuffered >= s.cfg.SendBuffer && !s.isClosed() {
+		for s.sendBuffered >= s.sendLimitLocked() && !s.isClosed() {
 			s.sendCond.Wait()
 		}
 		if s.isClosed() {
@@ -383,6 +393,28 @@ func (s *Session) Write(b []byte) (int, error) {
 	s.notify()
 	return n, nil
 }
+
+// sendLimitLocked returns how many bytes Write may buffer: enough to keep the paths busy plus a short queue
+// a fixed deep buffer would sit in front of the pacer as seconds of latency for every stream sharing the session
+func (s *Session) sendLimitLocked() int {
+	now := time.Now()
+	var rate float64
+	var rtt time.Duration
+	for _, p := range s.paths {
+		if p.dead || p.removed {
+			continue
+		}
+		rate += p.rate(now)
+		rtt = max(rtt, p.rtt())
+	}
+	lim := int(rate * (rtt + sendQueueDelay).Seconds())
+	return min(max(lim, minSendBuffer), s.cfg.SendBuffer)
+}
+
+const (
+	minSendBuffer  = 96 * 1024              // smallest send buffer, so a slow link still gets a few segments in flight
+	sendQueueDelay = 150 * time.Millisecond // queueing allowed in the send buffer on top of one round trip
+)
 
 // Read reads in-order bytes from the reliable stream
 func (s *Session) Read(b []byte) (int, error) {
@@ -435,6 +467,7 @@ func (s *Session) SendDatagram(b []byte) error {
 	if s.isClosed() {
 		return ErrClosed
 	}
+	now := time.Now()
 	id := s.dgNextID
 	s.dgNextID++
 	for i := 0; i < cnt; i++ {
@@ -444,11 +477,11 @@ func (s *Session) SendDatagram(b []byte) error {
 		f[2] = byte(i<<4 | cnt)
 		copy(f[fragHdrLen:], part)
 		if len(s.dgOut) >= s.cfg.DatagramQueue {
-			s.dgOut[0] = nil
+			s.dgOut[0] = queuedDgram{}
 			s.dgOut = s.dgOut[1:]
 			s.stats.DatagramsDrop++
 		}
-		s.dgOut = append(s.dgOut, f)
+		s.dgOut = append(s.dgOut, queuedDgram{f, now})
 	}
 	s.notify()
 	return nil
@@ -517,6 +550,7 @@ func (s *Session) Stats() SessionStats {
 		ps.PacingRate = p.rate(now)
 		ps.SmoothedRTT = p.srtt
 		ps.Dead = p.dead
+		ps.MinRTT, ps.Inflight, ps.Ceiling = p.minRTT, p.inflight, p.ceiling
 		out.Paths = append(out.Paths, ps)
 	}
 	return out
@@ -1022,7 +1056,7 @@ func (s *Session) bestNonProbingLocked(now time.Time) *path {
 }
 
 // nextPayloadLocked peeks at the next thing to send: a retransmission, a datagram or new data
-func (s *Session) nextPayloadLocked() (seg *segment, dgram []byte, ok bool) {
+func (s *Session) nextPayloadLocked(now time.Time) (seg *segment, dgram []byte, ok bool) {
 	for len(s.retrans) > 0 && s.retrans[0].acked {
 		s.retrans[0].queued = false
 		s.retrans[0] = nil
@@ -1031,8 +1065,13 @@ func (s *Session) nextPayloadLocked() (seg *segment, dgram []byte, ok bool) {
 	if len(s.retrans) > 0 {
 		return s.retrans[0], nil, true
 	}
+	for len(s.dgOut) > 0 && now.Sub(s.dgOut[0].at) > s.cfg.DatagramAge {
+		s.dgOut[0] = queuedDgram{}
+		s.dgOut = s.dgOut[1:]
+		s.stats.DatagramsDrop++
+	}
 	if len(s.dgOut) > 0 {
-		return nil, s.dgOut[0], true
+		return nil, s.dgOut[0].data, true
 	}
 	if len(s.queue) > 0 && int32(s.queue[0].seq-s.peerLimit) < 0 {
 		return s.queue[0], nil, true
@@ -1046,7 +1085,7 @@ const maxBatch = 256
 // scheduleLocked commits payloads to the earliest-arrival paths, emits queued packets that are due, and returns the wait until the next one
 func (s *Session) scheduleLocked(now time.Time, out []outPkt) ([]outPkt, time.Duration) {
 	for n := 0; n < maxBatch; n++ {
-		seg, dgram, ok := s.nextPayloadLocked()
+		seg, dgram, ok := s.nextPayloadLocked(now)
 		if !ok {
 			break
 		}
@@ -1060,10 +1099,10 @@ func (s *Session) scheduleLocked(now time.Time, out []outPkt) ([]outPkt, time.Du
 				p = q
 			}
 		}
-		appLimited := len(s.queue) <= 1 && len(s.retrans) == 0
+		appLimited := len(s.queue) <= 1 && len(s.retrans) == 0 && len(s.dgOut) <= 1
 		switch {
 		case dgram != nil:
-			s.dgOut[0] = nil
+			s.dgOut[0] = queuedDgram{}
 			s.dgOut = s.dgOut[1:]
 			s.stats.DatagramsSent++
 			s.elicitingLocked(p, now, fDgram, nil, dgram, appLimited)
@@ -1084,7 +1123,7 @@ func (s *Session) scheduleLocked(now time.Time, out []outPkt) ([]outPkt, time.Du
 	}
 
 	// paths may probe for more bandwidth only while data is left waiting for them
-	_, _, backlogged := s.nextPayloadLocked()
+	_, _, backlogged := s.nextPayloadLocked(now)
 	for _, p := range s.paths {
 		p.demand = backlogged
 	}
