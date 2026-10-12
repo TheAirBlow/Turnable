@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	pionlog "github.com/pion/logging"
 	"github.com/pion/stun/v3"
@@ -134,17 +135,22 @@ type turnPacketConn struct {
 	closeOnce      sync.Once      // guards Close
 }
 
-// Close closes the TURN allocation, client, and raw underlay
+// turnCloseGrace is how long the TURN client and socket outlive Close, so the deallocate can reach the server and its reply be read
+const turnCloseGrace = 300 * time.Millisecond
+
+// Close deallocates the relay at once, then closes the TURN client and raw underlay after turnCloseGrace
 func (c *turnPacketConn) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
-		err = c.PacketConn.Close()
-		if c.client != nil {
-			c.client.Close()
-		}
-		if c.underlay != nil {
-			err = errors.Join(err, c.underlay.Close())
-		}
+		err = c.PacketConn.Close() // sends Refresh with lifetime 0
+		time.AfterFunc(turnCloseGrace, func() {
+			if c.client != nil {
+				c.client.Close()
+			}
+			if c.underlay != nil {
+				_ = c.underlay.Close()
+			}
+		})
 	})
 	return err
 }

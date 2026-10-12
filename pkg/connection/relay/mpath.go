@@ -54,8 +54,9 @@ func (c *notifyConn) closeReason() string {
 
 // Close closes the conn and signals the slot
 func (c *notifyConn) Close() error {
+	err := c.Conn.Close() // release the TURN allocation before the slot may redial
 	c.once.Do(func() { close(c.closed) })
-	return c.Conn.Close()
+	return err
 }
 
 // startMpathClient runs the peer slots, authenticates on the first stream and publishes the session
@@ -129,6 +130,7 @@ func (D *Handler) startMpathClient(sessionCtx context.Context,
 	D.mpath = &mpathClientState{mux: mux, cfg: cfg}
 	D.sessionUUID = sessionUUID
 	D.stateMu.Unlock()
+	go logMpathStats(sessionCtx, D.log, sess)
 	D.log.Info("relay mpath session established", "session_uuid", sessionUUID, "peers", numPeers, "online", online.Load())
 	return nil
 }
@@ -195,7 +197,7 @@ func (D *Handler) runMpathSlot(
 				return
 			}
 		} else if errors.Is(err, protocol.ErrTURNRejected) && ctx.Err() == nil {
-			log.Warn("peer connection failed with TURN error, triggering full reconnect", "error", err)
+			log.Warn("TURN rejected peer, reconnecting", "error", err)
 			fullReconnect(err.Error())
 			return
 		}
@@ -446,5 +448,35 @@ func (D *Handler) serveMpathSession(ctx context.Context, sess *mpath.Session, ou
 			return nil
 		}
 		emit(st, st.Route, "tcp", fmt.Sprint(st.ID()))
+	}
+}
+
+// logMpathStats logs session and per-path transport counters every two seconds at debug level
+func logMpathStats(ctx context.Context, log *slog.Logger, sess *mpath.Session) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	var prev mpath.SessionStats
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-sess.Done():
+			return
+		case <-t.C:
+		}
+		st := sess.Stats()
+		var sent, lost, inflight uint64
+		var rate float64
+		for _, p := range st.Paths {
+			sent, lost, inflight, rate = sent+p.PacketsSent, lost+p.PacketsLost, inflight+uint64(p.Inflight), rate+p.PacingRate
+		}
+		log.Debug("mpath stats", "paths", len(st.Paths), "rate_kBps", int(rate/1024), "inflight_kB", inflight/1024,
+			"segs", st.SegmentsSent-prev.SegmentsSent, "retrans", st.Retransmits-prev.Retransmits, "dup", st.DupSegments-prev.DupSegments,
+			"dg", st.DatagramsSent-prev.DatagramsSent, "dg_drop", st.DatagramsDrop-prev.DatagramsDrop, "lost_total", lost, "sent_total", sent)
+		for i, p := range st.Paths {
+			log.Debug("mpath path", "i", i, "rate_kBps", int(p.PacingRate/1024), "srtt_ms", p.SmoothedRTT.Milliseconds(), "min_ms", p.MinRTT.Milliseconds(),
+				"inflight_kB", p.Inflight/1024, "ceil_kBps", int(p.Ceiling/1024), "lost", p.PacketsLost, "sent", p.PacketsSent, "dead", p.Dead)
+		}
+		prev = st
 	}
 }

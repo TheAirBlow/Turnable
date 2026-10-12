@@ -103,6 +103,9 @@ func exchange(ctx context.Context, conn net.Conn, req []byte, accept func([]byte
 				}
 				return err
 			}
+			if n == 0 {
+				continue
+			}
 			if n >= 3 && buf[0] == kindReject {
 				if buf[2] == rejectVersion {
 					return fmt.Errorf("%w: server speaks version %d, client %d", ErrVersion, buf[1], Version)
