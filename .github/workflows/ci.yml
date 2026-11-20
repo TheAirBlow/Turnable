@@ -40,7 +40,8 @@ jobs:
           if [ "$BUMP" = "none" ]; then
             VERSION="$(git rev-parse --short=8 HEAD)"
           else
-            LATEST="$(git tag -l | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
+            # Go modules only recognize v-prefixed tags; older releases were tagged without it
+            LATEST="$(git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -n1 || true)"
             if [ -z "$LATEST" ]; then
               MAJOR=0; MINOR=0; PATCH=0
             else
@@ -53,7 +54,7 @@ jobs:
               patch) PATCH=$((PATCH+1)) ;;
             esac
 
-            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            VERSION="v${MAJOR}.${MINOR}.${PATCH}"
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -162,7 +163,7 @@ jobs:
           EXT=""
           [ "$GOOS" = "windows" ] && EXT=".exe"
 
-          go build -ldflags "-s -w -X main.buildVersion=${{ needs.version.outputs.version }}" -trimpath \
+          go build -ldflags "-s -w -X github.com/theairblow/turnable/pkg/version.Version=${{ needs.version.outputs.version }}" -trimpath \
             -o "dist/turnable-${GOOS}-${GOARCH}${EXT}" \
             ./cmd
 
