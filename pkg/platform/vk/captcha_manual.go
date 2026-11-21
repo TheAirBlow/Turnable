@@ -112,21 +112,21 @@ func (V *Handler) solveManualCaptcha(ctx context.Context, joinURL string) (strin
 		}()
 	}
 
+	// A managed port is random, so the call link carries it for the userscript to pick up
+	callURL := joinURL
 	if managed {
-		slog.Info("manual captcha solve required",
-			"port", port,
-			"url", joinURL,
-			"timeout", manualCaptchaTimeout)
-	} else {
-		slog.Info("manual captcha solve required",
-			"userscript", "http://localhost:"+port+"/captcha_manual.user.js",
-			"guide", "http://localhost:"+port+"/",
-			"url", joinURL,
-			"timeout", manualCaptchaTimeout)
+		callURL += "#port=" + port
 	}
 
+	slog.Info("manual captcha solve required",
+		"port", port,
+		"userscript", "http://localhost:"+port+"/captcha_manual.user.js",
+		"guide", "http://localhost:"+port+"/",
+		"url", callURL,
+		"timeout", manualCaptchaTimeout)
+
 	if config.Options.Interactive {
-		manualCaptchaOpenBrowser(joinURL)
+		manualCaptchaOpenBrowser(callURL)
 	}
 
 	var result manualCaptchaResult

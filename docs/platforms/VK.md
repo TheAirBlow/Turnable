@@ -62,5 +62,5 @@ Debugging switches. Only whether a variable is set matters, its value is ignored
 | Variable            | Description                                                                                                                                                                          |
 |---------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `VK_FORCE_MANUAL`   | Skips automatic captcha solving and always asks for a manual solve.                                                                                                                  |
-| `VK_MANUAL_MANAGED` | Listens for the manual captcha tokens on a random port instead of `1984` and logs it as `port` instead of the userscript URL. Useful when an app manages several Turnable instances. |
+| `VK_MANUAL_MANAGED` | Listens for the manual captcha tokens on a random port instead of `1984`, logged as `port` and appended to the call link as `#port=XXXX` so the userscript uses it. Useful when an app manages several Turnable instances. |
 | `VK_PROXY`          | Proxy URL for all VK HTTP traffic. TLS certificate verification is disabled while it is set.                                                                                         |

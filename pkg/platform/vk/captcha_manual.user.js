@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Turnable - VK Token Capture
 // @namespace    turnable
-// @version      1.1
+// @version      1.2
 // @description  Captures VK Calls tokens for Turnable
 // @match        https://vk.ru/call/join/*
 // @match        https://vk.com/call/join/*
@@ -15,7 +15,9 @@
 (function () {
     'use strict';
 
-    const SERVER = 'http://localhost:1984';
+    // Managed services pick a random port and pass it as #port=XXXX on the call link
+    const portMatch = /[#&]port=(\d+)/.exec(location.hash);
+    const SERVER = 'http://localhost:' + (portMatch ? portMatch[1] : '1984');
 
     let _serverAlive = false;
     let _done = false;
