@@ -76,8 +76,7 @@ Delete all pre-existing routing rules and add the following to block ads, protec
 | 2 | Bypass Russian domains | `geosite:category-ru`      | Bypass   | Bypass local VPN restrictions     |
 | 3 | Bypass Russian IPs     | `geoip:ru`                 | Bypass   | Bypass local VPN restrictions     |
 | 4 | Block local socks5     | See below                  | Block    | Prevents outbound IP exposure     |
-| 5 | App whitelist          | Configure per your needs   | Proxy    | Routes selected apps through VPN  |
-| 6 | Bypass by default      | `0.0.0.0/0, ::/0`          | Bypass   | Bypass everything else by default |
+| 5 | Bypass by default      | `0.0.0.0/0, ::/0`          | Bypass   | Bypass everything else by default |
 
 **Custom JSON for rule #4:**
 ```json
@@ -87,7 +86,10 @@ Delete all pre-existing routing rules and add the following to block ads, protec
 }
 ```
 
-### 3.2. Configure WireGuard
+### 3.2. Configure the app whitelist
+Open the **Settings** tab in NekoBox, enable per-app proxy, and select only the apps that should go through Turnable. Do not set this up as a routing rule.
+
+### 3.3. Configure WireGuard
 If you're creating a WireGuard configuration manually, ensure these fields are set correctly:
 
 | Field             | Value              | Notes                                     |

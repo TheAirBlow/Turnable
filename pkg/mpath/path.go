@@ -93,6 +93,8 @@ type path struct {
 	lastAckTime   time.Time  // last ACK that acknowledged something new
 	lastEliciting time.Time  // last ack-eliciting send, for keepalives
 	lastProbe     time.Time  // last probe sent on a dead path
+	ptoCount      int        // consecutive probe timeouts without an ACK, backing the timeout off
+	lastPTO       time.Time  // when the last probe timeout fired
 
 	srtt            time.Duration // smoothed RTT
 	rttvar          time.Duration // RTT variation
@@ -100,6 +102,8 @@ type path struct {
 	minCur, minPrev time.Duration // lowest RTT in the current and previous window
 	minRotate       time.Time     // when the current window ends
 	hasRTT          bool          // srtt holds a real sample
+	qMin            time.Duration // lowest queueing delay (RTT above the baseline) seen since the shared controller last looked
+	qSeen           bool          // qMin holds a sample
 
 	bw             bwFilter  // windowed max delivery rate
 	ceiling        float64   // loss-derived rate cap, 0 for none
@@ -336,6 +340,7 @@ func (p *path) onAck(now time.Time, largest uint32, delay time.Duration, bitmap 
 	}
 
 	if newlyAcked > 0 {
+		p.ptoCount = 0
 		p.lastAckTime = now
 		if p.inflight <= 0 {
 			p.waitingSince = time.Time{}
@@ -371,6 +376,9 @@ func (p *path) updateRTT(sample, delay time.Duration) {
 	p.noteMinRTT(sample)
 	if sample-delay >= p.minRTT {
 		sample -= delay
+	}
+	if q := sample - p.minRTT; !p.qSeen || q < p.qMin {
+		p.qMin, p.qSeen = max(q, 0), true
 	}
 	if !p.hasRTT {
 		p.srtt, p.rttvar, p.hasRTT = sample, sample/2, true
@@ -470,10 +478,14 @@ func (p *path) advanceCycle(now time.Time) {
 	p.epochStart, p.epochSent, p.epochLost, p.epochBytes, p.epochAcked = now, 0, 0, 0, 0
 }
 
-// takeTimedOut removes packets past the probe timeout, as on a tail loss with no later ACK
+// maxProbeLoss is how many of the oldest silent packets one probe timeout declares lost; the rest wait for their ACK, since a stalled link holds them all
+const maxProbeLoss = 2
+
+// takeTimedOut declares the oldest packets past the probe timeout lost, as on a tail loss with no later ACK; at most once per backed-off timeout
 func (p *path) takeTimedOut(now time.Time) []*sentPkt {
-	pto := p.rtt() + max(4*p.rttvar, p.cfg.MinPTO) + p.cfg.MaxAckDelay
+	pto := (p.rtt() + max(4*p.rttvar, p.cfg.MinPTO) + p.cfg.MaxAckDelay) << min(p.ptoCount, 3)
 	var lost []*sentPkt
+	armed := now.Sub(p.lastPTO) >= pto
 	kept := p.sent[:0]
 	for _, sp := range p.sent {
 		switch {
@@ -481,7 +493,7 @@ func (p *path) takeTimedOut(now time.Time) []*sentPkt {
 			if now.Sub(sp.sendTime) < lostRetention {
 				kept = append(kept, sp)
 			}
-		case now.Sub(sp.sendTime) > pto:
+		case armed && len(lost) < maxProbeLoss && now.Sub(sp.sendTime) > pto:
 			sp.lost = true
 			lost = append(lost, sp)
 			p.inflight -= sp.size
@@ -494,6 +506,8 @@ func (p *path) takeTimedOut(now time.Time) []*sentPkt {
 	p.sent = kept
 	if len(lost) > 0 {
 		p.onLoss(len(lost))
+		p.ptoCount++
+		p.lastPTO = now
 	}
 	return lost
 }

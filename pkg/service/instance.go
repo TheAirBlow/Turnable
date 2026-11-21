@@ -18,9 +18,10 @@ import (
 // Instance represents a managed Turnable server or client instance
 type Instance struct {
 	ID           string                 // Unique instance ID
-	Name         string                 // Display name
-	Autostart    bool                   // Auto-start on service boot
 	ProviderUUID string                 // UUID of the provider this instance uses (servers only)
+	metaMu       sync.RWMutex           // Guards name and autostart
+	name         string                 // Display name
+	autostart    bool                   // Auto-start on service boot, also retries failed starts
 	config       string                 // Raw config JSON
 	listenAddrs  []string               // Listen addresses (clients only)
 	server       *engine.TurnableServer // Server instance (nil for clients)
@@ -30,6 +31,110 @@ type Instance struct {
 	lifeMu       sync.Mutex             // Serializes start and stop
 	stopped      bool                   // Whether Stop was called
 	unsubscribe  func()                 // Stops the session event feed (servers only)
+	attempt      atomic.Int32           // Failed starts in a row, drives the retry backoff
+
+	usageMu sync.Mutex              // Guards unacked and token
+	unacked map[string]engine.Usage // Collected usage the panel has not confirmed yet (servers only)
+	token   uint64                  // Token of the latest collected batch
+}
+
+// instanceSpec holds everything needed to build an instance
+type instanceSpec struct {
+	id           string   // Instance ID
+	name         string   // Display name
+	config       string   // Raw config
+	autostart    bool     // Start with the service
+	providerUUID string   // Provider UUID, servers only
+	listenAddrs  []string // Listen addresses, clients only
+	server       bool     // Whether this is a server instance
+}
+
+// meta returns the display name and autostart flag
+func (i *Instance) meta() (string, bool) {
+	i.metaMu.RLock()
+	defer i.metaMu.RUnlock()
+	return i.name, i.autostart
+}
+
+// setMeta changes the display name and autostart flag
+func (i *Instance) setMeta(name string, autostart bool) {
+	i.metaMu.Lock()
+	defer i.metaMu.Unlock()
+	i.name, i.autostart = name, autostart
+}
+
+// spec returns the parameters this instance was built from
+func (i *Instance) spec() instanceSpec {
+	name, autostart := i.meta()
+	return instanceSpec{
+		id:           i.ID,
+		name:         name,
+		config:       i.config,
+		autostart:    autostart,
+		providerUUID: i.ProviderUUID,
+		listenAddrs:  i.listenAddrs,
+		server:       i.server != nil,
+	}
+}
+
+// collectUsage collects the usage since the last collect and returns every batch not yet acknowledged with its token.
+// A nil ack is a client that does not confirm, it gets everything pending once and nothing is kept.
+func (i *Instance) collectUsage(ack *uint64) (map[string]engine.Usage, uint64) {
+	i.usageMu.Lock()
+	defer i.usageMu.Unlock()
+
+	if ack != nil && *ack == i.token {
+		i.unacked = nil
+	}
+
+	pending := i.unacked
+	if pending == nil {
+		pending = map[string]engine.Usage{}
+	}
+
+	for uuid, d := range i.server.CollectUsage() {
+		cur := pending[uuid]
+		pending[uuid] = engine.Usage{Up: cur.Up + d.Up, Down: cur.Down + d.Down}
+	}
+
+	i.token++
+	if ack == nil {
+		i.unacked = nil
+		return pending, i.token
+	}
+
+	i.unacked = pending
+	out := make(map[string]engine.Usage, len(pending))
+	for uuid, d := range pending {
+		out[uuid] = d
+	}
+	return out, i.token
+}
+
+// usageSnapshot returns all usage nobody has confirmed yet without touching the counters
+func (i *Instance) usageSnapshot() (map[string]engine.Usage, uint64) {
+	i.usageMu.Lock()
+	defer i.usageMu.Unlock()
+
+	out := make(map[string]engine.Usage, len(i.unacked))
+	for uuid, d := range i.unacked {
+		out[uuid] = d
+	}
+
+	for uuid, d := range i.server.PendingUsage() {
+		cur := out[uuid]
+		out[uuid] = engine.Usage{Up: cur.Up + d.Up, Down: cur.Down + d.Down}
+	}
+
+	return out, i.token
+}
+
+// seedUsage restores unconfirmed usage carried over from an earlier run of this instance
+func (i *Instance) seedUsage(usage map[string]engine.Usage, token uint64) {
+	i.usageMu.Lock()
+	defer i.usageMu.Unlock()
+	i.unacked = usage
+	i.token = token
 }
 
 // errInstanceStopped is returned when an instance is started after being stopped
@@ -93,11 +198,12 @@ func (i *Instance) Stop() error {
 
 // Info returns a protobuf description of this instance
 func (i *Instance) Info() *pb.InstanceInfo {
+	name, autostart := i.meta()
 	info := &pb.InstanceInfo{
 		Id:        i.ID,
-		Name:      i.Name,
+		Name:      name,
 		Status:    pb.InstanceStatus(i.status.Load()),
-		Autostart: i.Autostart,
+		Autostart: autostart,
 		Type:      i.Type(),
 	}
 
@@ -114,9 +220,9 @@ func (i *Instance) GetStatus() pb.InstanceStatus {
 	return pb.InstanceStatus(i.status.Load())
 }
 
-// buildServerInstance returns a TurnableServer from a StartServerRequest and provider
-func buildServerInstance(req *pb.StartServerRequest, provider providers.Provider) (*engine.TurnableServer, error) {
-	cfg, err := config.ParseServerConfig([]byte(req.Config))
+// buildServerInstance returns a TurnableServer from a server config and provider
+func buildServerInstance(rawConfig string, provider providers.Provider) (*engine.TurnableServer, error) {
+	cfg, err := config.ParseServerConfig([]byte(rawConfig))
 	if err != nil {
 		return nil, fmt.Errorf("parse server config: %w", err)
 	}
@@ -128,9 +234,9 @@ func buildServerInstance(req *pb.StartServerRequest, provider providers.Provider
 	return engine.NewTurnableServer(cfg, provider), nil
 }
 
-// buildClientInstance returns a TurnableClient from a StartClientRequest
-func buildClientInstance(req *pb.StartClientRequest) (*engine.TurnableClient, error) {
-	cfg, err := config.ParseClientConfig([]byte(req.Config))
+// buildClientInstance returns a TurnableClient from a client config
+func buildClientInstance(rawConfig string) (*engine.TurnableClient, error) {
+	cfg, err := config.ParseClientConfig([]byte(rawConfig))
 	if err != nil {
 		return nil, err
 	}
@@ -193,25 +299,43 @@ func handleConvertClientConfig(req *pb.ConvertClientConfigRequest) (*pb.ConvertC
 	return &pb.ConvertClientConfigResponse{Config: out}, nil
 }
 
-// handleValidateProviderConfig validates a provider config
-func handleValidateProviderConfig(req *pb.ValidateProviderConfigRequest) *pb.ValidateProviderConfigResponse {
+// newProvider creates a provider from its config JSON and initializes it
+func newProvider(rawConfig string) (providers.Provider, error) {
 	var providerCfg map[string]any
-	if err := json.Unmarshal([]byte(req.Config), &providerCfg); err != nil {
-		return &pb.ValidateProviderConfigResponse{Error: fmt.Sprintf("parse config: %v", err)}
+	if err := json.Unmarshal([]byte(rawConfig), &providerCfg); err != nil {
+		return nil, fmt.Errorf("parse provider config: %w", err)
 	}
 
 	providerType, ok := providerCfg["type"].(string)
 	if !ok {
-		return &pb.ValidateProviderConfigResponse{Error: "provider config must have a 'type' field"}
+		return nil, errors.New("provider config must have a 'type' field")
 	}
 
-	_, err := common.ProvidersHolder.GetAny(providerType)
+	handler, err := common.ProvidersHolder.GetAny(providerType)
 	if err != nil {
-		return &pb.ValidateProviderConfigResponse{Error: fmt.Sprintf("invalid provider type: %v", err)}
+		return nil, fmt.Errorf("failed to get provider handler for type %q: %w", providerType, err)
 	}
 
-	// TODO: providers dont have any validation routines just yet
+	prov, ok := handler.(providers.Provider)
+	if !ok {
+		return nil, errors.New("provider handler does not implement providers.Provider interface")
+	}
 
+	if err := prov.Update([]byte(rawConfig)); err != nil {
+		return nil, fmt.Errorf("failed to configure provider: %w", err)
+	}
+
+	return prov, nil
+}
+
+// handleValidateProviderConfig validates a provider config by loading it into a throwaway provider
+func handleValidateProviderConfig(req *pb.ValidateProviderConfigRequest) *pb.ValidateProviderConfigResponse {
+	prov, err := newProvider(req.Config)
+	if err != nil {
+		return &pb.ValidateProviderConfigResponse{Error: err.Error()}
+	}
+
+	_ = prov.Stop()
 	return &pb.ValidateProviderConfigResponse{Valid: true}
 }
 

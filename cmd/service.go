@@ -32,12 +32,13 @@ type serviceServerOptions struct {
 	verbose    bool   // enable debug logging
 }
 
-// serviceServerOptions holds CLI flags for the service server subcommand
+// serviceClientOptions holds CLI flags for the service client subcommand
 type serviceClientOptions struct {
 	unixSocket string // unix socket of a local service
 	serverAddr string // address of a remote service
 	privKey    string // client private key
-	pubKey     string // service public key
+	pubKey     string // client public key
+	serverKey  string // pinned service public key
 	command    string // command to run, interactive when empty
 }
 
@@ -53,7 +54,7 @@ func newServiceCommand() *cobra.Command {
 	return root
 }
 
-// newServiceServerCommand creates the generate config cobra command
+// newServiceServerCommand creates the service server cobra command
 func newServiceServerCommand() *cobra.Command {
 	opts := &serviceServerOptions{}
 
@@ -67,10 +68,11 @@ func newServiceServerCommand() *cobra.Command {
 
 	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "service.json", "service config JSON file path")
 	cmd.Flags().StringVarP(&opts.persistDir, "persist", "p", "", "directory to persist instance configs for auto-restart on startup")
+	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "V", false, "enable verbose debug logging")
 	return cmd
 }
 
-// newServiceClientCommand creates the generate config cobra command
+// newServiceClientCommand creates the service client cobra command
 func newServiceClientCommand() *cobra.Command {
 	opts := &serviceClientOptions{}
 
@@ -85,12 +87,13 @@ func newServiceClientCommand() *cobra.Command {
 
 	cmd.Flags().StringVarP(&opts.unixSocket, "unix", "u", "", "unix socket file path to connect to")
 	cmd.Flags().StringVarP(&opts.serverAddr, "address", "a", "", "TCP address and port to connect to")
-	cmd.Flags().StringVarP(&opts.pubKey, "pub-key", "p", "", "public ML-KEM-768 key for auth")
-	cmd.Flags().StringVarP(&opts.privKey, "priv-key", "k", "", "private ML-KEM-768 key for auth")
+	cmd.Flags().StringVarP(&opts.pubKey, "pub-key", "p", "", "client public ML-KEM-768 key for auth")
+	cmd.Flags().StringVarP(&opts.privKey, "priv-key", "k", "", "client private ML-KEM-768 key for auth")
+	cmd.Flags().StringVarP(&opts.serverKey, "server-key", "s", "", "service public ML-KEM-768 key to pin, protects against impersonation")
 	return cmd
 }
 
-// serviceServerMain runs the config command
+// serviceServerMain runs the service server command
 func serviceServerMain(opts *serviceServerOptions) error {
 	if opts.verbose {
 		common.SetLogLevel(int(slog.LevelDebug))
@@ -120,7 +123,12 @@ func serviceServerMain(opts *serviceServerOptions) error {
 	}
 
 	if opts.persistDir != "" {
-		server.SetPersistDir(resolve(opts.persistDir))
+		persistDir := resolve(opts.persistDir)
+		if cfg.PersistDir != "" && resolve(cfg.PersistDir) != persistDir {
+			slog.Warn("--persist overrides persist_dir from the service config", "config", cfg.PersistDir, "flag", persistDir)
+		}
+
+		server.SetPersistDir(persistDir)
 	}
 
 	if err := server.Start(); err != nil {
@@ -221,6 +229,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 	var clientMu sync.Mutex
 	var client *service.Client
 	var cachedInstances []*pb.InstanceInfo
+	var cachedProviders []*pb.ProviderInfo
 	logsEnabled := true
 
 	getClient := func() *service.Client {
@@ -234,11 +243,13 @@ func serviceClientMain(opts *serviceClientOptions) error {
 		if c == nil {
 			return
 		}
-		instances, err := c.ListInstances()
-		if err != nil {
-			return
+		if instances, err := c.ListInstances(); err == nil {
+			cachedInstances = instances
 		}
-		cachedInstances = instances
+
+		if providers, err := c.ListProviders(); err == nil {
+			cachedProviders = providers
+		}
 	}
 
 	startWatcher := func(activeClient *service.Client) {
@@ -297,9 +308,21 @@ func serviceClientMain(opts *serviceClientOptions) error {
 		return ids
 	}
 
+	providerIDs := func(_ string) []string {
+		ids := make([]string, len(cachedProviders))
+		for i, p := range cachedProviders {
+			ids[i] = p.Uuid
+		}
+		return ids
+	}
+
+	clientOptions := func(priv, pub, server string) service.ClientOptions {
+		return service.ClientOptions{PrivKey: priv, PubKey: pub, ServerKey: server}
+	}
+
 	if opts.serverAddr != "" {
 		var err error
-		client, err = service.NewClient("tcp", opts.serverAddr, opts.pubKey, opts.privKey)
+		client, err = service.NewClient("tcp", opts.serverAddr, clientOptions(opts.privKey, opts.pubKey, opts.serverKey))
 		if err != nil {
 			fmt.Println("Failed to connect:", err)
 			client = nil
@@ -315,7 +338,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 
 	if opts.unixSocket != "" {
 		var err error
-		client, err = service.NewClient("unix", resolve(opts.unixSocket), opts.pubKey, opts.privKey)
+		client, err = service.NewClient("unix", resolve(opts.unixSocket), clientOptions(opts.privKey, opts.pubKey, opts.serverKey))
 		if err != nil {
 			fmt.Println("Failed to connect:", err)
 			client = nil
@@ -339,13 +362,25 @@ func serviceClientMain(opts *serviceClientOptions) error {
 		readline.PcItem("get", readline.PcItemDynamic(instanceIDs)),
 		readline.PcItem("start-server"),
 		readline.PcItem("start-client"),
-		readline.PcItem("stop", readline.PcItemDynamic(instanceIDs)),
-		readline.PcItem("update-provider", readline.PcItemDynamic(instanceIDs)),
-		readline.PcItem("add-route", readline.PcItemDynamic(instanceIDs)),
-		readline.PcItem("delete-route", readline.PcItemDynamic(instanceIDs)),
-		readline.PcItem("add-user", readline.PcItemDynamic(instanceIDs)),
-		readline.PcItem("delete-user", readline.PcItemDynamic(instanceIDs)),
-		readline.PcItem("stats", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("stop", readline.PcItemDynamic(instanceIDs, readline.PcItem("keep"))),
+		readline.PcItem("delete-instance", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("restart", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("update-instance", readline.PcItemDynamic(instanceIDs)),
+		readline.PcItem("list-providers"),
+		readline.PcItem("add-provider"),
+		readline.PcItem("get-provider", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("update-provider", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("delete-provider", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("validate-provider"),
+		readline.PcItem("add-route", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("update-route", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("delete-route", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("list-routes", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("add-user", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("update-user", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("delete-user", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("list-users", readline.PcItemDynamic(providerIDs)),
+		readline.PcItem("stats", readline.PcItemDynamic(instanceIDs, readline.PcItem("collect"))),
 		readline.PcItem("sessions", readline.PcItemDynamic(instanceIDs)),
 		readline.PcItem("kick-user", readline.PcItemDynamic(instanceIDs)),
 		readline.PcItem("kick-session", readline.PcItemDynamic(instanceIDs)),
@@ -418,7 +453,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 		switch parts[0] {
 		case "connect":
 			if len(parts) < 3 {
-				fmt.Println("usage: connect <tcp/unix> <addr/path> [priv_key] [pub_key]")
+				fmt.Println("usage: connect <tcp/unix> <addr/path> [priv_key] [pub_key] [server_key]")
 				continue
 			}
 
@@ -429,13 +464,16 @@ func serviceClientMain(opts *serviceClientOptions) error {
 				addr = parts[2]
 			}
 
-			var newClient *service.Client
-			if len(parts) < 5 {
-				newClient, err = service.NewClient(parts[1], addr, "", "")
-			} else {
-				newClient, err = service.NewClient(parts[1], addr, parts[3], parts[4])
+			var priv, pub, serverKey string
+			if len(parts) >= 5 {
+				priv, pub = parts[3], parts[4]
 			}
 
+			if len(parts) >= 6 {
+				serverKey = parts[5]
+			}
+
+			newClient, err := service.NewClient(parts[1], addr, clientOptions(priv, pub, serverKey))
 			if err != nil {
 				fmt.Println("Failed to connect:", err)
 				continue
@@ -644,7 +682,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 
 			fmt.Println("Started client instance:", id)
 			refreshIDs()
-		case "stop":
+		case "stop", "delete-instance":
 			c := getClient()
 			if c == nil {
 				fmt.Println("Not currently connected to a server")
@@ -652,17 +690,65 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 2 {
-				fmt.Println("usage: stop <id>")
+				fmt.Println("usage: stop <id> [keep] | delete-instance <id>")
 				continue
 			}
 
-			if err := c.StopInstance(parts[1]); err != nil {
+			keep := parts[0] == "stop" && len(parts) > 2 && parts[2] == "keep"
+			stop := c.StopInstance
+			if keep {
+				stop = c.PauseInstance
+			}
+
+			if err := stop(parts[1]); err != nil {
 				fmt.Println("Failed to stop instance:", err)
 				continue
 			}
 
 			fmt.Println("Stopped instance:", parts[1])
 			refreshIDs()
+		case "restart":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 2 {
+				fmt.Println("usage: restart <id>")
+				continue
+			}
+
+			if err := c.RestartInstance(parts[1]); err != nil {
+				fmt.Println("Failed to restart instance:", err)
+				continue
+			}
+
+			fmt.Println("Restarted instance:", parts[1])
+		case "update-instance":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Println("usage: update-instance <id> [name=<name>] [autostart=<true/false>] [config=<config|@file>] [listen=<addr,addr>]")
+				continue
+			}
+
+			req, err := parseInstanceUpdate(parts[1], parts[2:])
+			if err != nil {
+				fmt.Println("Failed to update instance:", err)
+				continue
+			}
+
+			if err := c.UpdateInstance(req); err != nil {
+				fmt.Println("Failed to update instance:", err)
+				continue
+			}
+
+			fmt.Println("Updated instance:", parts[1])
 		case "validate-server":
 			c := getClient()
 			if c == nil {
@@ -791,6 +877,32 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			fmt.Println("Added provider:", parts[1])
+			refreshIDs()
+		case "update-provider":
+			c := getClient()
+			if c == nil {
+				fmt.Println("Not currently connected to a server")
+				continue
+			}
+
+			if len(parts) < 3 {
+				fmt.Println("usage: update-provider <uuid> [name=<name>] [config=<config|@file>]")
+				continue
+			}
+
+			req, err := parseProviderUpdate(parts[1], parts[2:])
+			if err != nil {
+				fmt.Println("Failed to update provider:", err)
+				continue
+			}
+
+			if err := c.UpdateProvider(req); err != nil {
+				fmt.Println("Failed to update provider:", err)
+				continue
+			}
+
+			fmt.Println("Updated provider:", parts[1])
+			refreshIDs()
 		case "get-provider":
 			c := getClient()
 			if c == nil {
@@ -828,6 +940,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			fmt.Println("Deleted provider:", parts[1])
+			refreshIDs()
 		case "validate-provider":
 			c := getClient()
 			if c == nil {
@@ -857,7 +970,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			} else {
 				fmt.Println("Provider config is invalid.")
 			}
-		case "add-route":
+		case "add-route", "update-route":
 			c := getClient()
 			if c == nil {
 				fmt.Println("Not currently connected to a server")
@@ -865,39 +978,22 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 4 {
-				fmt.Println("usage: add-route <provider_uuid> <route_id> <address:port>")
+				fmt.Printf("usage: %s <provider_uuid> <route_id> <address:port> [socket] [transport] [encryption] [name]\n", parts[0])
 				continue
 			}
 
-			addr := parts[3]
-			parts_addr := strings.Split(addr, ":")
-			if len(parts_addr) != 2 {
-				fmt.Println("Invalid address format. Use <address:port>")
-				continue
-			}
-			port, err := strconv.Atoi(parts_addr[1])
+			route, err := parseRoute(parts[2:])
 			if err != nil {
-				fmt.Println("Invalid port number:", parts_addr[1])
+				fmt.Println("Invalid route:", err)
 				continue
 			}
 
-			route := &pb.RouteInfo{
-				Id:         parts[2],
-				Address:    parts_addr[0],
-				Port:       int32(port),
-				Socket:     "udp",
-				Transport:  "none",
-				Encryption: "handshake",
-				Name:       parts[2],
-			}
-
-			err = c.AddProviderRoute(parts[1], route)
-			if err != nil {
-				fmt.Println("Failed to add provider route:", err)
+			if err := c.AddProviderRoute(parts[1], route); err != nil {
+				fmt.Println("Failed to save provider route:", err)
 				continue
 			}
 
-			fmt.Println("Added route", parts[2], "to provider:", parts[1])
+			fmt.Println("Saved route", parts[2], "in provider:", parts[1])
 		case "delete-route":
 			c := getClient()
 			if c == nil {
@@ -944,7 +1040,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			for _, route := range routes {
 				fmt.Printf("  %s: %s:%d (%s/%s)\n", route.Id, route.Address, route.Port, route.Socket, route.Transport)
 			}
-		case "add-user":
+		case "add-user", "update-user":
 			c := getClient()
 			if c == nil {
 				fmt.Println("Not currently connected to a server")
@@ -952,23 +1048,22 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 3 {
-				fmt.Println("usage: add-user <provider_uuid> <user_uuid>")
+				fmt.Printf("usage: %s <provider_uuid> <user_uuid> [type] [peers] [allowed_routes] [forceturn]\n", parts[0])
 				continue
 			}
 
-			user := &pb.UserInfo{
-				Uuid:  parts[2],
-				Type:  "client",
-				Peers: 1,
-			}
-
-			err := c.AddProviderUser(parts[1], user)
+			user, err := parseUser(parts[2:])
 			if err != nil {
-				fmt.Println("Failed to add provider user:", err)
+				fmt.Println("Invalid user:", err)
 				continue
 			}
 
-			fmt.Println("Added user", parts[2], "to provider:", parts[1])
+			if err := c.AddProviderUser(parts[1], user); err != nil {
+				fmt.Println("Failed to save provider user:", err)
+				continue
+			}
+
+			fmt.Println("Saved user", parts[2], "in provider:", parts[1])
 		case "delete-user":
 			c := getClient()
 			if c == nil {
@@ -1023,11 +1118,26 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 
 			if len(parts) < 2 {
-				fmt.Println("usage: stats <instance_id> [collect]")
+				fmt.Println("usage: stats <instance_id> [collect [ack_token]]")
 				continue
 			}
 
-			stats, err := c.GetStats(parts[1], len(parts) > 2 && parts[2] == "collect")
+			collect := len(parts) > 2 && parts[2] == "collect"
+			var stats *pb.GetStatsResponse
+			var err error
+			switch {
+			case collect && len(parts) > 3:
+				var ack uint64
+				if ack, err = strconv.ParseUint(parts[3], 10, 64); err != nil {
+					fmt.Println("Invalid ack token:", err)
+					continue
+				}
+
+				stats, err = c.CollectStats(parts[1], ack)
+			default:
+				stats, err = c.GetStats(parts[1], collect)
+			}
+
 			if err != nil {
 				fmt.Println("Failed to get stats:", err)
 				continue
@@ -1043,6 +1153,10 @@ func serviceClientMain(opts *serviceClientOptions) error {
 
 			for uuid, u := range stats.Collected {
 				fmt.Printf("  collected %s: up %d B, down %d B\n", uuid, u.Up, u.Down)
+			}
+
+			if collect {
+				fmt.Println("  collect token:", stats.CollectToken)
 			}
 		case "sessions":
 			c := getClient()
@@ -1114,7 +1228,7 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			}
 		case "help":
 			fmt.Println("Available commands:")
-			fmt.Println("  connect <tcp/unix> <addr> [priv_key] [pub_key]    connect to service")
+			fmt.Println("  connect <tcp/unix> <addr> [priv_key] [pub_key] [server_key]    connect to service, server_key pins the service key")
 			fmt.Println("  disconnect                                        close current connection")
 			fmt.Println()
 			fmt.Println("Instance Management:")
@@ -1122,27 +1236,36 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			fmt.Println("  get <id>                                                   get full details + config for an instance")
 			fmt.Println("  start-server <config|@file> <provider_uuid> [id] [name] [autostart]    start a server instance")
 			fmt.Println("  start-client <config|@file> <listen_addr> [id] [name] [autostart]      start a client instance")
-			fmt.Println("  stop <id>                                                  stop an instance")
+			fmt.Println("  stop <id> [keep]                                           stop and remove an instance, keep leaves it stopped")
+			fmt.Println("  delete-instance <id>                                       stop and remove an instance with its saved state")
+			fmt.Println("  restart <id>                                               restart an instance, also revives stopped and failed ones")
+			fmt.Println("  update-instance <id> [name=] [autostart=] [config=] [listen=]    change an instance, config and listen restart it")
 			fmt.Println()
 			fmt.Println("Provider Management:")
 			fmt.Println("  list-providers                                list all managed providers")
 			fmt.Println("  add-provider <uuid> <name> <config|@file>     add a new provider")
 			fmt.Println("  get-provider <uuid>                           get provider details")
 			fmt.Println("  delete-provider <uuid>                        delete a provider")
+			fmt.Println("  update-provider <uuid> [name=] [config=]      rename a provider or reload it with a new config")
 			fmt.Println("  validate-provider <config|@file>              validate a provider config")
 			fmt.Println()
 			fmt.Println("Provider Routes:")
-			fmt.Println("  add-route <provider_uuid> <route_id> <address:port>    add a route to a provider")
+			fmt.Println("  add-route <provider_uuid> <route_id> <address:port> [socket] [transport] [encryption] [name]")
+			fmt.Println("  update-route <provider_uuid> <route_id> <address:port> [socket] [transport] [encryption] [name]")
+			fmt.Println("                                         add or replace a route, defaults: udp none handshake")
 			fmt.Println("  delete-route <provider_uuid> <route_id>                remove a route from a provider")
 			fmt.Println("  list-routes <provider_uuid>                            list routes in a provider")
 			fmt.Println()
 			fmt.Println("Provider Users:")
-			fmt.Println("  add-user <provider_uuid> <user_uuid>       add a user to a provider")
+			fmt.Println("  add-user <provider_uuid> <user_uuid> [type] [peers] [allowed_routes] [forceturn]")
+			fmt.Println("  update-user <provider_uuid> <user_uuid> [type] [peers] [allowed_routes] [forceturn]")
+			fmt.Println("                                             add or replace a user, defaults: client 1, routes comma separated")
 			fmt.Println("  delete-user <provider_uuid> <user_uuid>    remove a user from a provider")
 			fmt.Println("  list-users <provider_uuid>                 list users in a provider")
 			fmt.Println()
 			fmt.Println("Stats & Control:")
-			fmt.Println("  stats <id> [collect]              server totals and users, collect also returns usage since the last collect")
+			fmt.Println("  stats <id> [collect [ack]]        server totals and users, collect also returns usage since the last collect")
+			fmt.Println("                                    with ack, a batch repeats until acked with its collect token")
 			fmt.Println("  sessions <id>                     list live sessions")
 			fmt.Println("  kick-user <id> <user_uuid>        close all tunnels of a user")
 			fmt.Println("  kick-session <id> <session_id>    close all tunnels of a session")
@@ -1166,4 +1289,141 @@ func serviceClientMain(opts *serviceClientOptions) error {
 			fmt.Println("Unknown command. Type \"help\" for help.")
 		}
 	}
+}
+
+// parseRoute builds a route from <route_id> <address:port> [socket] [transport] [encryption] [name]
+func parseRoute(args []string) (*pb.RouteInfo, error) {
+	host, portStr, err := net.SplitHostPort(args[1])
+	if err != nil {
+		return nil, fmt.Errorf("address must be <address:port>: %w", err)
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid port number %q", portStr)
+	}
+
+	route := &pb.RouteInfo{
+		Id:         args[0],
+		Address:    host,
+		Port:       int32(port),
+		Socket:     "udp",
+		Transport:  "none",
+		Encryption: "handshake",
+		Name:       args[0],
+	}
+
+	for i, dst := range []*string{&route.Socket, &route.Transport, &route.Encryption, &route.Name} {
+		if len(args) > i+2 {
+			*dst = args[i+2]
+		}
+	}
+
+	return route, nil
+}
+
+// parseUser builds a user from <user_uuid> [type] [peers] [allowed_routes] [forceturn]
+func parseUser(args []string) (*pb.UserInfo, error) {
+	user := &pb.UserInfo{Uuid: args[0], Type: "client", Peers: 1}
+
+	if len(args) > 1 {
+		user.Type = args[1]
+	}
+
+	if len(args) > 2 {
+		peers, err := strconv.Atoi(args[2])
+		if err != nil {
+			return nil, fmt.Errorf("invalid peers %q", args[2])
+		}
+		user.Peers = int32(peers)
+	}
+
+	if len(args) > 3 {
+		user.AllowedRoutes = splitAddrs(args[3])
+	}
+
+	if len(args) > 4 {
+		forceTurn, err := strconv.ParseBool(args[4])
+		if err != nil {
+			return nil, fmt.Errorf("invalid forceturn %q", args[4])
+		}
+		user.Forceturn = forceTurn
+	}
+
+	return user, nil
+}
+
+// splitOptions splits key=value arguments into a map
+func splitOptions(args []string) (map[string]string, error) {
+	opts := make(map[string]string, len(args))
+	for _, a := range args {
+		k, v, ok := strings.Cut(a, "=")
+		if !ok {
+			return nil, fmt.Errorf("%q is not key=value", a)
+		}
+
+		opts[k] = v
+	}
+
+	return opts, nil
+}
+
+// parseInstanceUpdate builds an instance update from key=value arguments
+func parseInstanceUpdate(id string, args []string) (*pb.UpdateInstanceRequest, error) {
+	opts, err := splitOptions(args)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &pb.UpdateInstanceRequest{InstanceId: id}
+	for k, v := range opts {
+		switch k {
+		case "name":
+			req.Name = &v
+		case "autostart":
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid autostart %q", v)
+			}
+			req.Autostart = &b
+		case "config":
+			cfg, err := loadConfig(v)
+			if err != nil {
+				return nil, err
+			}
+			req.Config = &cfg
+		case "listen":
+			req.ListenAddrs = splitAddrs(v)
+		default:
+			return nil, fmt.Errorf("unknown option %q", k)
+		}
+	}
+
+	return req, nil
+}
+
+// parseProviderUpdate builds a provider update from key=value arguments
+func parseProviderUpdate(uuid string, args []string) (*pb.UpdateProviderRequest, error) {
+	opts, err := splitOptions(args)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &pb.UpdateProviderRequest{Uuid: uuid}
+	for k, v := range opts {
+		switch k {
+		case "name":
+			req.Name = &v
+		case "config":
+			cfg, err := loadConfig(v)
+			if err != nil {
+				return nil, err
+			}
+			req.Config = &cfg
+		default:
+			return nil, fmt.Errorf("unknown option %q", k)
+		}
+	}
+
+	return req, nil
 }

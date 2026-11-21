@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"time"
 )
@@ -82,7 +83,7 @@ func (c *Config) withDefaults() *Config {
 		out.DatagramQueue = 256
 	}
 	def(&out.DelayTarget, 80*time.Millisecond)
-	def(&out.DatagramAge, 300*time.Millisecond)
+	def(&out.DatagramAge, 150*time.Millisecond)
 	if out.Logger == nil {
 		out.Logger = slog.Default()
 	}
@@ -216,8 +217,13 @@ type Session struct {
 	frags       map[uint16]*fragBuf     // partially reassembled datagrams by ID
 
 	stats SessionStats // counters
+	cc    *shared      // session-wide pacer against the shared bottleneck
+
+	fairDg, fairData int // bytes of datagrams and new data sent while both were waiting
 
 	lastAlive     time.Time      // when a path was last alive, for the grace period
+	lastAck       time.Time      // when any path last had something newly acknowledged
+	stallEnd      time.Time      // when the last session-wide ACK silence ended; paths get a fresh deadline from then
 	lastHouse     time.Time      // last housekeeping run
 	notifyCh      chan struct{}  // wakes the send loop
 	closed        chan struct{}  // closed when the session ends
@@ -251,6 +257,8 @@ func newSession(cfg *Config, k *keys, id []byte, isClient bool) *Session {
 		notifyCh:  make(chan struct{}, 1),
 		closed:    make(chan struct{}),
 		lastAlive: time.Now(),
+		lastAck:   time.Now(),
+		cc:        newShared(time.Now()),
 	}
 	s.advertised = uint32(cfg.RecvWindow)
 	s.sendCond = sync.NewCond(&s.mu)
@@ -695,7 +703,9 @@ func (s *Session) handlePacket(p *path, b []byte) []byte {
 
 // onAckLocked applies an ACK on p: frees delivered segments, requeues lost ones, revives a dead path
 func (s *Session) onAckLocked(p *path, now time.Time, largest uint32, delay time.Duration, bitmap uint64) {
+	before := p.delivered
 	lost, acked, n := p.onAck(now, largest, delay, bitmap)
+	s.cc.onAcked(int(p.delivered - before))
 	for _, seg := range acked {
 		if seg.acked {
 			continue
@@ -710,6 +720,15 @@ func (s *Session) onAckLocked(p *path, now time.Time, largest uint32, delay time
 		s.sendCond.Broadcast()
 	}
 	s.requeueLocked(lost)
+	if n > 0 {
+		if now.Sub(s.lastAck) > s.cfg.DeadTimeout/2 {
+			s.stallEnd = now
+			for _, q := range s.paths {
+				q.ptoCount, q.lastPTO = 0, time.Time{} // the link is back: probe every path now instead of waiting out a backed-off timeout
+			}
+		}
+		s.lastAck = now
+	}
 	if n > 0 && p.dead {
 		p.dead = false
 		p.ceiling = 0
@@ -901,6 +920,7 @@ func (s *Session) elicitingLocked(p *path, now time.Time, flags byte, seg *segme
 		copy(plain[hdrLen+4:], dgram)
 	}
 	if paced {
+		s.cc.onSend(now, size+sealOverhead, s.cfg.PacingBurst)
 		p.outq = append(p.outq, queued{due: due, plain: plain})
 		return nil
 	}
@@ -972,7 +992,13 @@ func (s *Session) housekeepingLocked(now time.Time, out []outPkt) []outPkt {
 		return out
 	}
 	s.lastHouse = now
+	s.tickSharedLocked(now)
 
+	// a silence every path shares is the radio stalling, not paths dying: wait it out longer before giving up on them
+	deadAfter, expireAfter := s.cfg.DeadTimeout, s.cfg.PathExpiry
+	if now.Sub(s.lastAck) > s.cfg.DeadTimeout/2 {
+		deadAfter, expireAfter = deadAfter*stallPatience, expireAfter*stallPatience
+	}
 	var expired []*path
 	for _, p := range s.paths {
 		if !p.dead {
@@ -980,7 +1006,7 @@ func (s *Session) housekeepingLocked(now time.Time, out []outPkt) []outPkt {
 				s.requeueLocked(lost)
 				out = append(out, outPkt{p, s.elicitingLocked(p, now, fPing, nil, nil, true)})
 			}
-			if !p.waitingSince.IsZero() && now.Sub(p.waitingSince) > s.cfg.DeadTimeout {
+			if !p.waitingSince.IsZero() && now.Sub(max2(p.waitingSince, s.stallEnd)) > deadAfter {
 				p.dead, p.deadSince = true, now
 				s.requeueLocked(p.takeAll())
 				s.log.Info("mpath path dead", "path", p.id, "alive", s.aliveCount())
@@ -992,7 +1018,7 @@ func (s *Session) housekeepingLocked(now time.Time, out []outPkt) []outPkt {
 			}
 		}
 		if p.dead {
-			if now.Sub(p.deadSince) > s.cfg.PathExpiry {
+			if now.Sub(p.deadSince) > expireAfter {
 				expired = append(expired, p)
 				continue
 			}
@@ -1027,6 +1053,58 @@ func (s *Session) housekeepingLocked(now time.Time, out []outPkt) []outPkt {
 	return out
 }
 
+// max2 returns the later of two times
+func max2(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+// stallPatience scales the death and expiry timeouts while no path at all has been acknowledged lately
+const stallPatience = 4
+
+// tickSharedLocked feeds the shared controller the median standing queue delay and typical baseline RTT of the live paths
+func (s *Session) tickSharedLocked(now time.Time) {
+	var base time.Duration
+	var nb int
+	qs := make([]time.Duration, 0, len(s.paths))
+	for _, p := range s.paths {
+		if p.dead || p.removed {
+			continue
+		}
+		if p.qSeen {
+			qs = append(qs, p.qMin)
+		}
+		if p.minRTT > 0 {
+			base += p.minRTT
+			nb++
+		}
+	}
+	// the median ignores a single throttled path: a shared bottleneck queues every path alike
+	var q time.Duration
+	if len(qs) > 0 {
+		slices.Sort(qs)
+		q = qs[(len(qs)-1)/2]
+	}
+	if nb > 0 {
+		base /= time.Duration(nb)
+	} else {
+		base = s.cfg.InitialRTT
+	}
+	if now.Sub(s.cc.ivStart) < max(base, sharedMinWindow) {
+		return
+	}
+	for _, p := range s.paths {
+		p.qSeen = false
+	}
+	var maxRate float64
+	if s.cfg.MaxRate > 0 {
+		maxRate = s.cfg.MaxRate * float64(max(s.aliveCount(), 1))
+	}
+	s.cc.tick(now, q, base, maxRate)
+}
+
 // bestPathLocked returns the live path with the earliest arrival; forData also requires pacer and window room
 func (s *Session) bestPathLocked(now time.Time, forData bool) *path {
 	var best *path
@@ -1058,7 +1136,7 @@ func (s *Session) bestNonProbingLocked(now time.Time) *path {
 	return best
 }
 
-// nextPayloadLocked peeks at the next thing to send: a retransmission, a datagram or new data
+// nextPayloadLocked peeks at the next thing to send: a retransmission, then datagrams and new data taking turns by bytes so a fixed-rate datagram flood cannot starve the stream
 func (s *Session) nextPayloadLocked(now time.Time) (seg *segment, dgram []byte, ok bool) {
 	for len(s.retrans) > 0 && s.retrans[0].acked {
 		s.retrans[0].queued = false
@@ -1073,10 +1151,18 @@ func (s *Session) nextPayloadLocked(now time.Time) (seg *segment, dgram []byte, 
 		s.dgOut = s.dgOut[1:]
 		s.stats.DatagramsDrop++
 	}
-	if len(s.dgOut) > 0 {
+	dataReady := len(s.queue) > 0 && int32(s.queue[0].seq-s.peerLimit) < 0
+	switch {
+	case len(s.dgOut) > 0 && dataReady:
+		if s.fairDg > s.fairData {
+			return s.queue[0], nil, true
+		}
 		return nil, s.dgOut[0].data, true
-	}
-	if len(s.queue) > 0 && int32(s.queue[0].seq-s.peerLimit) < 0 {
+	case len(s.dgOut) > 0:
+		s.fairDg, s.fairData = 0, 0
+		return nil, s.dgOut[0].data, true
+	case dataReady:
+		s.fairDg, s.fairData = 0, 0
 		return s.queue[0], nil, true
 	}
 	return nil, nil, false
@@ -1089,7 +1175,7 @@ const maxBatch = 256
 func (s *Session) scheduleLocked(now time.Time, out []outPkt) ([]outPkt, time.Duration) {
 	for n := 0; n < maxBatch; n++ {
 		seg, dgram, ok := s.nextPayloadLocked(now)
-		if !ok {
+		if !ok || s.cc.backlog(now) > s.cfg.QueueHorizon {
 			break
 		}
 		p := s.bestPathLocked(now, true)
@@ -1107,6 +1193,7 @@ func (s *Session) scheduleLocked(now time.Time, out []outPkt) ([]outPkt, time.Du
 		case dgram != nil:
 			s.dgOut[0] = queuedDgram{}
 			s.dgOut = s.dgOut[1:]
+			s.fairDg += len(dgram)
 			s.stats.DatagramsSent++
 			s.elicitingLocked(p, now, fDgram, nil, dgram, appLimited)
 		case seg.queued:
@@ -1120,6 +1207,7 @@ func (s *Session) scheduleLocked(now time.Time, out []outPkt) ([]outPkt, time.Du
 			s.queue[0] = nil
 			s.queue = s.queue[1:]
 			seg.sent = true
+			s.fairData += len(seg.data)
 			s.stats.SegmentsSent++
 			s.elicitingLocked(p, now, fData, seg, nil, appLimited)
 		}

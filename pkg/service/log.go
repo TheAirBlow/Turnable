@@ -31,6 +31,18 @@ func (b *logBroadcast) unsubscribe(c *clientConn) {
 	b.mu.Unlock()
 }
 
+// snapshot returns the subscribed connections so callers can send without holding the lock
+func (b *logBroadcast) snapshot() []*clientConn {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	out := make([]*clientConn, 0, len(b.subs))
+	for c := range b.subs {
+		out = append(out, c)
+	}
+	return out
+}
+
 // dispatch sends a log record to all subscribed connections without blocking
 func (b *logBroadcast) dispatch(rec *pb.LogRecord) {
 	b.mu.RLock()

@@ -15,7 +15,8 @@ type ServiceConfig struct {
 	PubKey  string `json:"pub_key,omitempty"`  // Public key
 	PrivKey string `json:"priv_key,omitempty"` // Private key
 
-	AllowedKeys []string `json:"allowed_keys,omitempty"` // List of allowed private keys
+	AllowedKeys  []string `json:"allowed_keys,omitempty"`  // Client public keys with full access
+	ReadonlyKeys []string `json:"readonly_keys,omitempty"` // Client public keys that may only read
 
 	PersistDir string `json:"persist_dir,omitempty"` // Instance config persistence directory
 }
@@ -36,10 +37,10 @@ func (s *ServiceConfig) Validate() error {
 		return fmt.Errorf("either unix_socket, listen_addr, or both must be set")
 	}
 
-	if len(s.AllowedKeys) != 0 {
+	if len(s.AllowedKeys) != 0 || len(s.ReadonlyKeys) != 0 || s.PubKey != "" || s.PrivKey != "" {
 		pubBytes, err := base64.StdEncoding.DecodeString(s.PubKey)
 		if err != nil {
-			return err
+			return fmt.Errorf("invalid public key: %w", err)
 		}
 
 		_, err = mlkem.NewEncapsulationKey768(pubBytes)
@@ -49,12 +50,25 @@ func (s *ServiceConfig) Validate() error {
 
 		privBytes, err := base64.StdEncoding.DecodeString(s.PrivKey)
 		if err != nil {
-			return err
+			return fmt.Errorf("invalid private key: %w", err)
 		}
 
 		_, err = mlkem.NewDecapsulationKey768(privBytes)
 		if err != nil {
 			return fmt.Errorf("invalid PQC private key structure: %w", err)
+		}
+	}
+
+	for name, keys := range map[string][]string{"allowed_keys": s.AllowedKeys, "readonly_keys": s.ReadonlyKeys} {
+		for i, k := range keys {
+			kb, err := base64.StdEncoding.DecodeString(k)
+			if err != nil {
+				return fmt.Errorf("%s[%d] is not valid base64: %w", name, i, err)
+			}
+
+			if _, err := mlkem.NewEncapsulationKey768(kb); err != nil {
+				return fmt.Errorf("%s[%d] is not a valid PQC public key: %w", name, i, err)
+			}
 		}
 	}
 

@@ -1,9 +1,13 @@
 package service
 
 import (
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	pb "github.com/theairblow/turnable/pkg/service/proto"
 )
@@ -31,6 +35,17 @@ type Event struct {
 	Err           error             // error, for error events
 }
 
+// defaultRequestTimeout is how long a request may wait for its response
+const defaultRequestTimeout = 30 * time.Second
+
+// ClientOptions holds the connection and auth settings of a service client
+type ClientOptions struct {
+	PrivKey   string        // client private key, base64
+	PubKey    string        // client public key, base64
+	ServerKey string        // pinned service public key, base64, optional
+	Timeout   time.Duration // request timeout, defaults to 30 seconds
+}
+
 // Client communicates with a Turnable service server over a custom protocol
 type Client struct {
 	conn    net.Conn          // connection to the service
@@ -38,31 +53,52 @@ type Client struct {
 	respCh  chan *pb.Response // responses to requests
 	eventCh chan Event        // pushed events
 	done    chan struct{}     // closed when the connection ends
+	timeout time.Duration     // request timeout
+	nextID  uint64            // last request ID handed out, guarded by reqMu
+	pending atomic.Uint64     // ID of the request awaiting a response
+
+	errMu    sync.Mutex // guards closeErr
+	closeErr error      // reason the service ended the connection
 }
 
 // NewClient connects to a remote Turnable service server
-func NewClient(network, addr string, clientPrivB64, clientPubB64 string) (*Client, error) {
-	nc, err := net.Dial(network, addr)
-	if err != nil {
-		return nil, fmt.Errorf("dial: %w", err)
-	}
-
+func NewClient(network, addr string, opts ClientOptions) (*Client, error) {
 	var kp *KeyPair
-	if clientPrivB64 != "" || clientPubB64 != "" {
-		kp, err = NewKeyPair(clientPubB64, clientPrivB64)
+	if opts.PrivKey != "" || opts.PubKey != "" {
+		var err error
+		kp, err = NewKeyPair(opts.PubKey, opts.PrivKey)
 		if err != nil {
-			_ = nc.Close()
 			return nil, fmt.Errorf("parse client keypair: %w", err)
 		}
 	}
 
-	wrapped, err := clientHandshake(nc, kp)
+	var serverPub []byte
+	if opts.ServerKey != "" {
+		var err error
+		serverPub, err = base64.StdEncoding.DecodeString(opts.ServerKey)
+		if err != nil {
+			return nil, fmt.Errorf("decode server key: %w", err)
+		}
+	}
+
+	nc, err := net.DialTimeout(network, addr, handshakeTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+
+	wrapped, err := clientHandshake(nc, kp, serverPub)
 	if err != nil {
 		_ = nc.Close()
 		return nil, err
 	}
 
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = defaultRequestTimeout
+	}
+
 	c := &Client{
+		timeout: timeout,
 		conn:    wrapped,
 		respCh:  make(chan *pb.Response, 1),
 		eventCh: make(chan Event, 256),
@@ -131,6 +167,7 @@ func (c *Client) readLoop() {
 			default:
 			}
 		case resp.GetError() != nil:
+			c.setCloseErr(fmt.Errorf("%s", resp.GetError().Message))
 			select {
 			case c.eventCh <- Event{Kind: EventDisconnected, Err: fmt.Errorf("%s", resp.GetError().Message)}:
 			default:
@@ -138,29 +175,63 @@ func (c *Client) readLoop() {
 			close(c.eventCh)
 			return
 		default:
-			select {
-			case c.respCh <- &resp:
-			default:
-				// Unsolicited response with no pending request, drop it
+			// A reply to a request that already timed out is dropped
+			if id := c.pending.Load(); id != 0 && resp.RequestId == id {
+				select {
+				case c.respCh <- &resp:
+				default:
+				}
 			}
 		}
 	}
 }
 
-// sendRequest sends a proto request and waits for its response via the read loop
+// setCloseErr remembers why the service ended the connection
+func (c *Client) setCloseErr(err error) {
+	c.errMu.Lock()
+	defer c.errMu.Unlock()
+	c.closeErr = err
+}
+
+// closedError returns the reason the connection ended
+func (c *Client) closedError() error {
+	c.errMu.Lock()
+	defer c.errMu.Unlock()
+	if c.closeErr != nil {
+		return fmt.Errorf("connection closed: %w", c.closeErr)
+	}
+	return errors.New("connection closed")
+}
+
+// sendRequest sends a proto request and waits for the response carrying its ID
 func (c *Client) sendRequest(req *pb.Request) (*pb.Response, error) {
 	c.reqMu.Lock()
 	defer c.reqMu.Unlock()
+
+	c.nextID++
+	req.RequestId = c.nextID
+	c.pending.Store(req.RequestId)
+	defer c.pending.Store(0)
+
+	select {
+	case <-c.respCh:
+	default:
+	}
 
 	if err := writeFramed(c.conn, req); err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
+	timer := time.NewTimer(c.timeout)
+	defer timer.Stop()
+
 	select {
 	case resp := <-c.respCh:
 		return resp, nil
 	case <-c.done:
-		return nil, fmt.Errorf("connection closed")
+		return nil, c.closedError()
+	case <-timer.C:
+		return nil, fmt.Errorf("request timed out after %s", c.timeout)
 	}
 }
 
@@ -222,12 +293,23 @@ func (c *Client) StartClient(config string, listenAddrs []string, instanceID, na
 	return "", fmt.Errorf("unexpected response type")
 }
 
-// StopInstance requests to stop an instance
+// StopInstance stops and removes an instance together with its persisted record
 func (c *Client) StopInstance(instanceID string) error {
+	return c.stopInstance(instanceID, false)
+}
+
+// PauseInstance stops an instance but keeps it listed and persisted so it can be restarted
+func (c *Client) PauseInstance(instanceID string) error {
+	return c.stopInstance(instanceID, true)
+}
+
+// stopInstance sends a stop request
+func (c *Client) stopInstance(instanceID string, keep bool) error {
 	req := &pb.Request{
 		Payload: &pb.Request_StopInstance{
 			StopInstance: &pb.StopInstanceRequest{
 				InstanceId: instanceID,
+				Keep:       keep,
 			},
 		},
 	}
@@ -240,6 +322,42 @@ func (c *Client) StopInstance(instanceID string) error {
 	if sr := resp.GetStopInstance(); sr != nil {
 		if sr.Error != "" {
 			return fmt.Errorf("stop instance: %s", sr.Error)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unexpected response type")
+}
+
+// RestartInstance restarts an instance from its stored config, which also revives stopped and failed ones
+func (c *Client) RestartInstance(instanceID string) error {
+	resp, err := c.sendRequest(&pb.Request{Payload: &pb.Request_RestartInstance{
+		RestartInstance: &pb.RestartInstanceRequest{InstanceId: instanceID},
+	}})
+	if err != nil {
+		return err
+	}
+
+	if rr := resp.GetRestartInstance(); rr != nil {
+		if rr.Error != "" {
+			return fmt.Errorf("restart instance: %s", rr.Error)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unexpected response type")
+}
+
+// UpdateInstance changes an instance, nil fields are left alone and a changed config or listen address list restarts it
+func (c *Client) UpdateInstance(req *pb.UpdateInstanceRequest) error {
+	resp, err := c.sendRequest(&pb.Request{Payload: &pb.Request_UpdateInstance{UpdateInstance: req}})
+	if err != nil {
+		return err
+	}
+
+	if ur := resp.GetUpdateInstance(); ur != nil {
+		if ur.Error != "" {
+			return fmt.Errorf("update instance: %s", ur.Error)
 		}
 		return nil
 	}
@@ -387,6 +505,23 @@ func (c *Client) AddProvider(uuid, name, config string) error {
 	if ap := resp.GetAddProvider(); ap != nil {
 		if ap.Error != "" {
 			return fmt.Errorf("add provider: %s", ap.Error)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unexpected response type")
+}
+
+// UpdateProvider renames a provider or reloads it with a new config, nil fields are left alone
+func (c *Client) UpdateProvider(req *pb.UpdateProviderRequest) error {
+	resp, err := c.sendRequest(&pb.Request{Payload: &pb.Request_UpdateProvider{UpdateProvider: req}})
+	if err != nil {
+		return err
+	}
+
+	if up := resp.GetUpdateProvider(); up != nil {
+		if up.Error != "" {
+			return fmt.Errorf("update provider: %s", up.Error)
 		}
 		return nil
 	}
@@ -645,16 +780,12 @@ func (c *Client) ListProviderUsers(providerUUID string) ([]*pb.UserInfo, error) 
 
 // GetStats fetches a server instance's stats; collect also returns per-user usage since the last collect and resets the counters
 func (c *Client) GetStats(instanceID string, collect bool) (*pb.GetStatsResponse, error) {
-	req := &pb.Request{
-		Payload: &pb.Request_GetStats{
-			GetStats: &pb.GetStatsRequest{
-				InstanceId: instanceID,
-				Collect:    collect,
-			},
-		},
-	}
+	return c.getStats(&pb.GetStatsRequest{InstanceId: instanceID, Collect: collect})
+}
 
-	resp, err := c.sendRequest(req)
+// getStats sends a stats request
+func (c *Client) getStats(sr *pb.GetStatsRequest) (*pb.GetStatsResponse, error) {
+	resp, err := c.sendRequest(&pb.Request{Payload: &pb.Request_GetStats{GetStats: sr}})
 	if err != nil {
 		return nil, err
 	}
@@ -667,6 +798,12 @@ func (c *Client) GetStats(instanceID string, collect bool) (*pb.GetStatsResponse
 	}
 
 	return nil, fmt.Errorf("unexpected response type")
+}
+
+// CollectStats fetches stats like GetStats with collect set, but keeps returning the same usage until it is confirmed.
+// ack is the CollectToken of the last batch the caller processed, or 0 when there is none.
+func (c *Client) CollectStats(instanceID string, ack uint64) (*pb.GetStatsResponse, error) {
+	return c.getStats(&pb.GetStatsRequest{InstanceId: instanceID, Collect: true, AckToken: &ack})
 }
 
 // ListSessions lists the live sessions of a server instance

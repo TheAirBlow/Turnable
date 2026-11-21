@@ -18,7 +18,7 @@ go build -o turnable ./cmd
 ./turnable client -l 127.0.0.1:1080 <config-file-or-url>
 ```
 
-Add `turnable.exe` to the whitelist of your VPN or proxy client, and set it to use `127.0.0.1:1080`.
+Add `turnable` to the whitelist of your VPN or proxy client, and set it to use `127.0.0.1:1080`.
 
 ## Running in background
 To run the client in the background, use:

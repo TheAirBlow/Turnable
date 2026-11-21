@@ -77,6 +77,12 @@ message ClientHello {
   bytes public_key = 2;
 }
 
+// ServerAuth is sent by the service after a valid ClientHello, it holds a secret encapsulated to the client's public key
+// so only the holder of the matching private key can derive the session keys
+message ServerAuth {
+  bytes ciphertext = 1;
+}
+
 // StartServerRequest starts a new Turnable server instance
 message StartServerRequest {
   string config = 1;
@@ -107,13 +113,40 @@ message StartClientResponse {
   string error = 2;
 }
 
-// StopInstanceRequest stops the specified managed instance
+// StopInstanceRequest stops the specified managed instance.
+// By default the instance is removed together with its persisted record, with keep set it stays listed as stopped.
 message StopInstanceRequest {
   string instance_id = 1;
+  bool keep = 2;
 }
 
 // StopInstanceResponse is sent in reply to StopInstanceRequest
 message StopInstanceResponse {
+  string error = 1;
+}
+
+// RestartInstanceRequest restarts an instance from its stored config, also revives stopped and failed ones
+message RestartInstanceRequest {
+  string instance_id = 1;
+}
+
+// RestartInstanceResponse is sent in reply to RestartInstanceRequest
+message RestartInstanceResponse {
+  string error = 1;
+}
+
+// UpdateInstanceRequest changes an instance, unset fields are left alone.
+// A changed config or listen address list restarts the instance.
+message UpdateInstanceRequest {
+  string instance_id = 1;
+  optional string name = 2;
+  optional bool autostart = 3;
+  optional string config = 4;
+  repeated string listen_addrs = 5; // clients only, replaces the list when not empty
+}
+
+// UpdateInstanceResponse is sent in reply to UpdateInstanceRequest
+message UpdateInstanceResponse {
   string error = 1;
 }
 
@@ -177,6 +210,18 @@ message AddProviderRequest {
 message AddProviderResponse {
   string uuid = 1;
   string error = 2;
+}
+
+// UpdateProviderRequest renames a provider or reloads it with a new config, unset fields are left alone
+message UpdateProviderRequest {
+  string uuid = 1;
+  optional string name = 2;
+  optional string config = 3;
+}
+
+// UpdateProviderResponse is sent in reply to UpdateProviderRequest
+message UpdateProviderResponse {
+  string error = 1;
 }
 
 // GetProviderRequest requests the full details of a provider
@@ -357,17 +402,21 @@ message ServerTotals {
 
 // GetStatsRequest requests the stats of a server instance.
 // With collect set, the response also carries what each user moved since the previous collect and the counters start over.
+// A client that sets ack_token (0 when it has none yet) gets the usage back until it confirms receipt with the
+// collect_token of the batch it processed, so a lost response never loses usage. Without it, collected batches are not repeated.
 message GetStatsRequest {
   string instance_id = 1;
   bool collect = 2;
+  optional uint64 ack_token = 3;
 }
 
 // GetStatsResponse carries server totals, every user seen and the collected usage
 message GetStatsResponse {
   ServerTotals totals = 1;
   repeated UserStats users = 2;
-  map<string, Usage> collected = 3; // user UUID to usage since the previous collect
+  map<string, Usage> collected = 3; // user UUID to usage since the previous confirmed collect
   string error = 4;
+  uint64 collect_token = 5; // identifies the collected batch, send it back as ack_token
 }
 
 // ListSessionsRequest requests the live sessions of a server instance
@@ -419,8 +468,10 @@ message ErrorResponse {
   string message = 1;
 }
 
-// Request is a client-to-service message
+// Request is a client-to-service message.
+// The service copies request_id into the response so late replies can be told apart.
 message Request {
+  uint64 request_id = 100;
   oneof payload {
     StartServerRequest start_server = 1;
     StartClientRequest start_client = 2;
@@ -444,11 +495,15 @@ message Request {
     GetStatsRequest get_stats = 26;
     ListSessionsRequest list_sessions = 27;
     KickRequest kick = 28;
+    RestartInstanceRequest restart_instance = 29;
+    UpdateInstanceRequest update_instance = 30;
+    UpdateProviderRequest update_provider = 31;
   }
 }
 
-// Response is a service-to-client message
+// Response is a service-to-client message, request_id is 0 for pushed logs and events
 message Response {
+  uint64 request_id = 100;
   oneof payload {
     StartServerResponse start_server = 1;
     StartClientResponse start_client = 2;
@@ -476,5 +531,8 @@ message Response {
     ListSessionsResponse list_sessions = 30;
     KickResponse kick = 31;
     SessionEvent session_event = 32;
+    RestartInstanceResponse restart_instance = 33;
+    UpdateInstanceResponse update_instance = 34;
+    UpdateProviderResponse update_provider = 35;
   }
 }

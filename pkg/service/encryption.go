@@ -122,6 +122,7 @@ type encryptedConn struct {
 	readBuf []byte           // decrypted bytes not yet returned
 	readPos int              // read position in readBuf
 	readEnd int              // end of valid data in readBuf
+	maxSize uint32           // largest accepted frame
 }
 
 // newEncryptedConn wraps a conn with encryption layer
@@ -130,6 +131,7 @@ func newEncryptedConn(nc net.Conn, enc *serviceEncLayer) *encryptedConn {
 		nc:      nc,
 		enc:     enc,
 		readBuf: make([]byte, 0, 1024),
+		maxSize: maxFrameSize,
 	}
 }
 
@@ -145,7 +147,7 @@ func (ec *encryptedConn) Read(p []byte) (int, error) {
 		}
 
 		size := binary.BigEndian.Uint32(lenBuf[:])
-		if size > 8*1024*1024 {
+		if size > ec.maxSize {
 			return 0, fmt.Errorf("encrypted chunk too large: %d bytes", size)
 		}
 

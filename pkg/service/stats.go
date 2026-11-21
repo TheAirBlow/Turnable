@@ -63,8 +63,10 @@ func (s *Server) getStats(req *pb.GetStatsRequest) *pb.GetStatsResponse {
 	}
 
 	if req.Collect {
+		collected, token := inst.collectUsage(req.AckToken)
+		resp.CollectToken = token
 		resp.Collected = map[string]*pb.Usage{}
-		for uuid, u := range inst.server.CollectUsage() {
+		for uuid, u := range collected {
 			resp.Collected[uuid] = usageToProto(u)
 		}
 	}
@@ -159,9 +161,7 @@ func (s *Server) forwardSessionEvents(inst *Instance) {
 
 // broadcastSessionEvent sends a SessionEvent to all connected service clients
 func (s *Server) broadcastSessionEvent(event *pb.SessionEvent) {
-	s.relay.broadcast.mu.RLock()
-	defer s.relay.broadcast.mu.RUnlock()
-	for c := range s.relay.broadcast.subs {
+	for _, c := range s.relay.broadcast.snapshot() {
 		select {
 		case c.writeCh <- &pb.Response{Payload: &pb.Response_SessionEvent{SessionEvent: event}}:
 		case <-c.done:
@@ -174,4 +174,19 @@ func (s *Server) broadcastSessionEvent(event *pb.SessionEvent) {
 // usageToProto converts engine usage to its protobuf form
 func usageToProto(u engine.Usage) *pb.Usage {
 	return &pb.Usage{Up: u.Up, Down: u.Down}
+}
+
+// isReadOnlyRequest reports whether a request leaves the service unchanged
+func isReadOnlyRequest(req *pb.Request) bool {
+	switch p := req.Payload.(type) {
+	case *pb.Request_ListInstances, *pb.Request_GetInstance, *pb.Request_ValidateServerConfig,
+		*pb.Request_ValidateClientConfig, *pb.Request_ConvertClientConfig, *pb.Request_GetProvider,
+		*pb.Request_ListProviders, *pb.Request_ValidateProviderConfig, *pb.Request_ListProviderRoutes,
+		*pb.Request_ListProviderUsers, *pb.Request_ListSessions:
+		return true
+	case *pb.Request_GetStats:
+		return !p.GetStats.Collect
+	default:
+		return false
+	}
 }

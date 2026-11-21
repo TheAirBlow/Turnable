@@ -392,3 +392,19 @@ func (s *TurnableServer) Subscribe(buffer int) (<-chan Event, func()) {
 		})
 	}
 }
+
+// PendingUsage returns what each user moved since the last collect without resetting the counters, idle users are left out
+func (s *TurnableServer) PendingUsage() map[string]Usage {
+	t := s.tr
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	out := map[string]Usage{}
+	for uuid, u := range t.users {
+		d := Usage{Up: u.pendUp.Load(), Down: u.pendDown.Load()}
+		if d.Up != 0 || d.Down != 0 {
+			out[uuid] = d
+		}
+	}
+	return out
+}
