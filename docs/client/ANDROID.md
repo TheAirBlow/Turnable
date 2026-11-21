@@ -1,5 +1,5 @@
 # Android Setup &nbsp;·&nbsp; [🇷🇺 RU](ANDROID_RU.md)
-This guide helps you set up the Turnable VPN client on Android using Termux and NekoBox. It assumes you have a Turnable server running with a configured WireGuard route, though it generally applies to any UDP based protocol. Users of TCP based protocols can just ignore MTU recommendations.
+This guide helps you set up the Turnable VPN client on Android using Termux and Exclave. It assumes you have a Turnable server running with a configured WireGuard route, though it generally applies to any UDP based protocol. Users of TCP based protocols can just ignore MTU recommendations.
 
 ## 1. Install Termux
 First of all, you need to install Termux, as there is no official Turnable app for Android yet. **Do not use Google Play Store version** as it is severely outdated. Instead, download it from their [GitHub Releases](https://github.com/termux/termux-app/releases/latest) page.
@@ -64,8 +64,8 @@ If you have a JSON configuration file, place it in the same directory and use it
 ./turnable client -l 127.0.0.1:5080 config.json
 ```
 
-## 3. Set up NekoBox
-NekoBox is a proxy client for Android that will route your traffic through the Turnable client. Install it from the [official repository](https://github.com/MatsuriDayo/NekoBoxForAndroid) or your device's app store.
+## 3. Set up Exclave
+Exclave is a proxy client for Android that will route your traffic through the Turnable client. Install it from the [official repository](https://github.com/dyhkwong/Exclave) or your device's app store.
 
 ### 3.1. Configure routing rules
 Delete all pre-existing routing rules and add the following to block ads, protect against spyware, and optimize routing:
@@ -87,7 +87,7 @@ Delete all pre-existing routing rules and add the following to block ads, protec
 ```
 
 ### 3.2. Configure the app whitelist
-Open the **Settings** tab in NekoBox, enable per-app proxy, and select only the apps that should go through Turnable. Do not set this up as a routing rule.
+Open the **Settings** tab in Exclave, enable per-app proxy, and select only the apps that should go through Turnable. Do not set this up as a routing rule.
 
 ### 3.3. Configure WireGuard
 If you're creating a WireGuard configuration manually, ensure these fields are set correctly:
@@ -100,7 +100,7 @@ If you're creating a WireGuard configuration manually, ensure these fields are s
 | Server Public Key | [Server pub key]   | From your server config                   |
 | Network Address   | [Your network]     | From your server config                   |
 
-If you already have a NekoBox compatible WireGuard config, you can import it as-is, but you **must update** the Server and MTU fields as shown above, as otherwise it will either bypass Turnable entirely or performance would be severely hindered.
+If you already have an Exclave compatible WireGuard config, you can import it as-is, but you **must update** the Server and MTU fields as shown above, as otherwise it will either bypass Turnable entirely or performance would be severely hindered.
 
 ## 5. PROFIT!
-Your Android device is now configured to route traffic through the Turnable VPN client. NekoBox will manage your VPN connection making use of the configured secure routing rules.
+Your Android device is now configured to route traffic through the Turnable VPN client. Exclave will manage your VPN connection making use of the configured secure routing rules.
