@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/theairblow/turnable/pkg/common"
 	"github.com/theairblow/turnable/pkg/protocol"
@@ -9,6 +10,7 @@ import (
 
 // Handler represents a platform handler
 type Handler interface {
+	SetLogger(log *slog.Logger)                                        // Changes the slog logger instance
 	ID() string                                                        // Returns the unique ID of this handler
 	GetConfig() Config                                                 // Returns the platform configuration
 	GetTURNInfo() []protocol.TURNInfo                                  // Returns the latest TURN server credentials

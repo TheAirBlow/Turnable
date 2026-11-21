@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -47,7 +46,7 @@ func (V *Handler) solveManualCaptcha(ctx context.Context, joinURL string) (strin
 		want := time.Now().Add(manualCaptchaOpened).UnixNano()
 		for cur := deadline.Load(); cur < want; cur = deadline.Load() {
 			if deadline.CompareAndSwap(cur, want) {
-				slog.Debug("manual captcha timeout extended", "left", manualCaptchaOpened)
+				V.logger().Debug("manual captcha timeout extended", "left", manualCaptchaOpened)
 				break
 			}
 		}
@@ -101,13 +100,13 @@ func (V *Handler) solveManualCaptcha(ctx context.Context, joinURL string) (strin
 	srv := &http.Server{Handler: mux}
 	go func() {
 		if err := srv.Serve(ln4); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Warn("manual captcha server error", "error", err)
+			V.logger().Warn("manual captcha server error", "error", err)
 		}
 	}()
 	if ln6, err := net.Listen("tcp", "[::1]:"+port); err == nil {
 		go func() {
 			if err := srv.Serve(ln6); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Warn("manual captcha server error", "error", err)
+				V.logger().Warn("manual captcha server error", "error", err)
 			}
 		}()
 	}
@@ -118,7 +117,7 @@ func (V *Handler) solveManualCaptcha(ctx context.Context, joinURL string) (strin
 		callURL += "#port=" + port
 	}
 
-	slog.Info("manual captcha solve required",
+	V.logger().Info("manual captcha solve required",
 		"port", port,
 		"userscript", "http://localhost:"+port+"/captcha_manual.user.js",
 		"guide", "http://localhost:"+port+"/",

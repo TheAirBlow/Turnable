@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"log/slog"
 	"math"
 	"math/rand"
 	"runtime"
@@ -49,7 +48,7 @@ func (V *Handler) solveSliderCaptcha(ctx context.Context, session *captchaSessio
 	values := session.baseValues()
 	values.Set("captcha_settings", settings)
 
-	slog.Debug("vk captcha slider content request")
+	V.logger().Debug("vk captcha slider content request")
 	resp, err := V.captchaRequest(ctx, session, "captchaNotRobot.getContent", values)
 	if err != nil {
 		return "", fmt.Errorf("slider getContent failed: %w", err)
@@ -59,7 +58,7 @@ func (V *Handler) solveSliderCaptcha(ctx context.Context, session *captchaSessio
 	if err != nil {
 		return "", err
 	}
-	slog.Debug("vk captcha slider puzzle decoded", "grid_size", puzzle.Size, "attempts", puzzle.Attempts, "swaps", len(puzzle.Swaps))
+	V.logger().Debug("vk captcha slider puzzle decoded", "grid_size", puzzle.Size, "attempts", puzzle.Attempts, "swaps", len(puzzle.Swaps))
 
 	guesses, err := rankSliderGuesses(puzzle.Image, puzzle.Size, puzzle.Swaps)
 	if err != nil {
@@ -67,7 +66,7 @@ func (V *Handler) solveSliderCaptcha(ctx context.Context, session *captchaSessio
 	}
 
 	attemptLimit := min(puzzle.Attempts, len(guesses))
-	slog.Debug("vk captcha slider guesses ranked", "guesses", len(guesses), "attempt_limit", attemptLimit)
+	V.logger().Debug("vk captcha slider guesses ranked", "guesses", len(guesses), "attempt_limit", attemptLimit)
 
 	limit := attemptLimit
 	if limit <= 0 {
@@ -84,7 +83,7 @@ func (V *Handler) solveSliderCaptcha(ctx context.Context, session *captchaSessio
 			return "", err
 		}
 
-		slog.Debug("vk captcha slider attempt", "attempt", i+1, "max_attempts", limit, "guess_index", guesses[i].Index)
+		V.logger().Debug("vk captcha slider attempt", "attempt", i+1, "max_attempts", limit, "guess_index", guesses[i].Index)
 		answerData, err := json.Marshal(struct {
 			Value []int `json:"value"`
 		}{Value: guesses[i].Swaps})
@@ -99,7 +98,7 @@ func (V *Handler) solveSliderCaptcha(ctx context.Context, session *captchaSessio
 		}
 
 		if strings.EqualFold(check.Status, "ok") {
-			slog.Debug("vk captcha slider accepted", "attempt", i+1)
+			V.logger().Debug("vk captcha slider accepted", "attempt", i+1)
 			if check.SuccessToken == "" {
 				return "", errors.New("captcha success token not found")
 			}

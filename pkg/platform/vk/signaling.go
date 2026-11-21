@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -50,7 +49,7 @@ func (V *Handler) Connect() error {
 	V.mu.RUnlock()
 
 	if common.IsNullOrWhiteSpace(callID) {
-		slog.Warn("vk signaling connect rejected: not authorized")
+		V.logger().Warn("vk signaling connect rejected: not authorized")
 		return errors.New("authorize must be called before connect")
 	}
 
@@ -84,7 +83,7 @@ func (V *Handler) Connect() error {
 	}
 	conn, _, err := wsDialer.DialContext(ctx, endpoint, header)
 	if err != nil {
-		slog.Warn("vk signaling websocket dial failed", "error", err)
+		V.logger().Warn("vk signaling websocket dial failed", "error", err)
 		return err
 	}
 
@@ -125,7 +124,7 @@ func (V *Handler) Connect() error {
 		_ = conn.Close()
 		V.conn = nil
 		V.connMu.Unlock()
-		slog.Warn("vk signaling setup command failed", "command", "allocate-consumer", "error", err)
+		V.logger().Warn("vk signaling setup command failed", "command", "allocate-consumer", "error", err)
 		return err
 	}
 
@@ -142,7 +141,7 @@ func (V *Handler) Connect() error {
 		_ = conn.Close()
 		V.conn = nil
 		V.connMu.Unlock()
-		slog.Warn("vk signaling setup command failed", "command", "change-media-settings", "error", err)
+		V.logger().Warn("vk signaling setup command failed", "command", "change-media-settings", "error", err)
 		return err
 	}
 
@@ -155,7 +154,7 @@ func (V *Handler) Connect() error {
 		_ = conn.Close()
 		V.conn = nil
 		V.connMu.Unlock()
-		slog.Warn("vk signaling setup command failed", "command", "update-media-modifiers", "error", err)
+		V.logger().Warn("vk signaling setup command failed", "command", "update-media-modifiers", "error", err)
 		return err
 	}
 
@@ -169,7 +168,7 @@ func (V *Handler) Connect() error {
 	}
 
 	go V.runSignalingLoop(readerCtx, conn)
-	slog.Info("vk signaling connected", "endpoint_host", endpointHost)
+	V.logger().Info("vk signaling connected", "endpoint_host", endpointHost)
 	return nil
 }
 
@@ -189,7 +188,7 @@ func (V *Handler) Disconnect() error {
 		}
 		_ = V.conn.Close()
 		V.conn = nil
-		slog.Warn("vk signaling disconnect hangup failed", "error", err)
+		V.logger().Warn("vk signaling disconnect hangup failed", "error", err)
 		return err
 	}
 
@@ -206,15 +205,15 @@ func (V *Handler) Disconnect() error {
 	V.conn = nil
 
 	if err != nil {
-		slog.Warn("vk signaling disconnect close control failed", "error", err)
+		V.logger().Warn("vk signaling disconnect close control failed", "error", err)
 		return err
 	}
 	if closeErr != nil {
 		if !errors.Is(closeErr, net.ErrClosed) && !strings.Contains(strings.ToLower(closeErr.Error()), "use of closed network connection") {
-			slog.Warn("vk signaling disconnect close failed", "error", closeErr)
+			V.logger().Warn("vk signaling disconnect close failed", "error", closeErr)
 			return closeErr
 		}
-		slog.Debug("vk signaling disconnect close: already closed")
+		V.logger().Debug("vk signaling disconnect close: already closed")
 	}
 	return nil
 }
@@ -227,7 +226,7 @@ func (V *Handler) Close() error {
 	if V.conn == nil {
 		return nil
 	}
-	slog.Info("vk signaling force close")
+	V.logger().Info("vk signaling force close")
 	if V.readerCancel != nil {
 		V.readerCancel()
 		V.readerCancel = nil
@@ -235,7 +234,7 @@ func (V *Handler) Close() error {
 	err := V.conn.Close()
 	V.conn = nil
 	if err != nil && !errors.Is(err, net.ErrClosed) && !strings.Contains(strings.ToLower(err.Error()), "use of closed network connection") {
-		slog.Warn("vk signaling force close failed", "error", err)
+		V.logger().Warn("vk signaling force close failed", "error", err)
 		return err
 	}
 	return nil
@@ -286,7 +285,7 @@ func (V *Handler) handleIncomingMessage(msg *vkMessage) []platform.Event {
 	case "producer-updated":
 		remoteMedia, err := parseRemoteMediaDescription(msg.Description)
 		if err != nil {
-			slog.Warn("vk signaling producer update parse failed", "error", err)
+			V.logger().Warn("vk signaling producer update parse failed", "error", err)
 			return []platform.Event{{
 				Type:     platform.EventCallEnded,
 				Metadata: map[string]string{"error": "invalid producer offer: " + err.Error()},
@@ -410,7 +409,7 @@ func (V *Handler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) {
 		}
 		V.connMu.Unlock()
 		V.broadcast(platform.Event{Type: platform.EventCallEnded, Metadata: map[string]string{"error": err.Error()}})
-		slog.Warn("vk signaling loop terminated", "error", err)
+		V.logger().Warn("vk signaling loop terminated", "error", err)
 	}
 
 	for {
@@ -446,12 +445,12 @@ func (V *Handler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) {
 
 			var msg vkMessage
 			if err := json.Unmarshal(result.payload, &msg); err != nil {
-				slog.Debug("vk signaling payload decode failed", "error", err)
+				V.logger().Debug("vk signaling payload decode failed", "error", err)
 				continue
 			}
 
 			if msg.Notification == "" && msg.Response == "" && msg.Type == "" {
-				slog.Debug(
+				V.logger().Debug(
 					"vk signaling unclassified payload",
 					"bytes",
 					len(result.payload),
@@ -461,14 +460,14 @@ func (V *Handler) runSignalingLoop(ctx context.Context, conn *websocket.Conn) {
 				continue
 			}
 			if strings.EqualFold(msg.Type, "error") {
-				slog.Warn(
+				V.logger().Warn(
 					"vk signaling error message",
 					"bytes", len(result.payload),
 					"response", msg.Response,
 				)
 				continue
 			}
-			slog.Debug(
+			V.logger().Debug(
 				"vk signaling inbound message",
 				"bytes", len(result.payload),
 				"type", msg.Type,
@@ -519,7 +518,7 @@ func (V *Handler) writeCommandLocked(command string, payload map[string]any) err
 	if err != nil {
 		return err
 	}
-	slog.Debug("vk signaling command write", "command", command, "sequence", sequence)
+	V.logger().Debug("vk signaling command write", "command", command, "sequence", sequence)
 	if err := V.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return err
 	}

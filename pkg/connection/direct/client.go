@@ -47,6 +47,7 @@ func (D *Handler) connectSession() error {
 	if err != nil {
 		return err
 	}
+	platformHandler.SetLogger(D.log)
 
 	success := false
 	defer func() {

@@ -65,6 +65,7 @@ func (D *Handler) connectClientSession() error {
 	if err != nil {
 		return err
 	}
+	platformHandler.SetLogger(D.log)
 
 	success := false
 	defer func() {

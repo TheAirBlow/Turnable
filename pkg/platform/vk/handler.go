@@ -39,6 +39,7 @@ type Handler struct {
 	mu     sync.RWMutex // protects all data fields except conn/seq/readerCancel
 	connMu sync.Mutex   // protects conn, seq, readerCancel
 
+	log        *slog.Logger          // logger, the default one when unset
 	httpClient *http.Client          // HTTP client with the browser profile
 	profile    common.BrowserProfile // browser fingerprint to imitate
 	captchas   int                   // number of captcha challenges solved so far
@@ -63,6 +64,19 @@ type Handler struct {
 
 	subscribers    map[int]chan platform.Event // event subscribers by ID
 	nextSubscriber int                         // next subscriber ID
+}
+
+// SetLogger changes the slog logger instance
+func (V *Handler) SetLogger(log *slog.Logger) {
+	V.log = log
+}
+
+// logger returns the configured logger or the default one
+func (V *Handler) logger() *slog.Logger {
+	if V.log == nil {
+		return slog.Default()
+	}
+	return V.log
 }
 
 // vkParticipant stores one call participant tracked from VK signaling
@@ -251,7 +265,7 @@ func (V *Handler) ensureInit() {
 		}
 
 		V.profile = common.RandomBrowserProfile()
-		slog.Debug("vk browser profile", "user_agent", V.profile.UserAgent, "sec_ch_ua", V.profile.SecChUa, "sec_ch_ua_platform", V.profile.SecChUaPlatform, "sec_ch_ua_mobile", V.profile.SecChUaMobile)
+		V.logger().Debug("vk browser profile", "user_agent", V.profile.UserAgent, "sec_ch_ua", V.profile.SecChUa, "sec_ch_ua_platform", V.profile.SecChUaPlatform, "sec_ch_ua_mobile", V.profile.SecChUaMobile)
 
 		V.participantsByID = make(map[int64]*vkParticipant)
 		V.participantByPeer = make(map[string]int64)
@@ -274,7 +288,7 @@ func (V *Handler) rotateBrowserProfile() {
 
 	if V.captchas > 0 {
 		V.profile = common.RandomBrowserProfile()
-		slog.Debug("vk browser profile rotated", "user_agent", V.profile.UserAgent)
+		V.logger().Debug("vk browser profile rotated", "user_agent", V.profile.UserAgent)
 	}
 
 	V.captchas++

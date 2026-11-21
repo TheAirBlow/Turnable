@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	_ "image/jpeg"
-	"log/slog"
 	"math/rand"
 	"net/url"
 	"regexp"
@@ -123,7 +122,7 @@ func (V *Handler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, 
 		return "", err
 	}
 
-	page, err := parseCaptchaPage(string(html))
+	page, err := V.parseCaptchaPage(string(html))
 	if err != nil {
 		return "", err
 	}
@@ -139,14 +138,14 @@ func (V *Handler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, 
 		SensorsDelay: captchaSensorsDelay,
 	}
 
-	slog.Debug("vk captcha solving pow", "difficulty", page.PowDifficulty)
+	V.logger().Debug("vk captcha solving pow", "difficulty", page.PowDifficulty)
 
 	session.PowHash, session.PowReadyAt, err = V.buildCaptchaPoW(page, navigatedAt)
 	if err != nil {
 		return "", fmt.Errorf("captcha pow failed: %w", err)
 	}
 
-	slog.Debug("vk captcha pow solved", "debug_info", session.DebugInfo, "ready_in", time.Until(session.PowReadyAt))
+	V.logger().Debug("vk captcha pow solved", "debug_info", session.DebugInfo, "ready_in", time.Until(session.PowReadyAt))
 
 	// The widget bundle loads and boots before it opens the session.
 	if err := sleepCtx(ctx, randomDuration(350, 750)); err != nil {
@@ -173,7 +172,7 @@ func (V *Handler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, 
 
 	var token string
 	for {
-		slog.Debug("vk captcha solving", "show_type", showType)
+		V.logger().Debug("vk captcha solving", "show_type", showType)
 
 		switch showType {
 		case "slider":
@@ -255,7 +254,7 @@ func (V *Handler) initCaptchaSession(ctx context.Context, session *captchaSessio
 		return "", "", errors.New("failed to find slider captcha settings")
 	}
 
-	slog.Debug("vk captcha session started", "show_type", showType)
+	V.logger().Debug("vk captcha session started", "show_type", showType)
 	return showType, settings, nil
 }
 
@@ -324,7 +323,7 @@ func parseCaptchaSettings(raw any) string {
 }
 
 // parseCaptchaPage extracts captcha metadata from HTML
-func parseCaptchaPage(html string) (*captchaPage, error) {
+func (V *Handler) parseCaptchaPage(html string) (*captchaPage, error) {
 	page := &captchaPage{}
 
 	match := reCaptchaPowArgs.FindStringSubmatch(html)
@@ -347,7 +346,7 @@ func parseCaptchaPage(html string) (*captchaPage, error) {
 
 	if match[4] != "" {
 		if err := json.Unmarshal([]byte(match[4]), &page.ProbeOrder); err != nil {
-			slog.Warn("vk captcha probe order is malformed", "error", err)
+			V.logger().Warn("vk captcha probe order is malformed", "error", err)
 		}
 	}
 
@@ -357,7 +356,7 @@ func parseCaptchaPage(html string) (*captchaPage, error) {
 	}
 
 	if len(matches) > 1 {
-		slog.Warn("vk captcha found multiple debug info candidates", "count", len(matches))
+		V.logger().Warn("vk captcha found multiple debug info candidates", "count", len(matches))
 	}
 
 	page.DebugInfo = matches[0][1]
@@ -370,15 +369,15 @@ func parseCaptchaPage(html string) (*captchaPage, error) {
 		page.LangID = lang[1]
 	}
 
-	page.OracleLine, page.OracleColumn = locateCaptchaOracle(html)
+	page.OracleLine, page.OracleColumn = V.locateCaptchaOracle(html)
 	return page, nil
 }
 
 // locateCaptchaOracle returns the position V8 reports for the stack trace probe
-func locateCaptchaOracle(html string) (int, int) {
+func (V *Handler) locateCaptchaOracle(html string) (int, int) {
 	loc := reCaptchaOracle.FindStringIndex(html)
 	if loc == nil {
-		slog.Warn("vk captcha stack trace probe not found")
+		V.logger().Warn("vk captcha stack trace probe not found")
 		return 118, 42692
 	}
 
@@ -421,7 +420,7 @@ func (V *Handler) performCaptchaCheck(ctx context.Context, session *captchaSessi
 		"access_token", "",
 	)
 
-	slog.Debug("vk captcha check values", "adFp", session.AdFP, "cursor", cursor, "browser_fp", session.BrowserFP,
+	V.logger().Debug("vk captcha check values", "adFp", session.AdFP, "cursor", cursor, "browser_fp", session.BrowserFP,
 		"answer", answerJSON, "debug_info", session.DebugInfo)
 
 	resp, err := V.captchaRequest(ctx, session, "captchaNotRobot.check", values)
@@ -434,7 +433,7 @@ func (V *Handler) performCaptchaCheck(ctx context.Context, session *captchaSessi
 		return nil, err
 	}
 
-	slog.Debug("vk captcha check response", "status", check.Status)
+	V.logger().Debug("vk captcha check response", "status", check.Status)
 	return check, nil
 }
 

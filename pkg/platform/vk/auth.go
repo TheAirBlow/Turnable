@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -111,19 +110,19 @@ func (V *Handler) authorize() error {
 
 	messagesToken, anonymToken, err := V.authorizeAnonymous(ctx, joinURL, name)
 	if err != nil {
-		slog.Warn("vk authorize anonymous flow failed", "error", err)
+		V.logger().Warn("vk authorize anonymous flow failed", "error", err)
 		return err
 	}
 
 	sessionKey, err := V.callsLogin(ctx)
 	if err != nil {
-		slog.Warn("vk calls login failed", "error", err)
+		V.logger().Warn("vk calls login failed", "error", err)
 		return err
 	}
 
 	info, err := V.joinConversation(ctx, callID, anonymToken, sessionKey)
 	if err != nil {
-		slog.Warn("vk join conversation failed", "error", err)
+		V.logger().Warn("vk join conversation failed", "error", err)
 		return err
 	}
 
@@ -145,18 +144,18 @@ func (V *Handler) authorize() error {
 	V.turnInfos = turnInfos
 	V.mu.Unlock()
 
-	slog.Info("vk authorize completed", "turn_servers", strings.Join(turnAddrs, ","))
+	V.logger().Info("vk authorize completed", "turn_servers", strings.Join(turnAddrs, ","))
 	return nil
 }
 
 // authorizeAnonymous performs the full VK anonymous auth flow, returning the messages token and call token
 func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username string) (string, string, error) {
 	if _, ok := os.LookupEnv("VK_FORCE_MANUAL"); ok {
-		slog.Info("vk captcha manual solve forced")
+		V.logger().Info("vk captcha manual solve forced")
 		return V.solveManualCaptcha(ctx, joinURL)
 	}
 
-	slog.Debug("vk authorize anonymous started")
+	V.logger().Debug("vk authorize anonymous started")
 
 	var (
 		messagesToken string
@@ -192,18 +191,18 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 				return "", "", fmt.Errorf("vk api error %d: %s", apiErr.Code, apiErr.Message)
 			}
 			if attempt > 0 {
-				slog.Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
+				V.logger().Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
 			} else {
-				slog.Debug("vk captcha challenge received")
+				V.logger().Debug("vk captcha challenge received")
 			}
 
 			solveStartedAt := time.Now()
 			successToken, solveErr := V.solveCaptcha(ctx, apiErr)
 
 			if solveErr != nil {
-				slog.Warn("vk captcha solve failed", "duration_ms", time.Since(solveStartedAt).Milliseconds(), "error", solveErr)
+				V.logger().Warn("vk captcha solve failed", "duration_ms", time.Since(solveStartedAt).Milliseconds(), "error", solveErr)
 				if errors.Is(solveErr, errCaptchaRateLimit) {
-					slog.Info("vk captcha rate limited, retrying", "delay", 60*time.Second)
+					V.logger().Info("vk captcha rate limited, retrying", "delay", 60*time.Second)
 					select {
 					case <-ctx.Done():
 						return "", "", ctx.Err()
@@ -215,7 +214,7 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 				continue
 			}
 
-			slog.Info("vk captcha solved", "duration_ms", time.Since(solveStartedAt).Milliseconds(), "request_attempt", attempt+1)
+			V.logger().Info("vk captcha solved", "duration_ms", time.Since(solveStartedAt).Milliseconds(), "request_attempt", attempt+1)
 			form.Set("captcha_key", "")
 			form.Set("captcha_sid", apiErr.CaptchaSID)
 			form.Set("is_sound_captcha", "0")
@@ -230,11 +229,11 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 			return "", "", errors.New("field response.token is missing")
 		}
 
-		slog.Debug("vk authorize anonymous call token acquired")
+		V.logger().Debug("vk authorize anonymous call token acquired")
 		return messagesToken, token, nil
 	}
 
-	slog.Info("all auto captcha attempts exhausted, falling back to manual solve")
+	V.logger().Info("all auto captcha attempts exhausted, falling back to manual solve")
 	return V.solveManualCaptcha(ctx, joinURL)
 }
 
@@ -256,7 +255,7 @@ func (V *Handler) fetchMessagesToken(ctx context.Context) (string, error) {
 		return "", errors.New("field data.access_token is missing")
 	}
 
-	slog.Debug("vk anonymous messages token acquired")
+	V.logger().Debug("vk anonymous messages token acquired")
 	return token, nil
 }
 
@@ -272,7 +271,7 @@ func (V *Handler) callsLogin(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	slog.Debug("vk calls login request prepared", "session_data_bytes", len(sessionDataJSON))
+	V.logger().Debug("vk calls login request prepared", "session_data_bytes", len(sessionDataJSON))
 
 	resp, err := V.postVKForm(ctx, vkCallsEndpoint, common.NewValues(
 		"method", "auth.anonymLogin",
@@ -294,7 +293,7 @@ func (V *Handler) callsLogin(ctx context.Context) (string, error) {
 	if !ok || sessionKey == "" {
 		return "", fmt.Errorf("unexpected anonym login response: %v", resp)
 	}
-	slog.Debug("vk calls login completed")
+	V.logger().Debug("vk calls login completed")
 	return sessionKey, nil
 }
 
@@ -323,7 +322,7 @@ func (V *Handler) joinConversation(ctx context.Context, callID, anonymToken, ses
 
 	info, err := parseStartedConversation(resp)
 	if err == nil {
-		slog.Debug("vk join conversation completed", "turn_urls_count", len(info.TurnServer.Urls))
+		V.logger().Debug("vk join conversation completed", "turn_urls_count", len(info.TurnServer.Urls))
 	}
 
 	return info, err

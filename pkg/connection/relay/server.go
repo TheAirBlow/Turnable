@@ -153,6 +153,7 @@ func (D *Handler) handlePrimaryPeer(
 	if err != nil {
 		return err
 	}
+	platformHandler.SetLogger(D.log)
 
 	platCfg := platformHandler.GetConfig()
 	muxServer.SetRateLimit(platCfg.BandwidthRelay * float64(clientCfg.Peers))
