@@ -162,7 +162,8 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 		form          *common.Values
 	)
 
-	for attempt := 0; attempt < vkCaptchaRetries; attempt++ {
+	// One more request than solves, so the answer to the last solve is still submitted
+	for attempt := 0; attempt <= vkCaptchaRetries; attempt++ {
 		if messagesToken == "" {
 			token, err := V.fetchMessagesToken(ctx)
 			if err != nil {
@@ -190,17 +191,18 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 			if apiErr.Code != 14 {
 				return "", "", fmt.Errorf("vk api error %d: %s", apiErr.Code, apiErr.Message)
 			}
-			if attempt > 0 {
-				V.logger().Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
-			} else {
-				V.logger().Debug("vk captcha challenge received")
+			if attempt == vkCaptchaRetries {
+				V.logger().Info("vk captcha still required after the last auto solve")
+				break
 			}
+
+			V.logger().Info("vk captcha challenge received", "request_attempt", attempt+1, "max_attempts", vkCaptchaRetries)
 
 			solveStartedAt := time.Now()
 			successToken, solveErr := V.solveCaptcha(ctx, apiErr)
 
 			if solveErr != nil {
-				V.logger().Warn("vk captcha solve failed", "duration_ms", time.Since(solveStartedAt).Milliseconds(), "error", solveErr)
+				V.logger().Warn("vk captcha solve failed", "request_attempt", attempt+1, "duration_ms", time.Since(solveStartedAt).Milliseconds(), "error", solveErr)
 				if errors.Is(solveErr, errCaptchaRateLimit) {
 					V.logger().Info("vk captcha rate limited, retrying", "delay", 60*time.Second)
 					select {
@@ -211,6 +213,9 @@ func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username stri
 				}
 
 				messagesToken = ""
+				if attempt+1 == vkCaptchaRetries {
+					break
+				}
 				continue
 			}
 
