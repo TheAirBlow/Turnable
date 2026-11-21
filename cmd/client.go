@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -17,8 +19,7 @@ import (
 
 // clientOptions holds CLI flags for the client subcommand
 type clientOptions struct {
-	configPath    string   // client config path
-	configURL     string   // client config URL
+	config        string   // config URL, JSON file or file with a config URL
 	listenAddrs   []string // local listen addresses, one per route
 	noInteractive bool     // disable interactive prompts
 	verbose       bool     // enable debug logging
@@ -29,11 +30,13 @@ func newClientCommand() *cobra.Command {
 	opts := &clientOptions{}
 
 	cmd := &cobra.Command{
-		Use:   "client [config-url]",
+		Use:   "client [config]",
 		Short: "Run in client mode",
+		Long:  "Run in client mode. The config is a turnable:// URL, a path to a .json file, or a path to a file holding a single-line URL. Defaults to config.json.",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
-				opts.configURL = args[0]
+				opts.config = args[0]
 			}
 
 			return clientMain(opts)
@@ -42,13 +45,34 @@ func newClientCommand() *cobra.Command {
 
 	cmd.Flags().StringArrayVarP(&opts.listenAddrs, "listen", "l", []string{"127.0.0.1:0"}, "local listen addresses, one per route")
 	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "V", false, "enable verbose debug logging")
-	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "config.json", "client config JSON file path")
 	cmd.Flags().BoolVarP(&opts.noInteractive, "no-interactive", "i", false, "disable interactive mode")
 
 	return cmd
 }
 
-// serverMain runs the client command
+// readClientConfig loads config content from a URL, a JSON file or a file with a single-line URL
+func readClientConfig(arg string) ([]byte, error) {
+	if common.IsNullOrWhiteSpace(arg) {
+		arg = "config.json"
+	}
+
+	if strings.Contains(arg, "://") {
+		return []byte(arg), nil
+	}
+
+	data, err := os.ReadFile(arg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	if !strings.EqualFold(filepath.Ext(arg), ".json") && bytes.ContainsRune(bytes.TrimSpace(data), '\n') {
+		return nil, fmt.Errorf("%s is not a .json file and does not contain a single-line config URL", arg)
+	}
+
+	return data, nil
+}
+
+// clientMain runs the client command
 func clientMain(opts *clientOptions) error {
 	if opts.verbose {
 		common.SetLogLevel(int(slog.LevelDebug))
@@ -56,25 +80,14 @@ func clientMain(opts *clientOptions) error {
 
 	config.Options.Interactive = !opts.noInteractive
 
-	var cfg config.Config
-	if !common.IsNullOrWhiteSpace(opts.configURL) {
-		var err error
-		cfg, err = config.ParseClientConfig([]byte(opts.configURL))
-		if err != nil {
-			return fmt.Errorf("failed to parse config URL: %w", err)
-		}
-	} else if !common.IsNullOrWhiteSpace(opts.configPath) {
-		configData, err := os.ReadFile(opts.configPath)
-		if err != nil {
-			return fmt.Errorf("failed to read config json file: %w", err)
-		}
+	raw, err := readClientConfig(opts.config)
+	if err != nil {
+		return err
+	}
 
-		cfg, err = config.ParseClientConfig(configData)
-		if err != nil {
-			return err
-		}
-	} else {
-		return errors.New("either config-url or config path is required")
+	cfg, err := config.ParseClientConfig(raw)
+	if err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
 	if err := cfg.Validate(); err != nil {

@@ -44,3 +44,12 @@ With `mpath`, the outer DTLS/SRTP encryption is replaced by cheap masking, since
 | `full`      | Encrypts all traffic end-to-end.                            |
 
 Encryption modes only apply to legacy transports, `mpath` always encrypts everything.
+
+## Environment Variables
+These are debugging switches. Only whether a variable is set matters, its value is ignored, except for `VK_PROXY`.
+
+| Variable          | Description                                                       |
+|-------------------|-------------------------------------------------------------------|
+| `QUIT_AFTER_AUTH` | Exits with code 0 as soon as platform authorization succeeds.     |
+
+Platform-specific variables are listed in the [platform guides](platforms/VK.md#environment-variables).

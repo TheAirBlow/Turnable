@@ -82,7 +82,7 @@ func (D *Handler) connectClientSession() error {
 		return err
 	}
 
-	if os.Getenv("QUIT_AFTER_AUTH") == "1" {
+	if _, ok := os.LookupEnv("QUIT_AFTER_AUTH"); ok {
 		D.log.Info("QUIT_AFTER_AUTH set, quitting...")
 		os.Exit(0)
 	}

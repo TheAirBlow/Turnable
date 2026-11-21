@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/theairblow/turnable/pkg/config"
@@ -20,6 +23,7 @@ var vkCaptchaUserScript []byte
 
 const (
 	manualCaptchaTimeout = 10 * time.Minute // how long the user has to solve the captcha
+	manualCaptchaOpened  = 5 * time.Minute  // minimum time left once the user opens the call page
 	manualCaptchaPort    = "1984"           // local port of the captcha page
 )
 
@@ -33,8 +37,21 @@ type manualCaptchaResult struct {
 func (V *Handler) solveManualCaptcha(ctx context.Context, joinURL string) (string, string, error) {
 	keyCh := make(chan manualCaptchaResult, 1)
 
+	started := time.Now()
+	var deadline atomic.Int64
+	deadline.Store(started.Add(manualCaptchaTimeout).UnixNano())
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		// The userscript pings when the call page opens, so the user gets time to finish
+		want := time.Now().Add(manualCaptchaOpened).UnixNano()
+		for cur := deadline.Load(); cur < want; cur = deadline.Load() {
+			if deadline.CompareAndSwap(cur, want) {
+				slog.Debug("manual captcha timeout extended", "left", manualCaptchaOpened)
+				break
+			}
+		}
+
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		_, _ = fmt.Fprint(w, "ok")
 	})
@@ -68,10 +85,18 @@ func (V *Handler) solveManualCaptcha(ctx context.Context, joinURL string) (strin
 			`</div></body></html>`)
 	})
 
-	ln4, err := net.Listen("tcp", "127.0.0.1:"+manualCaptchaPort)
-	if err != nil {
-		return "", "", fmt.Errorf("manual captcha: port %s already in use (another instance running?): %w", manualCaptchaPort, err)
+	_, managed := os.LookupEnv("VK_MANUAL_MANAGED")
+	port := manualCaptchaPort
+	if managed {
+		port = "0"
 	}
+
+	ln4, err := net.Listen("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		return "", "", fmt.Errorf("manual captcha: port %s already in use (another instance running?): %w", port, err)
+	}
+
+	port = strconv.Itoa(ln4.Addr().(*net.TCPAddr).Port)
 
 	srv := &http.Server{Handler: mux}
 	go func() {
@@ -79,7 +104,7 @@ func (V *Handler) solveManualCaptcha(ctx context.Context, joinURL string) (strin
 			slog.Warn("manual captcha server error", "error", err)
 		}
 	}()
-	if ln6, err := net.Listen("tcp", "[::1]:"+manualCaptchaPort); err == nil {
+	if ln6, err := net.Listen("tcp", "[::1]:"+port); err == nil {
 		go func() {
 			if err := srv.Serve(ln6); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Warn("manual captcha server error", "error", err)
@@ -87,28 +112,42 @@ func (V *Handler) solveManualCaptcha(ctx context.Context, joinURL string) (strin
 		}()
 	}
 
-	slog.Info("manual captcha solve required",
-		"userscript", "http://localhost:"+manualCaptchaPort+"/captcha_manual.user.js",
-		"guide", "http://localhost:"+manualCaptchaPort+"/",
-		"url", joinURL,
-		"timeout", manualCaptchaTimeout)
+	if managed {
+		slog.Info("manual captcha solve required",
+			"port", port,
+			"url", joinURL,
+			"timeout", manualCaptchaTimeout)
+	} else {
+		slog.Info("manual captcha solve required",
+			"userscript", "http://localhost:"+port+"/captcha_manual.user.js",
+			"guide", "http://localhost:"+port+"/",
+			"url", joinURL,
+			"timeout", manualCaptchaTimeout)
+	}
 
 	if config.Options.Interactive {
 		manualCaptchaOpenBrowser(joinURL)
 	}
 
 	var result manualCaptchaResult
-	solveCtx, solveCancel := context.WithTimeout(ctx, manualCaptchaTimeout)
-	defer solveCancel()
-
-	select {
-	case <-solveCtx.Done():
-		if errors.Is(solveCtx.Err(), context.DeadlineExceeded) {
-			err = fmt.Errorf("manual captcha timed out after %s", manualCaptchaTimeout)
-		} else {
-			err = solveCtx.Err()
+wait:
+	for {
+		timer := time.NewTimer(time.Until(time.Unix(0, deadline.Load())))
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			timer.Stop()
+			break wait
+		case result = <-keyCh:
+			timer.Stop()
+			break wait
+		case <-timer.C:
+			// The deadline may have been extended while waiting
+			if time.Now().UnixNano() >= deadline.Load() {
+				err = fmt.Errorf("manual captcha timed out after %s", time.Since(started).Round(time.Second))
+				break wait
+			}
 		}
-	case result = <-keyCh:
 	}
 
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 2*time.Second)

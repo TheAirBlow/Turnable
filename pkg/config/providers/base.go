@@ -43,8 +43,9 @@ type Route struct {
 	Socket    string `json:"socket"`              // Socket protocol to use
 	Transport string `json:"transport,omitempty"` // Transport protocol to use
 
-	Encryption string `json:"encryption"` // Encryption mode
-	Name       string `json:"name"`       // Display name shown in generated client configs
+	Encryption string `json:"encryption"`           // Encryption mode
+	Name       string `json:"name"`                 // Display name shown in generated client configs
+	LocalPort  int    `json:"local_port,omitempty"` // Local port suggested to clients, 0 for none
 }
 
 // Validate validates the Route
@@ -79,6 +80,10 @@ func (r *Route) Validate() error {
 		r.Encryption = "handshake"
 	default:
 		return fmt.Errorf("route %q has invalid encryption mode: %s", r.ID, r.Encryption)
+	}
+
+	if r.LocalPort < 0 || r.LocalPort > 65535 {
+		return fmt.Errorf("route %q has invalid local port: %d", r.ID, r.LocalPort)
 	}
 
 	return nil

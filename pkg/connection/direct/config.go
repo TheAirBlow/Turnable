@@ -47,6 +47,10 @@ func (c ClientConfig) Validate() error {
 		return fmt.Errorf("there must only be one route with socket=udp and transport=none")
 	}
 
+	if err := c.ValidatePorts(); err != nil {
+		return err
+	}
+
 	if c.Peers <= 0 {
 		return fmt.Errorf("invalid peers count: %d (must be >= 1)", c.Peers)
 	}

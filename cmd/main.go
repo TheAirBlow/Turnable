@@ -26,6 +26,7 @@ func main() {
 	root.AddCommand(newConfigCommand())
 	root.AddCommand(newServiceCommand())
 	root.AddCommand(newCacheDNSCommand())
+	root.AddCommand(newUpdateCommand())
 
 	if err := root.Execute(); err != nil {
 		slog.Error(err.Error())

@@ -151,7 +151,7 @@ func (V *Handler) authorize() error {
 
 // authorizeAnonymous performs the full VK anonymous auth flow, returning the messages token and call token
 func (V *Handler) authorizeAnonymous(ctx context.Context, joinURL, username string) (string, string, error) {
-	if os.Getenv("VK_FORCE_MANUAL") == "1" {
+	if _, ok := os.LookupEnv("VK_FORCE_MANUAL"); ok {
 		slog.Info("vk captcha manual solve forced")
 		return V.solveManualCaptcha(ctx, joinURL)
 	}

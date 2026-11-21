@@ -37,7 +37,7 @@ The schema is as follows:
 - `pass`: Call ID
 - `host`: Platform ID
 - `path`: Route IDs (slash-separated, can be multiple routes)
-- `query`: Additional parameters (type, gateway, proto, encryption, peers, pub_key, cloak, mask)
+- `query`: Additional parameters (type, gateway, proto, encryption, peers, pub_key, cloak, mask, ports)
 - `fragment`: Display name (optional)
 
 ## Configuration Fields
@@ -50,6 +50,7 @@ The schema is as follows:
 | `call_id`     | string | Yes      | Platform specific call or meeting ID       |
 | `routes`      | array  | Yes      | List of available routes to tunnel through |
 | `name`        | string | No       | Display name for this configuration        |
+| `ports`       | string | No       | Suggested local ports, comma-separated in route order |
 
 ### Route Fields
 | Field       | Type   | Description                                                                      |

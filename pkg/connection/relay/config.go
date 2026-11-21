@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -158,6 +159,10 @@ func (c ClientConfig) Validate() error {
 		}
 	}
 
+	if err := c.ValidatePorts(); err != nil {
+		return err
+	}
+
 	if c.Peers <= 0 {
 		return fmt.Errorf("invalid peers count: %d (must be >= 1)", c.Peers)
 	}
@@ -281,9 +286,11 @@ func (D *Handler) GetClientConfig(serverCfg config.Config, user *providers.User,
 
 	clientRoutes := make([]config.ClientRoute, 0, len(routes))
 	names := make([]string, 0, len(routes))
+	ports := make([]string, len(routes))
+	suggested := 0
 	encryption := "handshake"
 
-	for _, route := range routes {
+	for i, route := range routes {
 		isAllowed := false
 		for _, rID := range user.AllowedRoutes {
 			if rID == route.ID {
@@ -308,6 +315,11 @@ func (D *Handler) GetClientConfig(serverCfg config.Config, user *providers.User,
 			Socket:    route.Socket,
 			Transport: trans,
 		})
+
+		if route.LocalPort != 0 {
+			ports[i] = strconv.Itoa(route.LocalPort)
+			suggested = i + 1
+		}
 
 		if route.Name != "" {
 			names = append(names, route.Name)
@@ -334,6 +346,7 @@ func (D *Handler) GetClientConfig(serverCfg config.Config, user *providers.User,
 			CallID:     relayServerCfg.CallID,
 			Type:       user.Type,
 			Name:       combinedName,
+			Ports:      strings.Join(ports[:suggested], ","),
 		},
 		PubKey:     relayServerCfg.PubKey,
 		Peers:      max(user.Peers, 1),

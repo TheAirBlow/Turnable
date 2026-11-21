@@ -38,7 +38,7 @@ turnable://user-uuid:call-id@vk.com/route-id?type=relay&gateway=203.0.113.45:560
 - `pass`: ID звонка
 - `host`: ID платформы
 - `path`: ID маршрутов (разделены слэшами, может быть несколько)
-- `query`: Доп. параметры (type, gateway, proto, encryption, peers, pub_key, cloak, mask)
+- `query`: Доп. параметры (type, gateway, proto, encryption, peers, pub_key, cloak, mask, ports)
 - `fragment`: Отображаемое название (опционально)
 
 ## Поля конфигурации
@@ -51,6 +51,7 @@ turnable://user-uuid:call-id@vk.com/route-id?type=relay&gateway=203.0.113.45:560
 | `call_id`     | string | Да          | ID звонка или встречи на платформе            |
 | `routes`      | array  | Да          | Список доступных маршрутов для туннелирования |
 | `name`        | string | Нет         | Читаемое название конфигурации                |
+| `ports`       | string | Нет         | Предлагаемые локальные порты через запятую, по порядку маршрутов |
 
 ### Поля маршрутов
 | Поле        | Тип    | Описание                                                     |

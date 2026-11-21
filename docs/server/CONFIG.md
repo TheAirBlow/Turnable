@@ -101,6 +101,7 @@ Each route describes a destination that clients can tunnel to:
 | `transport`  | string  | No       | Transport protocol (see [Transports](../REFERENCE.md); defaults to `mpath` if omitted) |
 | `encryption` | string  | No       | Encryption mode (see [Encryption Modes](../REFERENCE.md); defaults to `handshake`)    |
 | `name`       | string  | No       | Display name for this route                                                           |
+| `local_port` | integer | No       | Local port suggested to clients for this route, written into generated configs        |
 
 > [!NOTE]
 > `mpath` is recommended for all routes. Otherwise, TCP routes must use `kcp` or `sctp`, and UDP should use `none`.

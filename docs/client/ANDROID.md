@@ -26,48 +26,42 @@ cd Turnable
 ```
 
 ### 2.2. After installation
-The script creates the following files:
+The script downloads the `turnable` executable into the current directory. Start the client with:
 
-| File            | Purpose                                       |
-|-----------------|-----------------------------------------------|
-| `turnable`      | The main VPN client executable                |
-| `run-client.sh` | Script to start the client with configuration |
-| `update.sh`     | Script to update to the latest version        |
-
-**Usage:**
 ```bash
-# Start the client
-./run-client.sh <listen_addr> <config_file> [additional_args...]
-
-# Update to latest version
-./update.sh
+./turnable client -l <listen_addr> <config>
 ```
 
-**Parameters:**
 - `<listen_addr>` - Socket listening address, e.g., `127.0.0.1:PORT` for local-only, or `0.0.0.0:PORT` for network access.
-- `<config_file>` - Path to your configuration, can be a JSON file or text file with a config URL.
+- `<config>` - A config URL, a path to a JSON file, or a path to a text file with a config URL.
+
+To update to the latest version:
+
+```bash
+./turnable update
+```
 
 ### 2.3. Configure with a config URL
 If you have a configuration URL, store it in a text file:
 
 ```bash
 # ... echo it directly to the file
-echo "your_config_url_here" > wireguard.txt
+echo "your_config_url_here" > wireguard.url
 # ... or use a text editor
-nano wireguard.txt
+nano wireguard.url
 # ... past the config URL, then press Ctrl+S to save and Ctrl+X to exit
 ```
 
 Then start the client:
 ```bash
-./run-client.sh 127.0.0.1:5080 wireguard.txt
+./turnable client -l 127.0.0.1:5080 wireguard.url
 ```
 
 ### 2.4. Configure with a JSON file
 If you have a JSON configuration file, place it in the same directory and use it directly:
 
 ```bash
-./run-client.sh 127.0.0.1:5080 config.json
+./turnable client -l 127.0.0.1:5080 config.json
 ```
 
 ## 3. Set up NekoBox
@@ -98,7 +92,7 @@ If you're creating a WireGuard configuration manually, ensure these fields are s
 
 | Field             | Value              | Notes                                     |
 |-------------------|--------------------|-------------------------------------------|
-| Server            | `127.0.0.1:PORT`   | Use PORT from `run-client.sh`             |
+| Server            | `127.0.0.1:PORT`   | Use PORT from `-l`                        |
 | MTU               | `1280`             | Recommended for tunneling though Turnable |
 | Private Key       | [Your private key] | From your client config                   |
 | Server Public Key | [Server pub key]   | From your server config                   |

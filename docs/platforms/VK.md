@@ -46,6 +46,8 @@ Navigate to the `url` from the log message and complete the captcha manually. Th
 - Capture the necessary authentication tokens
 - Redirect you away from VK once complete
 
+You have 10 minutes to finish. Opening the call page with the userscript installed extends the remaining time to at least 5 minutes.
+
 Though, make sure that you do the following:
 - **Use Incognito mode** if you're already logged into VK, which is forced to prevent potential bans.
 - **Use Incognito mode on Android** if you have the VK app installed to prevent automatic app redirection.
@@ -53,3 +55,12 @@ Though, make sure that you do the following:
 
 ## 3. PROFIT!
 The authentication tokens have been captured and you're ready to use the VK platform with Turnable.
+
+## Environment Variables
+Debugging switches. Only whether a variable is set matters, its value is ignored, except for `VK_PROXY`.
+
+| Variable            | Description                                                                                                                                                                          |
+|---------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `VK_FORCE_MANUAL`   | Skips automatic captcha solving and always asks for a manual solve.                                                                                                                  |
+| `VK_MANUAL_MANAGED` | Listens for the manual captcha tokens on a random port instead of `1984` and logs it as `port` instead of the userscript URL. Useful when an app manages several Turnable instances. |
+| `VK_PROXY`          | Proxy URL for all VK HTTP traffic. TLS certificate verification is disabled while it is set.                                                                                         |

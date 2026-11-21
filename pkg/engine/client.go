@@ -13,6 +13,8 @@ import (
 	"github.com/theairblow/turnable/pkg/connection"
 )
 
+const defaultBasePort = 10800 // port of the first route when nothing else picks one
+
 // TurnableClient represents a Turnable client
 type TurnableClient struct {
 	Config config.Config // Client config
@@ -68,19 +70,13 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 
 	innerCfg := c.Config.GetInner().(config.ClientConfig)
 
-	baseAddr := "127.0.0.1:0"
-	if len(listenAddrs) > 0 {
-		baseAddr = listenAddrs[0]
-	}
-
-	baseHost, basePortStr, err := net.SplitHostPort(baseAddr)
-	if err != nil {
-		return fmt.Errorf("invalid base listen address %q: %w", baseAddr, err)
-	}
-
-	basePort, err := strconv.Atoi(basePortStr)
-	if err != nil {
-		return fmt.Errorf("invalid port in base listen address %q: %w", baseAddr, err)
+	addrs := make([]string, len(innerCfg.Routes))
+	for i := range innerCfg.Routes {
+		addr, err := routeListenAddr(listenAddrs, i, innerCfg.SuggestedPort(i))
+		if err != nil {
+			return err
+		}
+		addrs[i] = addr
 	}
 
 	connHandler, err := connection.GetHandler(innerCfg.Type)
@@ -109,14 +105,7 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 	}()
 
 	for i, route := range innerCfg.Routes {
-		var addr string
-		if i < len(listenAddrs) {
-			addr = listenAddrs[i]
-		} else {
-			addr = net.JoinHostPort(baseHost, strconv.Itoa(basePort+i))
-		}
-
-		acceptCh, err := socket.Open(c.ctx, route.Socket, addr)
+		acceptCh, err := socket.Open(c.ctx, route.Socket, addrs[i])
 		if err != nil {
 			c.cancel()
 			_ = connHandler.Disconnect()
@@ -129,6 +118,45 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 
 	success = true
 	return nil
+}
+
+// routeListenAddr picks where route i listens: a port the user chose, then the config's suggestion,
+// then the base address's port plus i, then defaultBasePort plus i.
+func routeListenAddr(listenAddrs []string, i int, suggested int) (string, error) {
+	baseAddr := "127.0.0.1:0"
+	if len(listenAddrs) > 0 {
+		baseAddr = listenAddrs[0]
+	}
+
+	baseHost, basePortStr, err := net.SplitHostPort(baseAddr)
+	if err != nil {
+		return "", fmt.Errorf("invalid base listen address %q: %w", baseAddr, err)
+	}
+
+	basePort, err := strconv.Atoi(basePortStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid port in base listen address %q: %w", baseAddr, err)
+	}
+
+	host, port := baseHost, defaultBasePort+i
+	if i < len(listenAddrs) {
+		h, p, err := net.SplitHostPort(listenAddrs[i])
+		if err != nil {
+			return "", fmt.Errorf("invalid listen address %q: %w", listenAddrs[i], err)
+		}
+		if p != "0" {
+			return listenAddrs[i], nil
+		}
+		host = h
+	} else if basePort != 0 {
+		port = basePort + i
+	}
+
+	if suggested != 0 {
+		port = suggested
+	}
+
+	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
 // IsRunning returns whether the Turnable client is currently running
