@@ -27,7 +27,7 @@ Point your VPN or proxy client to the address where Turnable is listening. That'
 -V, --verbose          enable verbose debug logging
 ```
 
-The `[config]` argument is a configuration URL, a path to a JSON file, or a path to a text file holding a single-line URL. It defaults to `config.json`.
+The `[config]` argument is a configuration URL, a path to a JSON file, or a path to a text file holding a single-line URL. It defaults to `config.json`. An `http(s)://` subscription URL (or a file holding one) is also accepted in interactive mode: the client shows the subscription details and lets you pick a connection.
 
 ## Updating
 ```bash

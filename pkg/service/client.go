@@ -643,8 +643,7 @@ func (c *Client) ListProviderUsers(providerUUID string) ([]*pb.UserInfo, error) 
 	return nil, fmt.Errorf("unexpected response type")
 }
 
-// GetStats fetches the stats of a server instance, with collect set it also returns the usage of every user since the
-// previous collect and resets the counters
+// GetStats fetches a server instance's stats; collect also returns per-user usage since the last collect and resets the counters
 func (c *Client) GetStats(instanceID string, collect bool) (*pb.GetStatsResponse, error) {
 	req := &pb.Request{
 		Payload: &pb.Request_GetStats{

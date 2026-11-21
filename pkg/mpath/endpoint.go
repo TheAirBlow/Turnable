@@ -64,6 +64,12 @@ func (c *Client) AddPath(ctx context.Context, conn net.Conn) error {
 		err := c.handshake(ctx, conn)
 		c.mu.Lock()
 		c.hsBusy = false
+		if err != nil {
+			// the server may have kept the failed hello's session, and rejects its hello on any other conn as a replay
+			if hs, herr := newClientHandshake(c.serverPub); herr == nil {
+				c.hs = hs
+			}
+		}
 		c.mu.Unlock()
 		return err
 	}
@@ -243,6 +249,9 @@ func (s *Server) HandleConn(ctx context.Context, conn net.Conn) error {
 	}
 }
 
+// errReplayedHello is returned for a hello whose session ID is already live
+var errReplayedHello = errors.New("mpath: replayed hello")
+
 // errRetry means a handshake packet was a duplicate and the conn should keep waiting
 var errRetry = errors.New("retry")
 
@@ -259,7 +268,7 @@ func (s *Server) onHello(conn net.Conn, pkt []byte) error {
 		s.mu.Unlock()
 		if ss != nil {
 			// clients retry hellos on their bound conn, so a known session's hello on a new conn is a replay
-			return errors.New("mpath: replayed hello")
+			return errReplayedHello
 		}
 	}
 	sid, k, ack, err := s.key.serverHello(pkt)
@@ -270,6 +279,11 @@ func (s *Server) onHello(conn net.Conn, pkt []byte) error {
 	ss := &serverSession{sess: sess, helloAck: ack, attachID: append([]byte{kindAttachAck}, sid...), seen: make(map[uint64]int64)}
 	sess.handshakeReply = func(b []byte) []byte { return s.replyLate(ss, b) }
 	s.mu.Lock()
+	if s.sessions[string(sid)] != nil {
+		s.mu.Unlock()
+		sess.closeWith(errReplayedHello, false)
+		return errReplayedHello
+	}
 	s.sessions[string(sid)] = ss
 	s.mu.Unlock()
 	go func() {
@@ -289,7 +303,12 @@ func (s *Server) onHello(conn net.Conn, pkt []byte) error {
 	select {
 	case s.accept <- sess:
 	default:
-		go func() { s.accept <- sess }()
+		go func() {
+			select {
+			case s.accept <- sess:
+			case <-sess.Done():
+			}
+		}()
 	}
 	return nil
 }

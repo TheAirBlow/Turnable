@@ -286,9 +286,14 @@ func (s *Session) notify() {
 	}
 }
 
-// attach registers a handshaken conn as a path and starts reading it
-func (s *Session) attach(conn net.Conn) *path {
+// attach registers a handshaken conn as a path and starts reading it; a closed session just closes conn
+func (s *Session) attach(conn net.Conn) {
 	s.mu.Lock()
+	if s.isClosed() {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
 	p := newPath(s.nextPathID, conn, s.cfg, time.Now())
 	s.nextPathID++
 	s.paths = append(s.paths, p)
@@ -300,7 +305,6 @@ func (s *Session) attach(conn net.Conn) *path {
 	s.log.Debug("mpath path attached", "path", p.id, "alive", alive)
 	go s.readLoop(p)
 	s.notify()
-	return p
 }
 
 // aliveCount returns the number of live paths; caller holds mu
@@ -395,7 +399,6 @@ func (s *Session) Write(b []byte) (int, error) {
 }
 
 // sendLimitLocked returns how many bytes Write may buffer: enough to keep the paths busy plus a short queue
-// a fixed deep buffer would sit in front of the pacer as seconds of latency for every stream sharing the session
 func (s *Session) sendLimitLocked() int {
 	now := time.Now()
 	var rate float64

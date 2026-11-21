@@ -351,8 +351,7 @@ func (p *path) onAck(now time.Time, largest uint32, delay time.Duration, bitmap 
 	return lost, acked, newlyAcked
 }
 
-// lossDelay is how old an unacknowledged packet must be, with a later one acked, to be declared lost
-// it allows for RTT jitter, so a delayed packet on a mobile link is not resent and counted as lost
+// lossDelay is how old an unacknowledged packet must be, with a later one acked, to be declared lost; it absorbs RTT jitter
 func (p *path) lossDelay() time.Duration {
 	rtt := p.rtt()
 	return rtt + max(rtt/8, 2*p.rttvar) + p.cfg.MaxAckDelay
@@ -411,8 +410,7 @@ func (p *path) queueDelayed() bool {
 	return p.hasRTT && p.minRTT > 0 && p.srtt-p.minRTT > max(p.cfg.DelayTarget, p.minRTT/2, 4*p.rttvar)
 }
 
-// delayControl keeps the standing queue short: while the RTT sits above the baseline the path is capped just under its recent delivery rate, and the cap relaxes once the queue drains
-// the paths share one bottleneck and each carries little of the load, so this must not wait for per-path packet counts
+// delayControl caps the path just under its recent delivery rate while the RTT sits above the baseline, keeping the queue short
 func (p *path) delayControl(now time.Time) {
 	if p.delayStart.IsZero() {
 		p.delayStart, p.delayDelivered = now, p.delivered

@@ -32,7 +32,7 @@ func newClientCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "client [config]",
 		Short: "Run in client mode",
-		Long:  "Run in client mode. The config is a turnable:// URL, a path to a .json file, or a path to a file holding a single-line URL. Defaults to config.json.",
+		Long:  "Run in client mode. The config is a turnable:// URL, an http(s):// subscription URL (interactive mode only), a path to a .json file, or a path to a file holding a single-line URL. Defaults to config.json.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -83,6 +83,12 @@ func clientMain(opts *clientOptions) error {
 	raw, err := readClientConfig(opts.config)
 	if err != nil {
 		return err
+	}
+
+	if isSubscriptionURL(raw) {
+		if raw, err = resolveSubscription(string(raw)); err != nil {
+			return err
+		}
 	}
 
 	cfg, err := config.ParseClientConfig(raw)

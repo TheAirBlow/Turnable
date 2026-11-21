@@ -120,8 +120,7 @@ func (c *TurnableClient) Start(listenAddrs []string) error {
 	return nil
 }
 
-// routeListenAddr picks where route i listens: a port the user chose, then the config's suggestion,
-// then the base address's port plus i, then defaultBasePort plus i.
+// routeListenAddr picks where route i listens: user port, config suggestion, base port plus i, then defaultBasePort plus i
 func routeListenAddr(listenAddrs []string, i int, suggested int) (string, error) {
 	baseAddr := "127.0.0.1:0"
 	if len(listenAddrs) > 0 {
