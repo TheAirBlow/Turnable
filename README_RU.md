@@ -117,6 +117,7 @@ go build -o turnable ./cmd
 
 ## Настройка
 **Быстрый старт:** Следуй гайду установки [клиента](docs/client/SETUP_RU.md), [сервера](docs/server/SETUP_RU.md) или [сервиса](docs/service/SETUP_RU.md). \
+**Android:** Используйте [Turnable App](https://github.com/TheAirBlow/TurnableApp), официальный клиент для Android, и следуйте [гайду установки на Android](docs/client/ANDROID_RU.md). \
 **Конфигурация:** Подробная справка по конфигурации для [клиента](docs/client/CONFIG_RU.md) и [сервера](docs/server/CONFIG_RU.md).
 
 > [!NOTE]
@@ -127,7 +128,6 @@ go build -o turnable ./cmd
 - Реализации маскировки трафика (cloak)
 - Управление пользователями и маршрутами через базу данных
 - P2P подключение через SFU
-- Приложение для Android
 
 ## Респект
 - [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) - оригинальный проект, на котором частично основан Turnable.

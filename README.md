@@ -117,6 +117,7 @@ Check out the [ci.yml](https://github.com/TheAirBlow/Turnable/blob/main/.github/
 
 ## Setup
 **Quick start:** Follow the [client](docs/client/SETUP.md), [server](docs/server/SETUP.md) or [service](docs/service/SETUP.md) setup guide. \
+**Android:** Use [Turnable App](https://github.com/TheAirBlow/TurnableApp), the official Android client, and follow the [Android setup guide](docs/client/ANDROID.md). \
 **Configuration:** Detailed reference for [client](docs/client/CONFIG.md) and [server](docs/server/CONFIG.md) config schemas.
 
 > [!NOTE]
@@ -127,7 +128,6 @@ Check out the [ci.yml](https://github.com/TheAirBlow/Turnable/blob/main/.github/
 - Traffic obfuscation (cloak) implementations
 - Database user and route management
 - P2P connection type (via SFU)
-- Android app
 
 ## Credits
 - [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) - original project, on which Turnable is partially based on.
