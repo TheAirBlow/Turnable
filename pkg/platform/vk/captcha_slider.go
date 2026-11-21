@@ -46,16 +46,11 @@ func (V *Handler) solveSliderCaptcha(ctx context.Context, session *captchaSessio
 		return "", errors.New("failed to find slider captcha settings")
 	}
 
-	values := common.NewValues(
-		"session_token", session.Token,
-		"domain", captchaDomain,
-		"adFp", session.AdFP,
-		"access_token", "",
-		"captcha_settings", settings,
-	)
+	values := session.baseValues()
+	values.Set("captcha_settings", settings)
 
 	slog.Debug("vk captcha slider content request")
-	resp, err := V.captchaRequest(ctx, "captchaNotRobot.getContent", values)
+	resp, err := V.captchaRequest(ctx, session, "captchaNotRobot.getContent", values)
 	if err != nil {
 		return "", fmt.Errorf("slider getContent failed: %w", err)
 	}
@@ -84,6 +79,11 @@ func (V *Handler) solveSliderCaptcha(ctx context.Context, session *captchaSessio
 	}
 
 	for i := 0; i < limit; i++ {
+		// Dragging the slider takes a person a couple of seconds.
+		if err := sleepCtx(ctx, randomDuration(1200, 3200)); err != nil {
+			return "", err
+		}
+
 		slog.Debug("vk captcha slider attempt", "attempt", i+1, "max_attempts", limit, "guess_index", guesses[i].Index)
 		answerData, err := json.Marshal(struct {
 			Value []int `json:"value"`
@@ -93,7 +93,7 @@ func (V *Handler) solveSliderCaptcha(ctx context.Context, session *captchaSessio
 		}
 		answer := string(answerData)
 
-		check, err := V.performCaptchaCheck(ctx, session, answer, buildSliderCursor(guesses[i].Index, len(guesses)))
+		check, err := V.performCaptchaCheck(ctx, session, answer, buildSliderCursor(V.browserProfile(), guesses[i].Index, len(guesses)))
 		if err != nil {
 			return "", err
 		}
@@ -566,7 +566,7 @@ func absInt(value int) int {
 }
 
 // buildSliderCursor generates a randomized cursor trajectory for slider answer
-func buildSliderCursor(candidateIndex int, candidateCount int) string {
+func buildSliderCursor(p common.BrowserProfile, candidateIndex int, candidateCount int) string {
 	if candidateCount <= 0 {
 		return "[]"
 	}
@@ -577,11 +577,6 @@ func buildSliderCursor(candidateIndex int, candidateCount int) string {
 		candidateIndex = candidateCount
 	}
 
-	type cursorPoint struct {
-		X int `json:"x"`
-		Y int `json:"y"`
-	}
-
 	startX := 570 + rand.Intn(40)
 	startY := 875 + rand.Intn(30)
 
@@ -589,10 +584,10 @@ func buildSliderCursor(candidateIndex int, candidateCount int) string {
 	targetX := baseTargetX + rand.Intn(10) - 5
 	targetY := 655 + rand.Intn(14)
 
-	points := make([]cursorPoint, 0, 28)
+	points := make([]captchaPoint, 0, 28)
 
 	for i := 0; i < 1+rand.Intn(3); i++ {
-		points = append(points, cursorPoint{
+		points = append(points, captchaPoint{
 			X: startX + rand.Intn(5) - 2,
 			Y: startY + rand.Intn(5) - 2,
 		})
@@ -608,7 +603,7 @@ func buildSliderCursor(candidateIndex int, candidateCount int) string {
 		bx := (1-t)*(1-t)*float64(startX) + 2*t*(1-t)*cx + t*t*float64(targetX)
 		by := (1-t)*(1-t)*float64(startY) + 2*t*(1-t)*cy + t*t*float64(targetY)
 		jitter := int((1-t)*8) + 2
-		points = append(points, cursorPoint{
+		points = append(points, captchaPoint{
 			X: int(math.Round(bx)) + rand.Intn(jitter*2+1) - jitter,
 			Y: int(math.Round(by)) + rand.Intn(jitter*2+1) - jitter,
 		})
@@ -620,15 +615,22 @@ func buildSliderCursor(candidateIndex int, candidateCount int) string {
 		t := float64(i) / float64(approachSteps)
 		ax := prev.X + int(math.Round(t*float64(targetX-prev.X))) + rand.Intn(5) - 2
 		ay := prev.Y + int(math.Round(t*float64(targetY-prev.Y))) + rand.Intn(5) - 2
-		points = append(points, cursorPoint{X: ax, Y: ay})
+		points = append(points, captchaPoint{X: ax, Y: ay})
 	}
 
 	settleCount := 3 + rand.Intn(5)
 	for i := 0; i < settleCount; i++ {
-		points = append(points, cursorPoint{
+		points = append(points, captchaPoint{
 			X: targetX + rand.Intn(7) - 3,
 			Y: targetY + rand.Intn(7) - 3,
 		})
+	}
+
+	// The coordinates were recorded in a 1920x949 frame; the widget stays centered.
+	offsetX, offsetY := p.InnerWidth/2-960, p.InnerHeight/2-474
+	for i := range points {
+		points[i].X += offsetX
+		points[i].Y += offsetY
 	}
 
 	data, err := json.Marshal(points)

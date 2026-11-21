@@ -41,6 +41,7 @@ type Handler struct {
 
 	httpClient *http.Client          // HTTP client with the browser profile
 	profile    common.BrowserProfile // browser fingerprint to imitate
+	captchas   int                   // number of captcha challenges solved so far
 
 	callID              string              // call ID
 	joinURL             string              // call join link
@@ -257,6 +258,26 @@ func (V *Handler) ensureInit() {
 		V.subscribers = make(map[int]chan platform.Event)
 		V.videoTrackSlots = vkVideoTrackSlots
 	})
+}
+
+// browserProfile returns the browser fingerprint currently imitated
+func (V *Handler) browserProfile() common.BrowserProfile {
+	V.mu.RLock()
+	defer V.mu.RUnlock()
+	return V.profile
+}
+
+// rotateBrowserProfile switches to a new browser fingerprint for every captcha after the first
+func (V *Handler) rotateBrowserProfile() {
+	V.mu.Lock()
+	defer V.mu.Unlock()
+
+	if V.captchas > 0 {
+		V.profile = common.RandomBrowserProfile()
+		slog.Debug("vk browser profile rotated", "user_agent", V.profile.UserAgent)
+	}
+
+	V.captchas++
 }
 
 // ensureParticipant returns the participant entry for the given ID, creating it if needed; mu must be held

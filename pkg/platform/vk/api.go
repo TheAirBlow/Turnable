@@ -74,8 +74,7 @@ func (V *Handler) fetchParticipantNames(ctx context.Context, callID, accessToken
 
 // postVKFormRaw performs an HTTP request with all profile headers applied and returns the raw response body
 func (V *Handler) postVKFormRaw(ctx context.Context, method, endpoint string, form *common.Values, extraHeaders map[string]string) ([]byte, error) {
-	p := V.profile
-	httpClient := V.httpClient
+	p := V.browserProfile()
 
 	var body io.Reader
 	if form != nil {
@@ -89,7 +88,7 @@ func (V *Handler) postVKFormRaw(ctx context.Context, method, endpoint string, fo
 
 	req.Header.Set("User-Agent", p.UserAgent)
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Language", p.AcceptLanguage)
 	req.Header.Set("Sec-CH-UA", p.SecChUa)
 	req.Header.Set("Sec-CH-UA-Mobile", p.SecChUaMobile)
 	req.Header.Set("Sec-CH-UA-Platform", p.SecChUaPlatform)
@@ -109,11 +108,10 @@ func (V *Handler) postVKFormRaw(ctx context.Context, method, endpoint string, fo
 		"host",
 		"content-length",
 		"sec-ch-ua-platform",
-		"accept-language",
+		"user-agent",
 		"sec-ch-ua",
 		"content-type",
 		"sec-ch-ua-mobile",
-		"user-agent",
 		"accept",
 		"origin",
 		"sec-fetch-site",
@@ -121,17 +119,68 @@ func (V *Handler) postVKFormRaw(ctx context.Context, method, endpoint string, fo
 		"sec-fetch-dest",
 		"referer",
 		"accept-encoding",
+		"accept-language",
+		"cookie",
 		"priority",
 	}
 
-	req.Header[http.PHeaderOrderKey] = []string{
-		":method",
-		":path",
-		":authority",
-		":scheme",
+	return V.doVKRequest(req)
+}
+
+// navigateVK loads a page the way a browser loads a document into a frame
+func (V *Handler) navigateVK(ctx context.Context, endpoint, referer string) ([]byte, error) {
+	p := V.browserProfile()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
 	}
 
-	resp, err := httpClient.Do(req)
+	req.Header.Set("Sec-CH-UA", p.SecChUa)
+	req.Header.Set("Sec-CH-UA-Mobile", p.SecChUaMobile)
+	req.Header.Set("Sec-CH-UA-Platform", p.SecChUaPlatform)
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("User-Agent", p.UserAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+	req.Header.Set("Sec-Fetch-Site", "same-site")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-User", "?1")
+	req.Header.Set("Sec-Fetch-Dest", "iframe")
+	req.Header.Set("Referer", referer)
+	req.Header.Set("Accept-Language", p.AcceptLanguage)
+	req.Header.Set("Priority", "u=0, i")
+
+	req.Header[http.HeaderOrderKey] = []string{
+		"host",
+		"sec-ch-ua",
+		"sec-ch-ua-mobile",
+		"sec-ch-ua-platform",
+		"upgrade-insecure-requests",
+		"user-agent",
+		"accept",
+		"sec-fetch-site",
+		"sec-fetch-mode",
+		"sec-fetch-user",
+		"sec-fetch-dest",
+		"referer",
+		"accept-encoding",
+		"accept-language",
+		"priority",
+	}
+
+	return V.doVKRequest(req)
+}
+
+// doVKRequest sends a prepared request and returns the raw response body
+func (V *Handler) doVKRequest(req *http.Request) ([]byte, error) {
+	req.Header[http.PHeaderOrderKey] = []string{
+		":method",
+		":authority",
+		":scheme",
+		":path",
+	}
+
+	resp, err := V.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

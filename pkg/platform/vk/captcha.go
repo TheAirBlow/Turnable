@@ -3,34 +3,35 @@ package vk
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	_ "image/jpeg"
 	"log/slog"
 	"math/rand"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-
-	http "github.com/useflyent/fhttp"
+	"time"
+	"unicode/utf16"
 
 	"github.com/theairblow/turnable/pkg/common"
 )
 
 const (
-	captchaAPIVersion = "5.131"            // captcha API version
-	captchaPageOrigin = "https://id.vk.ru" // captcha page and API origin
-	captchaDomain     = "vk.ru"            // captcha challenge domain
+	captchaAPIVersion    = "5.131"            // captcha API version
+	captchaPageOrigin    = "https://id.vk.ru" // captcha page and API origin
+	captchaDefaultDomain = "vk.com"           // captcha domain when the redirect URI does not name one
+	captchaParentOrigin  = "https://vk.ru"    // origin of the page that embeds the captcha frame
+	captchaSensorsDelay  = 200                // default sensor sampling interval in milliseconds
 )
 
 var (
-	// deviceInfo is the device fingerprint reported to the captcha
-	deviceInfo = `{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1080,"innerWidth":1920,"innerHeight":951,"devicePixelRatio":1,"language":"en-US","languages":["en-US","en"],"webdriver":false,"hardwareConcurrency":8,"notificationsPermission":"denied"}`
-
-	reCaptchaPowArgs   = regexp.MustCompile(`}\('([^"]*)',\s*(\d+)`)                                               // extracts PoW input and difficulty from captcha HTML
+	reCaptchaPowArgs   = regexp.MustCompile(`}\('([^']*)',\s*(\d+)(?:,\s*'([^']*)',\s*(\[[^\]]*\]))?\)\);`)        // extracts PoW input, difficulty, initial error and probe order
 	reCaptchaDebugInfo = regexp.MustCompile(`[A-Za-z_$][\w$]*:\s*"([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})"`) // extracts the debug_info UUID out of window.vk
+	reCaptchaLangID    = regexp.MustCompile(`window\.langConfig\s*=\s*\{"id":(\d+)`)                               // extracts the page language ID
+	reCaptchaOracle    = regexp.MustCompile(`new Error\('oracle'\)`)                                               // locates the stack trace probe
 
 	errCaptchaRateLimit = errors.New("captcha session rate limit reached") // marks exhausted captcha sessions
 )
@@ -44,18 +45,28 @@ type captchaContentSetting struct {
 
 // captchaPage stores captcha metadata extracted from the challenge page
 type captchaPage struct {
-	PowInput      string // proof-of-work input
-	PowDifficulty int    // proof-of-work difficulty in leading zeros
-	DebugInfo     string // debug info echoed back to the server
+	URL           string   // URL the page was loaded from
+	PowInput      string   // proof-of-work input
+	PowDifficulty int      // proof-of-work difficulty in leading zeros
+	PowError      string   // error the script reports until the proof of work is solved
+	ProbeOrder    []string // order the page runs its basic telemetry probes in
+	DebugInfo     string   // debug info echoed back to the server
+	LangID        string   // page language ID
+	OracleLine    int      // line of the stack trace probe
+	OracleColumn  int      // column of the stack trace probe, in UTF-16 units
 }
 
 // captchaSession stores the state of a single captcha solving session
 type captchaSession struct {
-	Token     string // captcha session token
-	AdFP      string // ad fingerprint
-	BrowserFP string // browser fingerprint
-	DebugInfo string // debug info
-	PowHash   string // solved proof-of-work hash
+	Token        string    // captcha session token
+	Domain       string    // captcha domain
+	AdFP         string    // ad fingerprint
+	BrowserFP    string    // browser fingerprint
+	DebugInfo    string    // debug info
+	Cookie       string    // cookies the page scripts have set
+	PowHash      string    // solved proof-of-work envelope
+	PowReadyAt   time.Time // when the page script would have finished the envelope
+	SensorsDelay int       // sensor sampling interval in milliseconds
 }
 
 // captchaCheck stores the result of a captcha verification attempt
@@ -77,53 +88,87 @@ func (e *captchaShowTypeError) Error() string {
 	return "captcha show type mismatch: " + e.ShowType
 }
 
-// solveCaptcha fetches the captcha page and solves one challenge session
+// captchaDevice is the device summary reported by componentDone, in the order the page serializes it
+type captchaDevice struct {
+	ScreenWidth             int      `json:"screenWidth"`
+	ScreenHeight            int      `json:"screenHeight"`
+	ScreenAvailWidth        int      `json:"screenAvailWidth"`
+	ScreenAvailHeight       int      `json:"screenAvailHeight"`
+	InnerWidth              int      `json:"innerWidth"`
+	InnerHeight             int      `json:"innerHeight"`
+	DevicePixelRatio        float64  `json:"devicePixelRatio"`
+	Language                string   `json:"language"`
+	Languages               []string `json:"languages"`
+	Webdriver               bool     `json:"webdriver"`
+	HardwareConcurrency     int      `json:"hardwareConcurrency"`
+	DeviceMemory            int      `json:"deviceMemory"`
+	ConnectionEffectiveType string   `json:"connectionEffectiveType"`
+	NotificationsPermission string   `json:"notificationsPermission"`
+}
+
+// solveCaptcha loads the captcha page and solves one challenge session
 func (V *Handler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, error) {
 	if apiErr.RedirectURI == "" || apiErr.SessionToken == "" {
 		return "", errors.New("unsupported captcha challenge")
 	}
 
-	html, err := V.fetchCaptchaHTML(ctx, apiErr.RedirectURI)
+	V.rotateBrowserProfile()
+	profile := V.browserProfile()
+
+	pageURL, domain := captchaPageURL(apiErr.RedirectURI)
+
+	navigatedAt := time.Now()
+	html, err := V.navigateVK(ctx, pageURL, captchaParentOrigin+"/")
 	if err != nil {
 		return "", err
 	}
 
-	page, err := parseCaptchaPage(html)
+	page, err := parseCaptchaPage(string(html))
 	if err != nil {
 		return "", err
 	}
+	page.URL = pageURL
 
 	session := &captchaSession{
-		Token:     apiErr.SessionToken,
-		AdFP:      apiErr.AdFP,
-		BrowserFP: randomBrowserFP(),
-		DebugInfo: page.DebugInfo,
+		Token:        apiErr.SessionToken,
+		Domain:       domain,
+		AdFP:         apiErr.AdFP,
+		BrowserFP:    profile.FingerprintID,
+		DebugInfo:    page.DebugInfo,
+		Cookie:       captchaCookies(profile, common.FirstNonEmpty(page.LangID, captchaLangID(profile))),
+		SensorsDelay: captchaSensorsDelay,
 	}
 
 	slog.Debug("vk captcha solving pow", "difficulty", page.PowDifficulty)
 
-	session.PowHash, err = V.buildCaptchaPoW(page)
+	session.PowHash, session.PowReadyAt, err = V.buildCaptchaPoW(page, navigatedAt)
 	if err != nil {
 		return "", fmt.Errorf("captcha pow failed: %w", err)
 	}
 
-	slog.Debug("vk captcha pow solved", "debug_info", session.DebugInfo)
+	slog.Debug("vk captcha pow solved", "debug_info", session.DebugInfo, "ready_in", time.Until(session.PowReadyAt))
 
-	base := common.NewValues(
-		"session_token", session.Token,
-		"domain", captchaDomain,
-		"adFp", session.AdFP,
-		"access_token", "",
-	)
+	// The widget bundle loads and boots before it opens the session.
+	if err := sleepCtx(ctx, randomDuration(350, 750)); err != nil {
+		return "", err
+	}
 
-	showType, sliderSettings, err := V.initCaptchaSession(ctx, session)
+	showType, sliderSettings, err := V.initCaptchaSession(ctx, session, page.LangID)
 	if err != nil {
 		return "", err
 	}
 
-	_, err = V.captchaRequest(ctx, "captchaNotRobot.settings", base)
-	if err != nil {
-		return "", fmt.Errorf("captcha settings failed: %w", err)
+	if err := sleepCtx(ctx, randomDuration(20, 150)); err != nil {
+		return "", err
+	}
+
+	if err := V.captchaSettings(ctx, session); err != nil {
+		return "", err
+	}
+
+	// The widget renders before it reports componentDone.
+	if err := sleepCtx(ctx, randomDuration(250, 600)); err != nil {
+		return "", err
 	}
 
 	var token string
@@ -152,16 +197,48 @@ func (V *Handler) solveCaptcha(ctx context.Context, apiErr vkAPIError) (string, 
 		sliderSettings = common.FirstNonEmpty(showTypeErr.Settings, sliderSettings)
 	}
 
-	_, _ = V.captchaRequest(ctx, "captchaNotRobot.endSession", base)
+	_, _ = V.captchaRequest(ctx, session, "captchaNotRobot.endSession", session.baseValues())
 	return token, nil
 }
 
+// captchaPageURL returns the URL the browser loads for a redirect URI and the captcha domain it names
+func captchaPageURL(redirectURI string) (string, string) {
+	parsed, err := url.Parse(redirectURI)
+	if err != nil {
+		return redirectURI, captchaDefaultDomain
+	}
+
+	domain := common.FirstNonEmpty(parsed.Query().Get("domain"), captchaDefaultDomain)
+	if parsed.Query().Has("origin") {
+		return redirectURI, domain
+	}
+
+	// The embedding page appends its own origin to the frame URL.
+	separator := "&"
+	if parsed.RawQuery == "" {
+		separator = "?"
+	}
+
+	return redirectURI + separator + "origin=" + url.QueryEscape(captchaParentOrigin), domain
+}
+
+// baseValues returns the parameters every captcha session request starts with
+func (s *captchaSession) baseValues() *common.Values {
+	return common.NewValues(
+		"session_token", s.Token,
+		"domain", s.Domain,
+		"adFp", s.AdFP,
+		"access_token", "",
+	)
+}
+
 // initCaptchaSession initializes a VK captcha session
-func (V *Handler) initCaptchaSession(ctx context.Context, session *captchaSession) (string, string, error) {
-	resp, err := V.captchaRequest(ctx, "captchaNotRobot.initSession", common.NewValues(
+func (V *Handler) initCaptchaSession(ctx context.Context, session *captchaSession, langID string) (string, string, error) {
+	resp, err := V.captchaRequest(ctx, session, "captchaNotRobot.initSession", common.NewValues(
 		"session_token", session.Token,
-		"domain", captchaDomain,
-		"lang", "0",
+		"domain", session.Domain,
+		"lang", common.FirstNonEmpty(langID, captchaLangID(V.browserProfile())),
+		"access_token", "",
 	))
 	if err != nil {
 		return "", "", fmt.Errorf("captcha initSession failed: %w", err)
@@ -180,6 +257,49 @@ func (V *Handler) initCaptchaSession(ctx context.Context, session *captchaSessio
 
 	slog.Debug("vk captcha session started", "show_type", showType)
 	return showType, settings, nil
+}
+
+// captchaLangID returns the captcha language ID matching the profile's primary language
+func captchaLangID(p common.BrowserProfile) string {
+	if strings.HasPrefix(p.Languages[0], "en") {
+		return "3"
+	}
+
+	return "0"
+}
+
+// captchaCookies returns the cookies the VK page scripts set in a browser with the given profile
+func captchaCookies(p common.BrowserProfile, langID string) string {
+	cookies := []string{
+		"remixlang=" + langID,
+		"remixscreen_width=" + strconv.Itoa(p.ScreenWidth),
+		"remixscreen_height=" + strconv.Itoa(p.ScreenHeight),
+		"remixscreen_dpr=" + strconv.FormatFloat(p.PixelRatio, 'f', -1, 64),
+		"remixscreen_depth=24",
+		"remixscreen_winzoom=1",
+	}
+
+	if p.PrefersDark {
+		cookies = append(cookies, "remixdark_color_scheme=1")
+	}
+
+	return strings.Join(append(cookies, "remixcolor_scheme_mode=auto", "remixscreen_orient=1"), "; ")
+}
+
+// captchaSettings fetches widget settings and picks up the sensor sampling interval
+func (V *Handler) captchaSettings(ctx context.Context, session *captchaSession) error {
+	resp, err := V.captchaRequest(ctx, session, "captchaNotRobot.settings", session.baseValues())
+	if err != nil {
+		return fmt.Errorf("captcha settings failed: %w", err)
+	}
+
+	if data, ok := resp["response"].(map[string]any); ok {
+		if delay, ok := data["sensors_delay"].(float64); ok && delay > 0 {
+			session.SensorsDelay = int(delay)
+		}
+	}
+
+	return nil
 }
 
 // parseCaptchaSettings picks the slider content reference out of a content_settings array
@@ -203,26 +323,12 @@ func parseCaptchaSettings(raw any) string {
 	return ""
 }
 
-// fetchCaptchaHTML downloads the captcha HTML page from redirect URI
-func (V *Handler) fetchCaptchaHTML(ctx context.Context, redirectURI string) (string, error) {
-	body, err := V.postVKFormRaw(ctx, http.MethodGet, redirectURI, nil, map[string]string{
-		"Accept":         "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-		"Sec-Fetch-Dest": "document",
-		"Sec-Fetch-Mode": "navigate",
-		"Sec-Fetch-Site": "cross-site",
-	})
-	if err != nil {
-		return "", err
-	}
-	return string(body), nil
-}
-
 // parseCaptchaPage extracts captcha metadata from HTML
 func parseCaptchaPage(html string) (*captchaPage, error) {
 	page := &captchaPage{}
 
 	match := reCaptchaPowArgs.FindStringSubmatch(html)
-	if len(match) < 3 {
+	if len(match) < 5 {
 		return nil, errors.New("captcha pow arguments not found")
 	}
 
@@ -237,6 +343,13 @@ func parseCaptchaPage(html string) (*captchaPage, error) {
 
 	page.PowInput = match[1]
 	page.PowDifficulty = difficulty
+	page.PowError = match[3]
+
+	if match[4] != "" {
+		if err := json.Unmarshal([]byte(match[4]), &page.ProbeOrder); err != nil {
+			slog.Warn("vk captcha probe order is malformed", "error", err)
+		}
+	}
 
 	matches := reCaptchaDebugInfo.FindAllStringSubmatch(html, -1)
 	if len(matches) == 0 {
@@ -253,42 +366,54 @@ func parseCaptchaPage(html string) (*captchaPage, error) {
 		return nil, errors.New("captcha debug info is empty")
 	}
 
+	if lang := reCaptchaLangID.FindStringSubmatch(html); len(lang) > 1 {
+		page.LangID = lang[1]
+	}
+
+	page.OracleLine, page.OracleColumn = locateCaptchaOracle(html)
 	return page, nil
 }
 
-// randomBrowserFP generates a random fingerprint
-func randomBrowserFP() string {
-	r := rand.New(rand.NewSource(rand.Int63()))
-	b := make([]byte, 16)
-	for i := range b {
-		b[i] = byte(r.Intn(256))
+// locateCaptchaOracle returns the position V8 reports for the stack trace probe
+func locateCaptchaOracle(html string) (int, int) {
+	loc := reCaptchaOracle.FindStringIndex(html)
+	if loc == nil {
+		slog.Warn("vk captcha stack trace probe not found")
+		return 118, 42692
 	}
 
-	return hex.EncodeToString(b)
+	before := html[:loc[0]]
+	lineStart := strings.LastIndexByte(before, '\n') + 1
+	column := len(utf16.Encode([]rune(before[lineStart:]))) + 1
+
+	return strings.Count(before, "\n") + 1, column
 }
 
 // captchaRequest performs captcha API requests
-func (V *Handler) captchaRequest(ctx context.Context, method string, form *common.Values) (map[string]any, error) {
+func (V *Handler) captchaRequest(ctx context.Context, session *captchaSession, method string, form *common.Values) (map[string]any, error) {
 	return V.postVKForm(ctx, vkAPIEndpoint+"/"+method+"?v="+captchaAPIVersion, form, map[string]string{
 		"Origin":   captchaPageOrigin,
 		"Referer":  captchaPageOrigin + "/",
+		"Cookie":   session.Cookie,
 		"Priority": "u=1, i",
 	})
 }
 
 // performCaptchaCheck submits captcha answer and returns status payload
 func (V *Handler) performCaptchaCheck(ctx context.Context, session *captchaSession, answerJSON string, cursor string) (*captchaCheck, error) {
+	if err := waitForCaptchaPoW(ctx, session); err != nil {
+		return nil, err
+	}
+
 	values := common.NewValues(
 		"session_token", session.Token,
-		"domain", captchaDomain,
+		"domain", session.Domain,
 		"adFp", session.AdFP,
 		"accelerometer", "[]",
 		"gyroscope", "[]",
 		"motion", "[]",
 		"cursor", cursor,
 		"taps", "[]",
-		"connectionRtt", "[]",
-		"connectionDownlink", "[]",
 		"browser_fp", session.BrowserFP,
 		"hash", session.PowHash,
 		"answer", base64.StdEncoding.EncodeToString([]byte(answerJSON)),
@@ -297,9 +422,9 @@ func (V *Handler) performCaptchaCheck(ctx context.Context, session *captchaSessi
 	)
 
 	slog.Debug("vk captcha check values", "adFp", session.AdFP, "cursor", cursor, "browser_fp", session.BrowserFP,
-		"hash", session.PowHash, "answer", answerJSON, "debug_info", session.DebugInfo)
+		"answer", answerJSON, "debug_info", session.DebugInfo)
 
-	resp, err := V.captchaRequest(ctx, "captchaNotRobot.check", values)
+	resp, err := V.captchaRequest(ctx, session, "captchaNotRobot.check", values)
 	if err != nil {
 		return nil, fmt.Errorf("captcha check failed: %w", err)
 	}
@@ -335,16 +460,61 @@ func parseCaptchaCheck(raw map[string]any) (*captchaCheck, error) {
 
 // captchaComponentDone reports that the captcha widget has finished rendering
 func (V *Handler) captchaComponentDone(ctx context.Context, session *captchaSession) error {
-	if _, err := V.captchaRequest(ctx, "captchaNotRobot.componentDone", common.NewValues(
+	p := V.browserProfile()
+	device, err := json.Marshal(captchaDevice{
+		ScreenWidth:             p.ScreenWidth,
+		ScreenHeight:            p.ScreenHeight,
+		ScreenAvailWidth:        p.AvailWidth,
+		ScreenAvailHeight:       p.AvailHeight,
+		InnerWidth:              p.InnerWidth,
+		InnerHeight:             p.InnerHeight,
+		DevicePixelRatio:        p.PixelRatio,
+		Language:                p.Languages[0],
+		Languages:               p.Languages,
+		HardwareConcurrency:     p.HardwareConcurrency,
+		DeviceMemory:            p.DeviceMemory,
+		ConnectionEffectiveType: "4g",
+		NotificationsPermission: "denied",
+	})
+	if err != nil {
+		return err
+	}
+
+	// The browser fingerprint is still being computed when the widget reports in.
+	if _, err := V.captchaRequest(ctx, session, "captchaNotRobot.componentDone", common.NewValues(
 		"session_token", session.Token,
-		"domain", captchaDomain,
+		"domain", session.Domain,
 		"adFp", session.AdFP,
-		"browser_fp", session.BrowserFP,
-		"device", deviceInfo,
+		"browser_fp", "",
+		"device", string(device),
 		"access_token", "",
 	)); err != nil {
 		return fmt.Errorf("captcha componentDone failed: %w", err)
 	}
 
 	return nil
+}
+
+// waitForCaptchaPoW blocks until the page script would have produced its envelope
+func waitForCaptchaPoW(ctx context.Context, session *captchaSession) error {
+	return sleepCtx(ctx, time.Until(session.PowReadyAt))
+}
+
+// sleepCtx sleeps for the given duration unless the context ends first
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// randomDuration returns a random duration between min and max milliseconds
+func randomDuration(minMs, maxMs int) time.Duration {
+	return time.Duration(minMs+rand.Intn(maxMs-minMs+1)) * time.Millisecond
 }
