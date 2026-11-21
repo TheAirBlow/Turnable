@@ -197,9 +197,12 @@ func (D *Handler) runMpathSlot(
 				return
 			}
 		} else if errors.Is(err, protocol.ErrTURNRejected) && ctx.Err() == nil {
-			log.Warn("TURN rejected peer, reconnecting", "error", err)
-			fullReconnect(err.Error())
-			return
+			// One rejected allocation only costs its slot while at least 80% of the peers are up.
+			if up := online.Load(); int(up)*5 < total*4 {
+				log.Warn("TURN rejected peer, reconnecting", "error", err, "online", up, "total", total)
+				fullReconnect(err.Error())
+				return
+			}
 		}
 		if ctx.Err() != nil {
 			return
