@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -160,7 +161,9 @@ func download(url string, dst io.Writer) error {
 		return fmt.Errorf("unexpected status %s", resp.Status)
 	}
 
-	n, err := io.Copy(dst, resp.Body)
+	progress := newProgress(resp.ContentLength)
+	n, err := io.Copy(io.MultiWriter(dst, progress), resp.Body)
+	progress.finish()
 	if err != nil {
 		return err
 	}
@@ -169,6 +172,67 @@ func download(url string, dst io.Writer) error {
 	}
 
 	return nil
+}
+
+// progress prints download progress to stderr, redrawing one line on a terminal and logging every 10% otherwise
+type progress struct {
+	total   int64 // expected size, -1 when unknown
+	done    int64
+	start   time.Time
+	last    time.Time
+	step    int64 // last logged tenth when not on a terminal
+	tty     bool
+	printed bool
+}
+
+// newProgress creates a progress meter for a download of total bytes, -1 if unknown
+func newProgress(total int64) *progress {
+	info, err := os.Stderr.Stat()
+	now := time.Now()
+	return &progress{total: total, start: now, tty: err == nil && info.Mode()&os.ModeCharDevice != 0}
+}
+
+// Write counts bytes and refreshes the display
+func (p *progress) Write(b []byte) (int, error) {
+	p.done += int64(len(b))
+	now := time.Now()
+	switch {
+	case p.tty && now.Sub(p.last) >= 100*time.Millisecond:
+		p.last = now
+		p.draw("\r")
+	case !p.tty && p.total > 0 && p.done*10/p.total > p.step:
+		p.step = p.done * 10 / p.total
+		p.draw("")
+	}
+	return len(b), nil
+}
+
+// finish draws the final state
+func (p *progress) finish() {
+	if p.tty {
+		p.draw("\r")
+		fmt.Fprintln(os.Stderr)
+	}
+}
+
+// draw prints one status line
+func (p *progress) draw(prefix string) {
+	rate := int64(float64(p.done) / max(time.Since(p.start).Seconds(), 0.001))
+	if p.total <= 0 {
+		fmt.Fprintf(os.Stderr, "%s%s downloaded, %s/s   ", prefix, formatBytes(p.done), formatBytes(rate))
+		if !p.tty {
+			fmt.Fprintln(os.Stderr)
+		}
+		return
+	}
+	const width = 30
+	filled := int(p.done * width / p.total)
+	bar := strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
+	fmt.Fprintf(os.Stderr, "%s[%s] %3d%% %s / %s, %s/s   ", prefix, bar, p.done*100/p.total,
+		formatBytes(p.done), formatBytes(p.total), formatBytes(rate))
+	if !p.tty {
+		fmt.Fprintln(os.Stderr)
+	}
 }
 
 // replaceExecutable swaps newPath in for exePath, keeping its permissions

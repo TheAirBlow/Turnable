@@ -406,7 +406,7 @@ func (s *Session) Write(b []byte) (int, error) {
 	return n, nil
 }
 
-// sendLimitLocked returns how many bytes Write may buffer: enough to keep the paths busy plus a short queue
+// sendLimitLocked returns how many bytes Write may buffer: enough to keep the session pacing rate busy plus a short queue
 func (s *Session) sendLimitLocked() int {
 	now := time.Now()
 	var rate float64
@@ -416,15 +416,20 @@ func (s *Session) sendLimitLocked() int {
 			continue
 		}
 		rate += p.rate(now)
-		rtt = max(rtt, p.rtt())
+		if p.minRTT > 0 {
+			rtt = max(rtt, p.minRTT)
+		} else {
+			rtt = max(rtt, p.rtt())
+		}
 	}
+	rate = min(rate, s.cc.rate)
 	lim := int(rate * (rtt + sendQueueDelay).Seconds())
 	return min(max(lim, minSendBuffer), s.cfg.SendBuffer)
 }
 
 const (
 	minSendBuffer  = 96 * 1024              // smallest send buffer, so a slow link still gets a few segments in flight
-	sendQueueDelay = 150 * time.Millisecond // queueing allowed in the send buffer on top of one round trip
+	sendQueueDelay = 100 * time.Millisecond // queueing allowed in the send buffer on top of one round trip
 )
 
 // Read reads in-order bytes from the reliable stream
