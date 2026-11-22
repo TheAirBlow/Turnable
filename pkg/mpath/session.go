@@ -225,6 +225,8 @@ type Session struct {
 	lastAck       time.Time      // when any path last had something newly acknowledged
 	stallEnd      time.Time      // when the last session-wide ACK silence ended; paths get a fresh deadline from then
 	lastHouse     time.Time      // last housekeeping run
+	lastCCLog     time.Time      // last debug log of the shared controller
+	loggedStats   SessionStats   // counters at that log
 	notifyCh      chan struct{}  // wakes the send loop
 	closed        chan struct{}  // closed when the session ends
 	closeOnce     sync.Once      // guards close
@@ -260,6 +262,7 @@ func newSession(cfg *Config, k *keys, id []byte, isClient bool) *Session {
 		lastAck:   time.Now(),
 		cc:        newShared(time.Now()),
 	}
+	s.cc.note = func(msg string, args ...any) { s.log.Debug(msg, args...) }
 	s.advertised = uint32(cfg.RecvWindow)
 	s.sendCond = sync.NewCond(&s.mu)
 	s.readCond = sync.NewCond(&s.mu)
@@ -1108,6 +1111,66 @@ func (s *Session) tickSharedLocked(now time.Time) {
 		maxRate = s.cfg.MaxRate * float64(max(s.aliveCount(), 1))
 	}
 	s.cc.tick(now, q, base, maxRate)
+	s.logSharedLocked(now, q, base)
+}
+
+// logSharedLocked logs the shared controller, the session and each path once a second at debug level
+func (s *Session) logSharedLocked(now time.Time, q, base time.Duration) {
+	if now.Sub(s.lastCCLog) < time.Second || !s.log.Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	if s.cc.st.sent == 0 && s.cc.st.acked == 0 && s.sendBuffered == 0 && len(s.dgOut) == 0 {
+		return // idle: nothing to debug
+	}
+	el := now.Sub(s.lastCCLog).Seconds()
+	if s.lastCCLog.IsZero() {
+		el = 1
+	}
+	s.lastCCLog = now
+	kbs := func(b int) int { return int(float64(b) / el / 1024) }
+	cc, st := s.cc, s.cc.st
+	cc.st = sharedStats{}
+	var headBlocked bool
+	if len(s.queue) > 0 {
+		headBlocked = int32(s.queue[0].seq-s.peerLimit) >= 0
+	}
+	prev := s.loggedStats
+	s.loggedStats = s.stats
+	s.log.Debug("mpath shared",
+		"rate_kbs", int(cc.rate/1024), "rate_min_kbs", int(st.minRate/1024), "rate_max_kbs", int(st.maxRate/1024),
+		"bw_kbs", int(cc.bandwidth(now)/1024), "recent_kbs", int(cc.recent/1024),
+		"sent_kbs", kbs(st.sent), "acked_kbs", kbs(st.acked),
+		"q", q, "target", cc.target, "base", base, "high", cc.high, "stale_ok", cc.staleOK,
+		"startup", cc.startup, "probing", cc.probing, "drain", cc.drain, "cool", cc.cool,
+		"probe_ok", st.probeOK, "probe_fail", st.probeFail, "probe_abort", st.probeAbort, "drain_queue", st.drainQueue, "stale_cuts", st.stale,
+		"pacer_backlog", cc.backlog(now), "send_limit", s.sendLimitLocked(), "buffered", s.sendBuffered,
+		"queue", len(s.queue), "retrans_queue", len(s.retrans), "dg_queue", len(s.dgOut), "unacked", len(s.unacked),
+		"window_blocked", headBlocked, "since_ack", now.Sub(s.lastAck).Round(time.Millisecond),
+		"segments", s.stats.SegmentsSent-prev.SegmentsSent, "retransmits", s.stats.Retransmits-prev.Retransmits,
+		"dg_dropped", s.stats.DatagramsDrop-prev.DatagramsDrop, "dg_in_dropped", s.stats.DatagramsInDrop-prev.DatagramsInDrop,
+		"dup_segments", s.stats.DupSegments-prev.DupSegments, "alive", s.aliveCount(), "paths", len(s.paths))
+	for _, p := range s.paths {
+		d := p.stats
+		pel := now.Sub(p.loggedAt).Seconds()
+		if p.loggedAt.IsZero() || pel <= 0 {
+			pel = el
+		}
+		pkbs := func(b uint64) int { return int(float64(b) / pel / 1024) }
+		quiet := d.BytesSent == p.logged.BytesSent && d.BytesAcked == p.logged.BytesAcked && d.PacketsLost == p.logged.PacketsLost && p.inflight == 0 && !p.dead
+		p.logged, p.loggedAt, p.loggedCaps = d, now, [2]int{p.capLoss, p.capDelay}
+		if quiet {
+			continue
+		}
+		gain := gainCycle[p.gainIdx]
+		s.log.Debug("mpath path", "path", p.id, "dead", p.dead,
+			"rate_kbs", int(p.rate(now)/1024), "bw_kbs", int(p.bw.max(now)/1024), "gain", gain, "demand", p.demand,
+			"ceiling_kbs", int(p.ceiling/1024), "cap_found", p.capFound, "loss_caps", p.capLoss-p.loggedCaps[0], "delay_caps", p.capDelay-p.loggedCaps[1],
+			"srtt", p.srtt.Round(time.Millisecond), "rttvar", p.rttvar.Round(time.Millisecond), "min_rtt", p.minRTT.Round(time.Millisecond), "q_min", p.qMin.Round(time.Millisecond),
+			"inflight", p.inflight, "cwnd", p.cwnd(now), "backlog", p.backlog(now).Round(time.Millisecond), "outq", len(p.outq), "sent_pkts", len(p.sent),
+			"sent_kbs", pkbs(d.BytesSent-p.logged.BytesSent), "acked_kbs", pkbs(d.BytesAcked-p.logged.BytesAcked),
+			"lost", d.PacketsLost-p.logged.PacketsLost, "recvd", d.PacketsRecvd-p.logged.PacketsRecvd,
+			"pto", p.ptoCount, "since_ack", now.Sub(p.lastAckTime).Round(time.Millisecond))
+	}
 }
 
 // bestPathLocked returns the live path with the earliest arrival; forData also requires pacer and window room

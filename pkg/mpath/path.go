@@ -130,6 +130,11 @@ type path struct {
 	ackFirstTime time.Time // when the oldest unacknowledged packet arrived
 
 	stats PathStats // counters
+
+	capLoss, capDelay int       // ceilings set by loss (policer) and by queue delay, for debug logs
+	logged            PathStats // counters at the last debug log
+	loggedAt          time.Time // when they were taken
+	loggedCaps        [2]int    // capLoss and capDelay at the last debug log
 }
 
 // PathStats are per-path counters
@@ -436,6 +441,7 @@ func (p *path) delayControl(now time.Time) {
 			// only a real drop lowers an existing cap, otherwise it ratchets down on its own delivery rate
 			if c := max(0.9*max(got, p.bw.max(now)), p.cfg.MinRate/4); p.ceiling == 0 || c < 0.7*p.ceiling {
 				p.ceiling = c
+				p.capDelay++
 				p.bw.reset(now, c)
 			}
 		}
@@ -468,6 +474,7 @@ func (p *path) advanceCycle(now time.Time) {
 		// a policer is dropping us while we were actually pushing: cap just under what got through
 		p.ceiling = max(min(deliveryRate, sentRate*(1-lossRate))*0.95, p.cfg.MinRate)
 		p.capFound = true
+		p.capLoss++
 		p.bw.reset(now, p.ceiling)
 	case p.ceiling > 0 && lossRate < p.cfg.LossThreshold/2:
 		p.ceiling *= 1.15 // creep back up so a lifted throttle is rediscovered
