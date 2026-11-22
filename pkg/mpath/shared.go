@@ -123,6 +123,9 @@ func (c *shared) tick(now time.Time, q, base time.Duration, maxRate float64) {
 	for len(c.hist) > 1 && now.Sub(c.hist[0].at) > sharedRateSpan+iv {
 		c.hist = c.hist[1:]
 	}
+	target := min(max(base, sharedTargetMin), sharedTargetMax)
+	c.target = target
+	used := float64(sent) >= 0.8*c.rate*el.Seconds()
 	var recent float64 // delivery rate over sharedRateSpan, 0 until enough has been seen
 	if span := now.Sub(c.hist[0].at) + iv; span >= sharedRateSpan {
 		var sum int
@@ -130,13 +133,13 @@ func (c *shared) tick(now time.Time, q, base time.Duration, maxRate float64) {
 			sum += h.bytes
 		}
 		recent = float64(sum) / span.Seconds()
-		c.addPeak(now, recent)
+		// an app-limited sample says nothing about the link unless it beats the estimate
+		if used || recent > c.bandwidth(now) {
+			c.addPeak(now, recent)
+		}
 	}
 	c.queue, c.recent = q, recent
 	bw := c.bandwidth(now)
-	target := min(max(base, sharedTargetMin), sharedTargetMax)
-	c.target = target
-	used := float64(sent) >= 0.8*c.rate*el.Seconds()
 
 	if q > 2*target {
 		c.high++
